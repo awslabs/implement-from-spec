@@ -1,0 +1,17 @@
+{
+  "name": "implement-from-spec",
+  "owner": {
+    "name": "Denis Demichev",
+    "email": "ddemich@amazon.com"
+  },
+  "metadata": {
+    "description": "Spec-driven, approval-gated implementation skills for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "implement-from-spec",
+      "source": "./",
+      "description": "Spec-driven, approval-gated implementation skills for Terraform, AWS CDK, CloudFormation, Java and Python"
+    }
+  ]
+}

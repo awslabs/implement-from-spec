@@ -1,0 +1,7 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Probe template for core/deps/doctor.py; cfn-validate has no --version flag, so a clean validation of this one-resource template shows it is present and its JSON report carries the version
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs

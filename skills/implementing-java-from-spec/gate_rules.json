@@ -1,0 +1,93 @@
+{
+  "_doc": "K22 rules for implementing-java-from-spec (core/gate/spec-approval-gate.py, registered once by the plugin's hooks/hooks.json). Each setting carries a why; each command rule carries examples that the gate's unit tests check. Rule ids are unique across the plugin because the gate merges every skill's rules by id. A rule whose decision is write decides nothing itself: its writes object names what the matched command writes as a side effect (paths relative to the directory it works in, directory_options, file_options, path_options, operands), and the gate judges that like any other write, so it is denied inside the project before approval.",
+  "writable_before_approval": ["ai-planning/", ".claude/"],
+  "writable_why": "Before approval only the plan, its ledger and planning notes may change. .claude/ holds tooling, not product, so editing it is not a design decision the plan has to settle.",
+  "approval_words": ["approve", "approved"],
+  "approval_why": "The skill asks the user to reply 'approve'. Looser words such as 'ok' or 'go' also answer unrelated questions and would unlock edits by accident.",
+  "command_rules": [
+    {
+      "id": "java-dependency-change",
+      "decision": "ask",
+      "match": {"programs": ["mvn", "mvnw", "mvnd", "gradle", "gradlew"],
+                "args_regex": "(^|\\s)(\\S+:)?versions(-maven-plugin)?(:[0-9.]+)?:(?!display-|help(\\s|$))|(^|\\s)(\\S+:)?(dependency:get|install:install-file|wrapper:wrapper)(\\s|$)|(^|\\s)(:?[\\w-]+:)*(wrapper|useLatestVersions|dependencyUpdates)(\\s|$)|(^|\\s)--(write|update)-locks(\\s|=|$)"},
+      "why": "A new or changed dependency, plugin or build-tool version is a design decision the approved plan names with its version. These goals rewrite pom.xml, lock state or the wrapper, or fetch an artifact the plan does not name; a package that fails to resolve may be a hallucinated or squatted name, so it never gets a silent substitute. Dependency edits made with Write/Edit stay inside a task's Owns list (the brief carries that rule; the gate cannot see task ownership).",
+      "message": "this changes or fetches dependencies or the build-tool version. Approve only if the approved plan names it (with this exact version), or you want it anyway.",
+      "examples": {
+        "match": ["mvn versions:use-latest-versions", "./mvnw versions:set -DnewVersion=2.0.0", "mvn org.codehaus.mojo:versions-maven-plugin:2.17.1:update-properties", "./mvnw dependency:get -Dartifact=software.amazon.awssdk:s3:2.30.0", "mvn install:install-file -Dfile=lib.jar", "./mvnw -N wrapper:wrapper -Dmaven=3.9.9", "./gradlew wrapper --gradle-version 8.10", "./gradlew dependencies --write-locks", "gradle useLatestVersions"],
+        "no_match": ["./mvnw -q verify", "mvn versions:display-dependency-updates", "./mvnw dependency:tree", "./gradlew test", "./gradlew dependencies", "grep -n versions: pom.xml"]
+      }
+    },
+    {
+      "id": "java-deploy-goal",
+      "decision": "ask",
+      "match": {"programs": ["mvn", "mvnw", "mvnd", "gradle", "gradlew"],
+                "args_regex": "(^|\\s)(\\S+:)?(deploy(:[\\w-]+)?|release:(prepare|perform)|jib:build|[\\w-]+:deploy)(\\s|$)|(^|\\s)(:?[\\w-]+:)*(publish(?!\\w*ToMavenLocal)\\w*|jib|deploy\\w*)(\\s|$)"},
+      "why": "Deploy goals push artifacts to a shared repository, a registry or a cloud account, and release goals tag and push. Implementation and verification stay local; the operator or the pipeline deploys.",
+      "message": "this deploys or publishes outside the machine. The skill never deploys; approve only if you asked for this exact command.",
+      "examples": {
+        "match": ["mvn clean deploy", "./mvnw deploy -DskipTests", "./mvnw deploy:deploy-file -Dfile=app.jar", "mvn release:perform", "./mvnw jib:build", "mvn com.example:lambda-maven-plugin:deploy", "./gradlew publish", "./gradlew :service:publishAllPublicationsToReleasesRepository", "./gradlew jib", "gradle deployLambda"],
+        "no_match": ["./mvnw -q verify", "mvn install", "./mvnw jib:dockerBuild", "./gradlew publishToMavenLocal", "./gradlew build", "grep -rn deploy pom.xml"]
+      }
+    },
+    {
+      "id": "java-sam-deploy",
+      "decision": "ask",
+      "match": {"programs": ["sam"], "subcommands": ["deploy", "sync", "delete", "publish", "pipeline bootstrap", "remote invoke", "remote test-event put", "remote test-event delete"]},
+      "why": "These AWS SAM CLI commands create, update, delete or invoke resources in an AWS account. Local builds, validation and local invokes are part of verification; anything that reaches the account is the operator's.",
+      "message": "this AWS SAM CLI command changes or invokes live resources. The skill never deploys; approve only if you asked for this exact command.",
+      "examples": {
+        "match": ["sam deploy --guided", "sam deploy --stack-name orders --no-confirm-changeset", "sam sync --watch", "sam delete --stack-name orders", "sam remote invoke OrdersFunction --stack-name orders"],
+        "no_match": ["sam build", "sam validate --lint", "sam local invoke OrdersFunction -e events/get.json", "sam local start-api"]
+      }
+    },
+    {
+      "id": "java-aws-cli-read-only",
+      "decision": "ask",
+      "match": {"programs": ["aws"], "aws_mutating": true,
+                "read_only_verbs": ["describe", "list", "get", "lookup", "search", "batch-get", "head", "help", "wait", "ls", "filter", "scan", "query", "validate", "simulate", "estimate"],
+                "read_only_operations": ["test-event-pattern", "test-dns-answer"]},
+      "why": "Implementation and verification are local or read-only. A mutating AWS call from the model changes a shared account outside the pipeline.",
+      "message": "this AWS CLI call can change live resources. Approve only if you intend it.",
+      "examples": {
+        "match": ["aws lambda update-function-code --function-name orders --zip-file fileb://target/orders.zip", "aws lambda publish-version --function-name orders", "aws s3 cp target/orders.jar s3://artifacts/orders.jar", "aws dynamodb put-item --table-name orders --item file://item.json"],
+        "no_match": ["aws sts get-caller-identity", "aws lambda get-function-configuration --function-name orders", "aws lambda list-versions-by-function --function-name orders", "aws dynamodb describe-table --table-name orders"]
+      }
+    },
+    {
+      "id": "java-maven-build-writes-target",
+      "decision": "write",
+      "match": {"programs": ["mvn", "mvnw", "mvnd"], "args_regex": "(?:^|\\s)(?:(?:pre-|post-)?clean|initialize|(?:generate|process)-(?:test-)?(?:sources|resources)|(?:test-)?compile|process-(?:test-)?classes|test|prepare-package|package|(?:pre-|post-)?integration-test|verify|install|deploy|(?:pre-|post-)?site|site-deploy|(?:[\\w.-]+:)?(?:maven-)?(?:compiler|surefire|failsafe|jar|war|shade|assembly|resources|jacoco|exec|spring-boot|antrun)(?:-maven-plugin|-plugin)?(?::[\\w.-]+)?:[\\w-]+)(?:\\s|$)"},
+      "writes": {"paths": ["target"], "file_options": ["-f", "--file"]},
+      "why": "Maven's lifecycle phases and the build plugins' goals write the build output into target/ (\"The target directory is used to house all output of the build\", Maven standard directory layout), in the project of the pom -f names or the working directory. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. After approval the build is routine verification and the write is allowed.",
+      "message": "this Maven build writes target/ in the project. Planning is read-only: read pom.xml and the sources instead of building, and build after the plan is approved.",
+      "examples": {
+        "match": ["./mvnw -q verify", "mvn -q -B clean test", "mvn -f sub/pom.xml compile", "mvn org.apache.maven.plugins:maven-surefire-plugin:3.2.5:test", "mvn exec:java -Dexec.mainClass=App"],
+        "no_match": ["mvn --version", "./mvnw -q dependency:tree", "mvn versions:display-dependency-updates", "mvn help:effective-pom"]
+      }
+    },
+    {
+      "id": "java-gradle-build-writes-output",
+      "decision": "write",
+      "match": {"programs": ["gradle", "gradlew"], "args_regex": "^(?!\\S+(?:\\s+(?:--version|-v|--help|-h|-\\?|--stop|--status))+$)\\S+"},
+      "writes": {"paths": [".gradle", "build"], "directory_options": ["-p", "--project-dir"]},
+      "why": "Every Gradle build writes the project-specific cache directory .gradle/ and the build directory build/ \"into which Gradle generates all build artifacts\" (Gradle directory layout), in the project -p names or the working directory; only --version, --help, --status and --stop run no build. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this Gradle invocation writes .gradle/ and build/ in the project. Planning is read-only: read the build files and sources instead, and build after the plan is approved.",
+      "examples": {
+        "match": ["./gradlew test", "gradle -p sub build", "./gradlew", "./gradlew -q dependencies"],
+        "no_match": ["./gradlew --version", "gradle --help", "./gradlew --stop"]
+      }
+    },
+    {
+      "id": "java-sam-build-writes-artifacts",
+      "decision": "write",
+      "match": {"programs": ["sam"], "subcommands": ["build"]},
+      "writes": {"paths": [".aws-sam"], "path_options": ["--build-dir", "-b", "--cache-dir"]},
+      "why": "sam build stores the built artifacts in its build directory (--build-dir, under .aws-sam/ by default) and its cache in .aws-sam/cache (AWS SAM CLI sam build reference). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this sam build writes .aws-sam/ (or the build directory it names) in the project. Build after the plan is approved.",
+      "examples": {
+        "match": ["sam build", "sam build --use-container", "sam build -b out/build"],
+        "no_match": ["sam validate --lint", "sam local invoke Fn -e events/event.json"]
+      }
+    }
+  ]
+}

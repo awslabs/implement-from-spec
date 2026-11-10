@@ -1,0 +1,15 @@
+Java (Spring Boot services, AWS Lambda functions, shared libraries), built with Maven or Gradle. Review across seven dimensions: correctness, design, patterns, extensibility, security, maintainability, readability. Look hardest at:
+- Behaviour versus the specification items and the plan's Global constraints: names, paths, status codes, fields and properties exactly as stated; anything missing, stubbed, hard-coded to the happy path or not wired into the code that runs. Where the project keeps a specification tree, a business-behaviour change without the matching SPEC, TC and coverage-matrix update is a Blocker, and every new test names its item or TC-xxx
+- Code that silently answers an open question from the project's open-questions list
+- Layering: controllers stay thin; services never do their own file or network I/O outside the adapter layer
+- Records for value types, no Lombok, constructor injection only, tunables on the single @ConfigurationProperties bean
+- Null handling at boundaries, Optional misuse, resource leaks, unclosed SDK response streams, swallowed InterruptedException, catch-all handlers, fallbacks that hide logic bugs
+- Shared mutable state across requests or Lambda invocations, executor sizing, blocking calls without a timeout
+- AWS SDK: any SDK for Java 1.x (com.amazonaws) use; a client built per call or per invocation instead of once and reused; no apiCallTimeout or apiCallAttemptTimeout; missing pagination; retries that repeat a non-idempotent write
+- Lambda: a handler that is not idempotent on a duplicate event; event or user data kept in static state; for SnapStart, unique values or entropy created during initialization, or EnvironmentVariableCredentialsProvider pinned
+- Untrusted input: jakarta.validation on every DTO field, path traversal in any user-supplied path, no Runtime.exec or ProcessBuilder with user input, no secrets in source or logs
+- New dependencies or plugins not named in the approved plan, unpinned versions, a database, ORM, broker or cloud SDK added without approval
+- Tests that would pass even if the feature were broken; tests that reach the network
+- Stale Javadoc and comments next to changed lines
+- Library behaviour you are not sure of (Spring, the AWS SDK, Jackson): say "verify against the docs" rather than asserting
+- Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

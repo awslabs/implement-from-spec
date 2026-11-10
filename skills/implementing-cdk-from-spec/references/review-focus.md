@@ -1,0 +1,11 @@
+AWS CDK v2 apps in Python or Java, implementing specification items; the pipeline deploys the synthesised CloudFormation templates. Look hardest at:
+- Fidelity to the specification items: stack IDs, construct IDs, resource names and values exactly as the items and the plan's Global constraints state them; anything the items ask for that is missing, stubbed or not instantiated in a stack the app creates
+- Logical ID stability: a changed construct ID or construct-tree path of an existing resource changes its logical ID, so CloudFormation creates a new resource and deletes the old one; a rename must keep the ID, use the Default construct ID, or go through a separate cdk refactor
+- Stateful resources (tables, buckets, keys, user pools, queues, log groups holding audit data) without an explicit removal policy, without both DeletionPolicy and UpdateReplacePolicy in the synthesised template, or with DESTROY or auto-delete where the items keep the data; property changes that need replacement on update
+- IAM: grant methods preferred, every action named and minimal, resources scoped, no wildcard without a stated reason, trust policies limited to the intended principal; action names that may not exist ("verify in the service authorization reference")
+- Secrets or identifiers in context, props, environment variables, literals or Outputs; public exposure not required by the items; cdk-nag acknowledgements without a reason or at app scope
+- Replacement evidence: a claim that nothing is replaced must rest on cdk diff --method change-set, per changed stack and for the whole app; a --method template diff is not evidence
+- Tests: fine-grained assertions that would pass if the resource were removed, snapshot tests as the only proof, missing characterisation tests for pinned logical IDs
+- New dependencies without an exact version or not named in the plan
+- CDK constructs, properties, defaults or CLI flags that may not exist in the app's CDK version: say "verify in the CDK API reference" rather than asserting
+- Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

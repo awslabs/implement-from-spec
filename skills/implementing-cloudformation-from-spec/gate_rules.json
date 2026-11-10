@@ -1,0 +1,87 @@
+{
+  "_doc": "Approval-gate (K22) rules for implementing-cloudformation-from-spec, read by core/gate/spec-approval-gate.py. Each setting carries a why; each command rule carries examples that the gate's unit tests execute. Rule ids carry the cloudformation- prefix because the plugin merges every skill's rules and keeps one rule per id. A rule whose decision is write decides nothing itself: its writes object names what the matched command writes as a side effect (paths relative to the directory it works in, directory_options, file_options, path_options, operands), and the gate judges that like any other write, so it is denied inside the project before approval.",
+  "writable_before_approval": ["ai-planning/", ".claude/"],
+  "writable_why": "Before approval only the plan, its ledger and planning notes may change. .claude/ holds tooling, not product.",
+  "approval_words": ["approve", "approved"],
+  "approval_why": "The skill asks the user to reply 'approve'. Looser words such as 'ok' or 'go' also answer unrelated questions and would unlock edits by accident.",
+  "command_rules": [
+    {
+      "id": "cloudformation-never-use-previous-template",
+      "decision": "deny",
+      "match": {"programs": ["aws"], "aws_services": ["cloudformation"], "args_regex": "--use-previous-template"},
+      "why": "With AWS::LanguageExtensions, --use-previous-template reuses the processed template with the old literal parameter values, so new parameter values are silently not applied (transform-aws-languageextensions.html, Considerations).",
+      "message": "--use-previous-template keeps old resolved parameter values on LanguageExtensions templates. Submit the original template instead.",
+      "examples": {
+        "match": ["aws cloudformation create-change-set --stack-name s --change-set-name c --use-previous-template --parameters ParameterKey=K,ParameterValue=v",
+                  "aws cloudformation update-stack --stack-name s --use-previous-template"],
+        "no_match": ["aws cloudformation create-change-set --stack-name s --change-set-name c --template-url https://b.s3.amazonaws.com/t.yaml"]
+      }
+    },
+    {
+      "id": "cloudformation-operator-deploys",
+      "decision": "ask",
+      "match": {"programs": ["aws"], "aws_services": ["cloudformation"], "aws_mutating": true,
+                "read_only_verbs": ["describe", "list", "get", "validate", "estimate", "detect", "wait", "help"]},
+      "why": "Creating, updating, executing or deleting stacks and change sets touches live accounts; create-change-set creates a change set resource in the account. The skill stops at validated templates; the operator or the pipeline deploys, and a dev change set is created only when the user asks for it.",
+      "message": "this changes CloudFormation state in an account. The skill never deploys; approve only if you asked for this exact call.",
+      "examples": {
+        "match": ["aws cloudformation deploy --template-file infra/a.yaml --stack-name a",
+                  "aws --profile dev cloudformation execute-change-set --change-set-name c",
+                  "aws cloudformation delete-stack --stack-name a",
+                  "aws cloudformation create-stack --stack-name a --template-body file://infra/a.yaml",
+                  "aws cloudformation update-stack --stack-name a --template-body file://infra/a.yaml",
+                  "aws cloudformation create-change-set --stack-name s --change-set-name c --template-body file://infra/a.yaml"],
+        "no_match": ["aws cloudformation describe-change-set --change-set-name c",
+                     "aws cloudformation validate-template --template-body file://infra/a.yaml",
+                     "aws cloudformation get-template --stack-name s --template-stage Processed",
+                     "aws cloudformation list-stacks"]
+      }
+    },
+    {
+      "id": "cloudformation-other-deploy-tools",
+      "decision": "ask",
+      "match": {"programs": ["sam", "cdk", "rain", "taskcat"], "subcommands": ["deploy", "test", "sync", "destroy", "delete", "rm"]},
+      "why": "These deploy to an account outside the project's pipeline; a TaskCat test run creates real stacks.",
+      "message": "this deploys to an account outside the pipeline. Approve only if you asked for it.",
+      "examples": {
+        "match": ["sam deploy --guided", "taskcat test run", "cdk deploy --all"],
+        "no_match": ["sam validate", "cdk synth", "taskcat lint"]
+      }
+    },
+    {
+      "id": "cloudformation-aws-cli-read-only",
+      "decision": "ask",
+      "match": {"programs": ["aws"], "aws_mutating": true,
+                "read_only_verbs": ["describe", "list", "get", "lookup", "search", "batch-get", "head", "help", "wait", "ls", "filter", "scan", "query", "validate", "simulate", "estimate", "detect"]},
+      "why": "Planning and verification are read-only. A mutating AWS call from the model bypasses the pipeline and drifts the stacks.",
+      "message": "this AWS CLI call can change live resources outside CloudFormation. Approve only if you intend it.",
+      "examples": {
+        "match": ["aws s3 rm s3://bucket/key", "aws ssm put-parameter --name /x --value y", "aws iam put-role-policy --role-name r --policy-name p --policy-document file://p.json"],
+        "no_match": ["aws sts get-caller-identity", "aws ssm get-parameter --name /x", "aws --region us-east-1 s3api list-buckets", "aws --version"]
+      }
+    },
+    {
+      "id": "cloudformation-confirm-tool-install",
+      "decision": "ask",
+      "match": {"programs": ["pip", "pip3", "pipx", "brew", "uv", "cargo", "python3", "python"], "subcommands": ["install", "tool install", "pip install", "add"]},
+      "why": "Validation tools are installed by the user's choice: a missing tool is reported, never installed silently, and a failed install never gets a substitute package.",
+      "message": "this installs software. Approve only if you want this exact package installed.",
+      "examples": {
+        "match": ["pip install cfn-lint", "brew install cloudformation-guard", "pipx install cfn-lint", "cargo install cfn-guard", "python3 -m pip install cloudformation-validate"],
+        "no_match": ["cfn-lint --version", "pip show cfn-lint", "cfn-validate --list-rules", "python3 -m pip show cfn-lint"]
+      }
+    },
+    {
+      "id": "cloudformation-package-writes-template",
+      "decision": "write",
+      "match": {"programs": ["aws"], "aws_services": ["cloudformation"], "args_regex": "\\scloudformation\\s(?:.*\\s)?package(?:\\s.*)?\\s--output-template-file(?:[=\\s]|$)"},
+      "writes": {"path_options": ["--output-template-file"]},
+      "why": "aws cloudformation package writes the packaged template to --output-template-file (\"The path to the file where the command writes the output AWS CloudFormation template\", AWS CLI reference). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. The upload itself asks under cloudformation-operator-deploys.",
+      "message": "this writes the packaged template into the project. Package after the plan is approved, or write the output outside the project.",
+      "examples": {
+        "match": ["aws cloudformation package --template-file infra/a.yaml --s3-bucket b --output-template-file infra/packaged.yaml"],
+        "no_match": ["aws cloudformation package --template-file infra/a.yaml --s3-bucket b", "aws cloudformation validate-template --template-body file://infra/a.yaml"]
+      }
+    }
+  ]
+}

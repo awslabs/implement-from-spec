@@ -1,0 +1,403 @@
+#!/usr/bin/env bash
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# bedrock-gpt — send one prompt to an OpenAI GPT model on Amazon Bedrock (OpenAI Responses API on
+# the bedrock-mantle endpoint) and print the reply text.
+#
+# Bundled copy for the implement-from-spec plugin (from the gpt skill's scripts/bedrock-gpt).
+# core/scripts/spec-external-review.py calls it by its path, <plugin-root>/core/scripts/bedrock-gpt, when the
+# plugin's external reviewer is set to bedrock-gpt with api-key authentication. It is deliberately not in the
+# plugin's bin/, which Claude Code puts on the Bash tool's PATH: this script sends whatever it is given, with
+# none of the review script's file filters. --out and the stub record are written only under the review
+# home, the directory spec-external-review.py writes to. Needs bash, curl and jq, and a Bedrock API key exported as
+# IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY; never write the key to a file. It never reads
+# AWS_BEARER_TOKEN_BEDROCK: Claude Code authenticates to Bedrock with that variable, and the reviewer's key
+# is kept separate so enabling the reviewer can never change how Claude Code signs in.
+#
+# This script is the single source of the model facts (model ID, Regions, endpoint, price tiers,
+# context window, knowledge cutoff). Read them with `bedrock-gpt --info`; it makes no network call.
+#
+# Usage example:
+#   <plugin-root>/core/scripts/bedrock-gpt --info
+#   { cat <<'PROMPT'
+#   Review the file below. Give a verdict and a ranked list of defects.
+#   PROMPT
+#     cat -n draft.md; } | <plugin-root>/core/scripts/bedrock-gpt --out <a new directory under the review home>
+#
+set -euo pipefail
+
+# ---------------------------------------------------------------- facts (model card, read 2026-10-05)
+FACTS_AS_OF="2026-10-05"
+MODEL_CARD_URL="https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-astra.html"
+DEFAULT_MODEL="openai.gpt-6-astra"
+# us-west-2 answered the first live call on 2026-09-09, when us-east-1 returned 404 "model does not
+# exist". The model card now lists bedrock-mantle In-Region in both us-east-1 and us-west-2; us-east-1
+# has not been re-tested live, so the proven Region stays the default.
+DEFAULT_REGION="us-west-2"
+MANTLE_REGIONS="us-west-2 (Standard tier only) and us-east-1 (Standard and Ultrafast)"
+CONTEXT_WINDOW="1,050,000 tokens"
+MAX_OUTPUT="128,000 tokens"
+KNOWLEDGE_CUTOFF="2026-04-30"
+LAUNCHED="2026-09-08"
+EOL_NOT_BEFORE="2027-09-08"
+# Standard tier, In-Region, USD per 1M tokens. Above 272K input tokens the long-context price applies
+# to the whole request, input and output alike.
+PRICE_STEP_TOKENS="272,000"
+PRICE_SHORT="input 11.00, cache read 1.10, output 55.00"
+PRICE_LONG="input 22.00, cache read 2.20, output 82.50"
+
+# ---------------------------------------------------------------- tunables
+# 272,000 tokens at roughly 3.7 to 4 bytes per token for English prose and code is 1.0 to 1.1 MB, so a
+# 1,000,000-byte guard trips just before the long-context price step rather than just after it.
+LARGE_PROMPT_BYTES=1000000
+# The longest real review (a 417 KB prompt) took several minutes; 25 minutes bounds a stuck call
+# without cutting off a long answer.
+DEFAULT_TIMEOUT=1500
+# Upper bound for the eval stub's delay directive, so a typo cannot hang an eval run for hours.
+STUB_MAX_DELAY=600
+
+REGION="${BEDROCK_REGION:-$DEFAULT_REGION}"
+MODEL_ID="${BEDROCK_GPT_MODEL:-$DEFAULT_MODEL}"
+TIMEOUT="${BEDROCK_GPT_TIMEOUT:-$DEFAULT_TIMEOUT}"
+BASE_URL="https://bedrock-mantle.${REGION}.api.aws/openai/v1"
+
+raw=false
+out_dir=""
+prompt_saved=false
+
+# ---------------------------------------------------------------- output helpers
+usage() {
+  cat <<EOF
+Usage: bedrock-gpt [--raw] [--out DIR] [--] [PROMPT...]
+       bedrock-gpt --info | --help
+
+Sends one prompt to ${DEFAULT_MODEL} (OpenAI Responses API on the Amazon Bedrock bedrock-mantle
+endpoint) and prints the reply text. The prompt is the arguments joined by spaces, or stdin when
+there are none (a quoted heredoc, or a pipe from cat).
+
+Options
+  --out DIR   keep the pair: DIR/prompt.md before the call, DIR/response.md after it
+              (response.json with --raw or when the reply has no text, response.txt when it is
+              not JSON either), DIR/error.txt on failure. DIR must exist, must lie under the
+              review home (below) and must not hold a prompt.md yet: one directory per call,
+              so re-runs can be compared
+  --raw       print the full JSON response instead of the text
+  --info      print model ID, Region, endpoint, price tiers, context window and knowledge cutoff
+  -h, --help  print this help
+  --          end of options (for a prompt that itself starts with --)
+--info and --help make no network call.
+
+Environment
+  IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY
+                            Bedrock API key, sent as a Bearer token (required for a live call;
+                            never write it into a file). AWS_BEARER_TOKEN_BEDROCK is never read
+  BEDROCK_GPT_MODEL         model ID (default ${DEFAULT_MODEL})
+  BEDROCK_REGION            bedrock-mantle Region (default ${DEFAULT_REGION})
+  BEDROCK_GPT_TIMEOUT       seconds allowed for the HTTP call (default ${DEFAULT_TIMEOUT})
+  BEDROCK_GPT_ALLOW_LARGE   1 = send a prompt over ${LARGE_PROMPT_BYTES} bytes (the ${PRICE_STEP_TOKENS}-token
+                            price step); otherwise such a prompt is refused before anything is sent
+  BEDROCK_GPT_STUB          eval stub: answer from this file instead of the endpoint; a set but
+                            unreadable file is an error, never a fallback to the live call
+  BEDROCK_GPT_STUB_RECORD   eval stub: file (overwritten) or directory (one file per call) that
+                            receives the prompt; under the review home only
+  SPEC_REVIEW_HOME          the review home, the only place --out and the stub record may write
+                            (default \${CLAUDE_PLUGIN_DATA:-\${XDG_STATE_HOME:-~/.local/state}}/spec-external-review,
+                            the directory spec-external-review.py writes to)
+
+Stub file directives (optional first line, removed from the answer):
+  BEDROCK_GPT_STUB: delay=SECONDS http=CODE exit=CODE format=text|json
+  delay   sleep before answering (at most ${STUB_MAX_DELAY})
+  http    a code other than 200 sends the body through the non-200 error report, exit 1
+  exit    a non-zero code writes the body to stderr and exits with that code (simulates a
+          failure before the call, such as a missing token)
+  format  json = the body is a Responses API JSON document, parsed like a live reply
+
+Exit status
+  0  reply printed
+  1  no reply: curl or network error, timeout, or a non-200 status other than those under 4 (stderr
+     then carries the HTTP status, endpoint, model, Region and the response body from the endpoint)
+  2  usage error, nothing sent
+  3  prompt over the size guard, nothing sent
+  4  cannot run here: the API key is not exported, curl or jq is missing, or the endpoint answered
+     401 or 403 (key rejected or not allowed) or 404 (model not served in the Region)
+EOF
+}
+
+info() {
+  local token_state="not set" stub_state="not set (live calls)"
+  [[ -n "${IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY:-}" ]] && token_state="set (value never printed)"
+  [[ -n "${BEDROCK_GPT_STUB+x}" ]] && stub_state="set to '${BEDROCK_GPT_STUB}': no call reaches the endpoint"
+  cat <<EOF
+bedrock-gpt facts as of ${FACTS_AS_OF}, from the Bedrock model card (no network call was made):
+  ${MODEL_CARD_URL}
+
+  model ID          ${DEFAULT_MODEL} (default); this call would use ${MODEL_ID}
+  API               OpenAI Responses API, POST ${BASE_URL}/responses
+  Region            ${REGION} (default ${DEFAULT_REGION}; BEDROCK_REGION overrides)
+  mantle Regions    ${MANTLE_REGIONS}, In-Region only;
+                    us-east-1 returned 404 "model does not exist" on 2026-09-09 and has not been
+                    re-tested since, us-west-2 is the Region proven live
+  launched          ${LAUNCHED}; end of life no sooner than ${EOL_NOT_BEFORE}
+  context window    ${CONTEXT_WINDOW}; max output ${MAX_OUTPUT}
+  knowledge cutoff  ${KNOWLEDGE_CUTOFF}, before its own Bedrock launch: it is stale about its own
+                    deployment and about recent AWS facts
+  price, Standard tier, In-Region, USD per 1M tokens
+    up to ${PRICE_STEP_TOKENS} input tokens   ${PRICE_SHORT}
+    above ${PRICE_STEP_TOKENS} input tokens   ${PRICE_LONG} (whole request)
+    Ultrafast costs 6x and is never requested by this wrapper
+  size guard        prompts over ${LARGE_PROMPT_BYTES} bytes are refused unless BEDROCK_GPT_ALLOW_LARGE=1
+  timeout           ${TIMEOUT} s (BEDROCK_GPT_TIMEOUT)
+  API key           IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY is ${token_state}
+                    (AWS_BEARER_TOKEN_BEDROCK is never read)
+  stub              BEDROCK_GPT_STUB is ${stub_state}
+  invoke as         <plugin-root>/core/scripts/bedrock-gpt (the path spec-external-review.py uses)
+EOF
+  if [[ "$MODEL_ID" != "$DEFAULT_MODEL" ]]; then
+    printf '\nWARNING: BEDROCK_GPT_MODEL=%s. Every fact above describes %s;\ncheck the Bedrock model card of %s for its bedrock-mantle Regions and prices.\n' \
+      "$MODEL_ID" "$DEFAULT_MODEL" "$MODEL_ID"
+  fi
+}
+
+# die MESSAGE [CODE] — print to stderr; once the prompt is saved, also leave DIR/error.txt.
+die() {
+  printf 'bedrock-gpt: %s\n' "$1" >&2
+  if [[ "$prompt_saved" == true ]]; then
+    printf 'bedrock-gpt: %s\n' "$1" > "${out_dir}/error.txt" || true
+  fi
+  exit "${2:-1}"
+}
+
+usage_error() {
+  printf 'bedrock-gpt: %s\nRun bedrock-gpt --help for usage. Nothing was sent.\n' "$1" >&2
+  exit 2
+}
+
+# http_error_report CODE BODY — what a non-200 leaves on stderr and in DIR/error.txt.
+http_error_report() {
+  printf 'bedrock-gpt: HTTP %s from %s/responses (model %s, Region %s). Response body:\n' \
+    "$1" "$BASE_URL" "$MODEL_ID" "$REGION"
+  printf '%s\n' "$2"
+  case "$1" in
+    404) printf 'bedrock-gpt: a 404 "model does not exist" usually means bedrock-mantle in %s does not serve %s; run bedrock-gpt --info\n' "$REGION" "$MODEL_ID" ;;
+    401|403) printf 'bedrock-gpt: a %s usually means IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY is expired, not a Bedrock API key, or not allowed to call %s\n' "$1" "$MODEL_ID" ;;
+  esac
+}
+
+# review_home — the review home resolved through symlinks (empty when it does not exist): SPEC_REVIEW_HOME,
+# else spec-external-review/ under CLAUDE_PLUGIN_DATA, XDG_STATE_HOME or ~/.local/state, as REVIEW_HOME in
+# spec-external-review.py.
+review_home() {
+  local home="${SPEC_REVIEW_HOME:-${CLAUDE_PLUGIN_DATA:-${XDG_STATE_HOME:-${HOME:-}/.local/state}}/spec-external-review}"
+  # A settings value may carry a literal ~ that no shell expanded; expand it here, on purpose.
+  # shellcheck disable=SC2088
+  [[ "$home" == "~" || "$home" == "~/"* ]] && home="${HOME:-}${home#\~}"
+  (CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || true
+}
+
+# review_home_shown — the review home for a message, or a note that it does not exist yet.
+review_home_shown() {
+  local home
+  home="$(review_home)"
+  printf '%s' "${home:-which does not exist yet}"
+}
+
+# under_review_home DIR [home-ok] — print DIR resolved through symlinks when it lies below the review home (or
+# is the home itself, with home-ok); fail otherwise. A symlink that leaves the home resolves outside it.
+under_review_home() {
+  local home real
+  home="$(review_home)"
+  real="$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)" || return 1
+  [[ -n "$home" ]] || return 1
+  if [[ "$real" == "$home"/* || ( "${2:-}" == home-ok && "$real" == "$home" ) ]]; then
+    printf '%s' "$real"
+    return 0
+  fi
+  return 1
+}
+
+# prompt_byte_count — byte length of $prompt into $prompt_bytes. LC_ALL=C makes ${#…} count bytes,
+# not characters, in linear time.
+prompt_byte_count() {
+  local LC_ALL=C
+  prompt_bytes=${#prompt}
+}
+
+# ---------------------------------------------------------------- arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --info) info; exit 0 ;;
+    --raw) raw=true; shift ;;
+    --out)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--out needs a directory"
+      out_dir="$2"; shift 2 ;;
+    --out=*) out_dir="${1#--out=}"; [[ -n "$out_dir" ]] || usage_error "--out needs a directory"; shift ;;
+    --) shift; break ;;
+    --*) usage_error "unknown option '$1' (a prompt that starts with -- needs a preceding --)" ;;
+    *) break ;;
+  esac
+done
+
+if [[ -n "$out_dir" ]]; then
+  out_dir="${out_dir%/}"
+  [[ -d "$out_dir" ]] || usage_error "--out directory '${out_dir}' does not exist (create it first)"
+  out_real="$(under_review_home "$out_dir")" || \
+    usage_error "--out must be a directory under the review home ($(review_home_shown)), where spec-external-review.py writes; '${out_dir}' is not"
+  out_dir="$out_real"
+  [[ -w "$out_dir" ]] || usage_error "--out directory '${out_dir}' is not writable"
+  [[ ! -e "${out_dir}/prompt.md" ]] || usage_error "--out directory '${out_dir}' already holds a prompt.md; use a new run directory per call so re-runs can be compared"
+fi
+
+# Prompt comes from args, or from stdin if no args and stdin is a pipe/heredoc.
+if [[ $# -gt 0 ]]; then
+  prompt="$*"
+elif [[ ! -t 0 ]]; then
+  prompt="$(cat)"
+else
+  usage_error "no prompt given. Usage: bedrock-gpt \"your prompt\"  (or pipe it via stdin)"
+fi
+
+# Regex test is linear; the former ${prompt//[[:space:]]/} substitution was quadratic
+# on macOS bash 3.2 and spun for 10+ minutes on ~100 KB prompts before ever calling curl.
+[[ "$prompt" =~ [^[:space:]] ]] || usage_error "prompt is empty"
+
+# Size guard: refuse before anything is written or sent.
+prompt_byte_count
+if (( prompt_bytes > LARGE_PROMPT_BYTES )); then
+  if [[ "${BEDROCK_GPT_ALLOW_LARGE:-}" != "1" ]]; then
+    printf 'bedrock-gpt: the prompt is %s bytes, over the %s-byte guard: about %s input tokens, above which the long-context price applies to the whole request (see bedrock-gpt --info). Nothing was sent. Trim the prompt, or set BEDROCK_GPT_ALLOW_LARGE=1 to send it anyway.\n' \
+      "$prompt_bytes" "$LARGE_PROMPT_BYTES" "$PRICE_STEP_TOKENS" >&2
+    exit 3
+  fi
+  printf 'bedrock-gpt: sending %s bytes, over the %s-byte guard (BEDROCK_GPT_ALLOW_LARGE=1): long-context prices apply\n' \
+    "$prompt_bytes" "$LARGE_PROMPT_BYTES" >&2
+fi
+
+if [[ -n "$out_dir" ]]; then
+  printf '%s\n' "$prompt" > "${out_dir}/prompt.md" || usage_error "cannot write ${out_dir}/prompt.md"
+  prompt_saved=true
+fi
+
+# ---------------------------------------------------------------- transport
+http_code=""
+resp_body=""
+
+# Eval stub switch (skill-upgrade plan WP5): when BEDROCK_GPT_STUB is set, print that file instead of
+# calling the endpoint. A set-but-missing file is an error; there is never a fallback to the live call.
+# BEDROCK_GPT_STUB_RECORD (optional) receives the prompt: a directory gets one file per call, any
+# other path is overwritten. Optional first-line directives (see --help) add a delay, a simulated
+# failure, a non-200 status or a JSON body; without them the file is printed verbatim.
+if [[ -n "${BEDROCK_GPT_STUB+x}" ]]; then
+  [[ -n "$BEDROCK_GPT_STUB" && -f "$BEDROCK_GPT_STUB" && -r "$BEDROCK_GPT_STUB" ]] || \
+    die "BEDROCK_GPT_STUB is set but '${BEDROCK_GPT_STUB}' is not a readable file (stub mode never calls the endpoint)"
+  if [[ -n "${BEDROCK_GPT_STUB_RECORD:-}" ]]; then
+    record_error="BEDROCK_GPT_STUB_RECORD must be under the review home ($(review_home_shown)) and not a symlink: '${BEDROCK_GPT_STUB_RECORD}'"
+    if [[ -d "$BEDROCK_GPT_STUB_RECORD" && ! -L "$BEDROCK_GPT_STUB_RECORD" ]]; then
+      record_dir="$(under_review_home "$BEDROCK_GPT_STUB_RECORD" home-ok)" || usage_error "$record_error"
+      record="${record_dir}/prompt-$(date +%Y%m%d-%H%M%S)-$$-${RANDOM}.txt"
+    else
+      [[ ! -L "$BEDROCK_GPT_STUB_RECORD" ]] || usage_error "$record_error"
+      record_dir="$(under_review_home "$(dirname -- "$BEDROCK_GPT_STUB_RECORD")" home-ok)" || usage_error "$record_error"
+      record="${record_dir}/$(basename -- "$BEDROCK_GPT_STUB_RECORD")"
+    fi
+    printf '%s' "$prompt" > "$record" || die "cannot write the stub record to '${record}'"
+  fi
+
+  stub_delay=0; stub_http=200; stub_exit=0; stub_format=text; stub_header=false
+  first_line=""
+  IFS= read -r first_line < "$BEDROCK_GPT_STUB" || true
+  if [[ "$first_line" == BEDROCK_GPT_STUB:* ]]; then
+    stub_header=true
+    set -f
+    for kv in ${first_line#BEDROCK_GPT_STUB:}; do
+      case "$kv" in
+        delay=*)  stub_delay="${kv#delay=}" ;;
+        http=*)   stub_http="${kv#http=}" ;;
+        exit=*)   stub_exit="${kv#exit=}" ;;
+        format=*) stub_format="${kv#format=}" ;;
+        *) set +f; die "unknown stub directive '${kv}' in ${BEDROCK_GPT_STUB}" ;;
+      esac
+    done
+    set +f
+    if ! [[ "$stub_delay" =~ ^[0-9]+$ ]] || (( stub_delay > STUB_MAX_DELAY )); then
+      die "stub delay '${stub_delay}' must be 0 to ${STUB_MAX_DELAY} seconds"
+    fi
+    [[ "$stub_http" =~ ^[1-5][0-9][0-9]$ ]] || die "stub http '${stub_http}' is not an HTTP status code"
+    if ! [[ "$stub_exit" =~ ^[0-9]+$ ]] || (( stub_exit > 255 )); then
+      die "stub exit '${stub_exit}' must be 0 to 255"
+    fi
+    [[ "$stub_format" == text || "$stub_format" == json ]] || die "stub format '${stub_format}' must be text or json"
+  fi
+  if [[ "$stub_header" == true ]]; then
+    resp_body="$( { IFS= read -r _ || true; cat; } < "$BEDROCK_GPT_STUB" )"
+  else
+    resp_body="$(cat "$BEDROCK_GPT_STUB")"
+  fi
+  (( stub_delay > 0 )) && sleep "$stub_delay"
+
+  if (( stub_exit != 0 )); then
+    printf '%s\n' "$resp_body" >&2
+    [[ "$prompt_saved" == true ]] && printf '%s\n' "$resp_body" > "${out_dir}/error.txt"
+    exit "$stub_exit"
+  fi
+  if [[ "$stub_http" == 200 && "$stub_format" == text ]]; then
+    printf '%s\n' "$resp_body"
+    [[ "$prompt_saved" == true ]] && printf '%s\n' "$resp_body" > "${out_dir}/response.md"
+    exit 0
+  fi
+  http_code="$stub_http"
+else
+  [[ -n "${IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY:-}" ]] || \
+    die "IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY is not set. Export a Bedrock API key (a short-term key is recommended) in that variable first." 4
+
+  command -v curl >/dev/null 2>&1 || die "curl not found on PATH" 4
+  command -v jq   >/dev/null 2>&1 || die "jq not found on PATH" 4
+
+  # Body goes through a temp file: keeps large prompts off the argv limit (E2BIG) and out of `ps`.
+  body_file="$(mktemp -t bedrock-gpt.XXXXXX)"
+  resp_file="$(mktemp -t bedrock-gpt.XXXXXX)"
+  trap 'rm -f "$body_file" "$resp_file"' EXIT
+
+  printf '%s' "$prompt" | jq -Rs --arg model "$MODEL_ID" '{model: $model, input: .}' > "$body_file"
+
+  # The Authorization header reaches curl as a config file on stdin (printf is a shell builtin), so the
+  # key is never on a command line, in `ps`, or in a file.
+  http_code="$(printf 'header = "Authorization: Bearer %s"\n' "$IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY" | \
+    curl -sS --config - --max-time "$TIMEOUT" -o "$resp_file" -w '%{http_code}' \
+    -X POST "${BASE_URL}/responses" \
+    -H "Content-Type: application/json" \
+    --data-binary "@${body_file}")" || die "request failed (network/curl error, or exceeded ${TIMEOUT}s)"
+  resp_body="$(cat "$resp_file")"
+fi
+
+# ---------------------------------------------------------------- response (live call or JSON stub)
+if [[ "$http_code" != "200" ]]; then
+  http_error_report "$http_code" "$resp_body" >&2
+  [[ "$prompt_saved" == true ]] && http_error_report "$http_code" "$resp_body" > "${out_dir}/error.txt"
+  case "$http_code" in 401|403|404) exit 4 ;; esac
+  exit 1
+fi
+
+command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
+
+if [[ "$raw" == true ]]; then
+  printf '%s' "$resp_body" | jq .
+  [[ "$prompt_saved" == true ]] && printf '%s' "$resp_body" | jq . > "${out_dir}/response.json"
+  exit 0
+fi
+
+# Responses API: text lives in output[].content[] items of type output_text.
+# Fall back to raw JSON if the shape is unexpected so nothing is silently lost.
+text="$(printf '%s' "$resp_body" | jq -r '[.. | objects | select(.type? == "output_text") | .text] | join("")' 2>/dev/null || true)"
+
+if [[ -n "$text" ]]; then
+  printf '%s\n' "$text"
+  [[ "$prompt_saved" == true ]] && printf '%s\n' "$text" > "${out_dir}/response.md"
+elif printf '%s' "$resp_body" | jq . 2>/dev/null; then
+  [[ "$prompt_saved" == true ]] && printf '%s' "$resp_body" | jq . > "${out_dir}/response.json"
+else
+  printf '%s\n' "$resp_body"
+  [[ "$prompt_saved" == true ]] && printf '%s\n' "$resp_body" > "${out_dir}/response.txt"
+fi
+exit 0

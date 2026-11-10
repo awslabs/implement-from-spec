@@ -1,0 +1,12 @@
+Python (AWS Lambda handlers, Strands agents on Amazon Bedrock AgentCore, a shared library), implementing specification items with pydantic models, boto3 and Powertools. Look hardest at:
+- Fidelity to the specification items and the plan's Global constraints: module paths, function, model and field names, error codes, metric and event names exactly as stated; anything missing, stubbed, hard-coded to the happy path or not wired into the code path that runs
+- Idempotency and concurrency: handlers that misbehave on a duplicate event; writes without the condition or fence the items require; a fence ConditionCheck on the same item as a Put or Update; TransactionCanceledException reasons not mapped by index; idempotency keys that are unbounded or not the business key
+- Silent failures: broad except blocks, swallowed errors, a batch that reports success after a record failed, fallbacks that hide a logic bug, error handling that branches on the message instead of Error.Code
+- Boundaries: external input not parsed into a pydantic model with extra="forbid"; model output used unchecked in a shell command, SQL, file path or tool call; outbound requests to URLs or endpoints derived from input without an allowlist (SSRF)
+- AWS clients created per invocation, invocation data in globals, legacy or implicit retry mode, 60-second default timeouts, missing pagination
+- Sensitive data in logs, metric dimensions, trace responses or errors; secrets in code or environment variables; high-cardinality metric dimensions
+- Runtime and dependencies: a deprecated or preview Lambda runtime, the AWS SDK for Python developer preview in production code, a dependency or lock file change the plan does not name
+- Types: mypy strict violations, Any leaks, type: ignore without a code, naive datetimes, float where Decimal is needed
+- Tests that would still pass if the implementation were removed or broken; missing fault tests for documented error codes; moto clients created before the mock
+- Library behaviour you are not sure of (Powertools, Strands, pydantic, boto3): say "verify against the docs" rather than asserting
+- Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

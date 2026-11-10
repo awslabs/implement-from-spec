@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Skill", "hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/gate/spec-approval-gate.py\" activate --skills-dir \"$CLAUDE_PLUGIN_ROOT/skills\""}]},
+      {"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/gate/spec-approval-gate.py\" guard-edit --skills-dir \"$CLAUDE_PLUGIN_ROOT/skills\"", "onFailure": "block"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/gate/spec-approval-gate.py\" guard-bash --skills-dir \"$CLAUDE_PLUGIN_ROOT/skills\"", "onFailure": "block"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/deps/install-ask-hook.py\""}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/gate/spec-approval-gate.py\" record --skills-dir \"$CLAUDE_PLUGIN_ROOT/skills\""}]}
+    ],
+    "SessionStart": [
+      {"matcher": "startup", "hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/deps/session-notice.py\"", "timeout": 10}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/gate/spec-approval-gate.py\" plan-changed --skills-dir \"$CLAUDE_PLUGIN_ROOT/skills\""}]}
+    ]
+  }
+}

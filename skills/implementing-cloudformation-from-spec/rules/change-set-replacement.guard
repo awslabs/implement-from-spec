@@ -1,0 +1,48 @@
+# change-set-replacement.guard: no existing resource is replaced by a change set unless a ruling covers it.
+#
+# Input: the JSON that `aws cloudformation describe-change-set --output json` prints (read-only call).
+# Adapted from the deployment-safety use case in the AWS CloudFormation Guard User Guide: "validate
+# CloudFormation change sets against policy rules to prevent changes that result in resource replacement,
+# such as renaming an Amazon DynamoDB table" (https://docs.aws.amazon.com/cfn-guard/latest/ug/what-is-guard.html).
+#
+# Replacement values: the API Reference lists `True | False | Conditional`
+# (https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_ResourceChange.html); the User
+# Guide's change-set samples show `Conditionally`
+# (https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-changesets-samples.html).
+# Both spellings are treated as a replacement.
+#
+# A FAIL names each offending change by its path, /Changes/<n>/ResourceChange/..., whose LogicalResourceId
+# is in the same document. The rule has no allowlist on purpose: the skill compares each failing logical
+# ID with the ledger's Rulings, and a replacement no ruling covers stops the run. A rule whose filter
+# selects no change evaluates SKIP. Exit codes: 0 pass, 19 a rule failed, 5 unreadable rule or data.
+#
+# Usage (the change set JSON is evidence and lives with the plan):
+#   cfn-guard validate --rules <PLUGIN_ROOT>/skills/implementing-cloudformation-from-spec/rules/change-set-replacement.guard \
+#       --data ai-planning/<slug>.changeset-<stack>.json --show-summary none --structured --output-format json
+# Self-test:
+#   cfn-guard test --rules-file change-set-replacement.guard --test-data change-set-replacement_tests.yaml
+
+let resource_changes = Changes[ Type == 'Resource' ].ResourceChange
+
+rule NO_REPLACEMENT_OF_EXISTING_RESOURCES when %resource_changes !empty {
+    %resource_changes[ Action == 'Modify' ] {
+        Replacement not in ['True', 'Conditional', 'Conditionally']
+        <<
+            Violation: the change set replaces an existing resource (Replacement True or Conditional), which
+            creates a new physical resource and, under the default UpdateReplacePolicy, deletes the old one.
+            Fix: change the template so the property update needs no replacement, or record a ruling the
+            user agreed to for this logical ID before the change set is executed.
+        >>
+    }
+}
+
+rule NO_REMOVAL_WITHOUT_RETENTION when %resource_changes !empty {
+    %resource_changes[ Action == 'Remove' ] {
+        PolicyAction in ['Retain', 'Snapshot']
+        <<
+            Violation: the change set removes a resource and deletes it (PolicyAction Delete or not set).
+            Fix: keep the resource in the template, or set DeletionPolicy Retain or Snapshot and record a
+            ruling the user agreed to.
+        >>
+    }
+}

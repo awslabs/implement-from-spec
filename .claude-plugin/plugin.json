@@ -1,0 +1,67 @@
+{
+  "name": "implement-from-spec",
+  "displayName": "Implement from Spec",
+  "version": "0.1.0",
+  "description": "Spec-driven, approval-gated implementation skills for Terraform, AWS CDK, CloudFormation, Java and Python: a code-free plan the user approves, implementation in waves, the stack's checks, review, and no deploy without explicit approval",
+  "author": {"name": "Denis Demichev", "email": "ddemich@amazon.com"},
+  "keywords": ["spec-driven", "terraform", "cdk", "cloudformation", "java", "python", "aws"],
+  "userConfig": {
+    "external_review": {
+      "type": "string",
+      "title": "External reviewer",
+      "description": "Optional second-family code review after the Claude review, off by default. off: no change content goes to a non-Claude model. bedrock-gpt: OpenAI GPT-6 Astra on Amazon Bedrock in your AWS account; it sends the plan, the rules files, the review focus, the in-scope specification files and the filtered diff. command: your own reviewer CLI (prompt on stdin, answer on stdout)",
+      "options": [
+        "off",
+        "bedrock-gpt",
+        "command"
+      ],
+      "default": "off"
+    },
+    "external_review_auth": {
+      "type": "string",
+      "title": "External reviewer authentication",
+      "description": "For bedrock-gpt. aws-profile: the bedrock-runtime Converse API through the AWS CLI with AWS credentials (SigV4, SSO profiles work). api-key: the bedrock-mantle Responses API with a Bedrock API key exported as IMPLEMENT_FROM_SPEC_BEDROCK_API_KEY. AWS_BEARER_TOKEN_BEDROCK is never used",
+      "options": [
+        "aws-profile",
+        "api-key"
+      ],
+      "default": "aws-profile"
+    },
+    "external_review_aws_profile": {
+      "type": "string",
+      "title": "External reviewer AWS profile",
+      "description": "AWS profile for aws-profile authentication. Empty: the default credential chain. It may differ from the account Claude Code uses"
+    },
+    "external_review_region": {
+      "type": "string",
+      "title": "External reviewer Region",
+      "description": "AWS Region for the reviewer. Empty: AWS_REGION, then AWS_DEFAULT_REGION, then us-east-1. The default model needs a US or Canada Region (bedrock-runtime) or us-east-1 / us-west-2 (bedrock-mantle)"
+    },
+    "external_review_model": {
+      "type": "string",
+      "title": "External reviewer model",
+      "description": "Model or inference profile ID. Empty: us.openai.gpt-6-astra (aws-profile, bedrock-runtime) or openai.gpt-6-astra (api-key, bedrock-mantle)"
+    },
+    "external_review_command": {
+      "type": "string",
+      "title": "External reviewer command",
+      "description": "For command: the reviewer command line, split into arguments like a shell line and run without a shell. It reads the prompt on stdin and prints the answer"
+    },
+    "external_review_policy": {
+      "type": "string",
+      "title": "External review policy",
+      "description": "optional: when the reviewer cannot run, the skill reports why and continues with the Claude review. required: the run is reported as verification incomplete instead",
+      "options": [
+        "optional",
+        "required"
+      ],
+      "default": "optional"
+    },
+    "setup_session_notice": {
+      "type": "boolean",
+      "title": "Setup notice at session start",
+      "description": "On: a new session gets one line suggesting /implement-from-spec:setup when the dependency check has never run on this machine or last found a required tool missing. It reads the check's saved result and runs no tool. Off: no notice",
+      "default": true
+    }
+  }
+}

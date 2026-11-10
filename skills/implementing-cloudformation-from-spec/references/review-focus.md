@@ -1,0 +1,10 @@
+AWS CloudFormation templates in YAML, implementing specification items; the pipeline deploys them through change sets, some templates use the AWS::LanguageExtensions transform (Fn::ForEach). Look hardest at:
+- Fidelity to the specification items: logical IDs, parameter and registry keys, resource names and values exactly as the items and the plan's Global constraints state them; anything the items ask for that is missing, stubbed or not wired into the stack order and parameters
+- Stateful resources (tables, buckets, keys, user pools, log groups holding audit data) without both DeletionPolicy and UpdateReplacePolicy (both default to Delete), or a change that would replace or delete one; a property change on an existing resource whose update behaviour is Replacement; changed logical IDs, including Fn::ForEach tokens
+- IAM: every action named and minimal, resources scoped with pseudo parameters, no wildcard without a stated reason, trust policies limited to the intended principal; action names that may not exist ("verify in the service authorization reference")
+- Secrets or identifiers in parameters, defaults, literals, Metadata or Outputs; public exposure not required by the items
+- LanguageExtensions rules: literal Transform value, long-form Fn::ForEach/Fn::Length/Fn::ToJsonString only, functions only in Resources, Conditions and Outputs, no update path that relies on --use-previous-template
+- Quotas after loop expansion (500 resources, 200 outputs, 200 parameters), unconstrained parameters, unused parameters or conditions, cross-stack values published under the wrong name
+- Guard rules without passing and failing fixtures; template tests that would pass if the resource were removed
+- Resource properties or attributes that may not exist or may need replacement on update: say "verify in the Template Reference" rather than asserting
+- Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

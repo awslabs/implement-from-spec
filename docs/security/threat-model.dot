@@ -1,0 +1,87 @@
+// Data flows and trust boundaries of the implement-from-spec plugin (docs/security/threat-model.md).
+// Edge numbers are the flows of the threat model's "Data flows" list. Only what a release ships is drawn;
+// the maintainers' test harness is out of scope.
+// Render: dot -Tsvg docs/security/threat-model.dot -o docs/security/threat-model.svg
+digraph threat_model {
+  graph [rankdir=LR, newrank=true, fontname="Helvetica", fontsize=13, nodesep=0.35, ranksep=1.1, pad=0.3,
+         splines=true, label="implement-from-spec: data flows (numbered) and trust boundaries (dashed)",
+         labelloc=t];
+  node  [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#FFFFFF",
+         color="#444444", margin="0.15,0.08"];
+  edge  [fontname="Helvetica-Bold", fontsize=10, fontcolor="#1A1A1A", color="#666666", arrowsize=0.7];
+
+  user [label="User", shape=ellipse, fillcolor="#E8F0FE"];
+
+  subgraph cluster_workstation {
+    label="B7  user's workstation (one OS user)"; style="dashed"; color="#888888"; fontcolor="#444444";
+
+    subgraph cluster_claude {
+      label="B1  Claude Code session"; style="dashed"; color="#1A73E8"; fontcolor="#1A73E8";
+      claude [label="Claude Code\nmodel loop, tools,\npermission prompts", fillcolor="#E8F0FE"];
+      subagents [label="Subagents\n(reviewers read-only)", fillcolor="#E8F0FE"];
+    }
+
+    settings [label="Claude settings\n(managed, user):\nplugin options", shape=note, fillcolor="#F1F3F4"];
+
+    subgraph cluster_plugin {
+      label="B2  plugin hooks and scripts (hooks/hooks.json)"; style="dashed"; color="#188038"; fontcolor="#188038";
+      gate [label="Approval gate (K22)\npython3 -I", fillcolor="#E6F4EA"];
+      askhook [label="Install ask hook", fillcolor="#E6F4EA"];
+      notice [label="SessionStart notice", fillcolor="#E6F4EA"];
+      review [label="spec-external-review.py\ncore/scripts/bedrock-gpt", fillcolor="#E6F4EA"];
+      installer [label="Setup: doctor.py,\ninstall.py", fillcolor="#E6F4EA"];
+      gatestate [label="Gate state\n$CLAUDE_PLUGIN_DATA/\nspec-approval-gate", shape=cylinder, fillcolor="#E6F4EA"];
+      reviewhome [label="Review home\n~/.local/state/\nspec-external-review", shape=cylinder, fillcolor="#E6F4EA"];
+      setupstate [label="Setup state\n~/.local/state/\nimplement-from-spec/setup", shape=cylinder, fillcolor="#E6F4EA"];
+    }
+
+    subgraph cluster_repo {
+      label="B3  project repository (untrusted data)"; style="dashed"; color="#C5221F"; fontcolor="#C5221F";
+      repo [label="Specs, CLAUDE.md, code,\nfixtures, ai-planning/", shape=folder, fillcolor="#FCE8E6"];
+    }
+  }
+
+  inference [label="Claude inference\n(subscription, API key\nor Amazon Bedrock)", fillcolor="#F1F3F4"];
+
+  subgraph cluster_reviewer {
+    label="B4  external reviewer (off by default)"; style="dashed"; color="#B06000"; fontcolor="#B06000";
+    reviewer [label="GPT-6 Astra on Amazon Bedrock\n(Converse or API key),\nor a user-configured command", fillcolor="#FEF7E0"];
+  }
+  subgraph cluster_aws {
+    label="B5  AWS accounts"; style="dashed"; color="#B06000"; fontcolor="#B06000";
+    aws [label="Live resources\nand state", fillcolor="#FEF7E0"];
+  }
+  subgraph cluster_vendors {
+    label="B6  vendor downloads"; style="dashed"; color="#B06000"; fontcolor="#B06000";
+    vendors [label="Vendor hosts\n(HTTPS only)", fillcolor="#FEF7E0"];
+  }
+
+  { rank=same; claude; subagents; }
+  { rank=same; gate; askhook; notice; review; installer; }
+  { rank=same; gatestate; reviewhome; setupstate; }
+  { rank=same; inference; reviewer; aws; vendors; }
+
+  user -> claude [label="1"];
+  claude -> user [label="2"];
+  claude -> inference [label="3"];
+  claude -> gate [label="4"];
+  gate -> gatestate [label="5"];
+  claude -> repo [label="6"];
+  repo -> claude [label="7"];
+  claude -> subagents [label="8"];
+  claude -> review [label="9"];
+  review -> repo [label="10", dir=back];
+  review -> reviewer [label="11 (opt-in)", style=dashed];
+  review -> reviewhome [label="12"];
+  claude -> aws [label="13"];
+  claude -> askhook [label="14"];
+  claude -> installer [label="14", style=dotted];
+  askhook -> user [label="15", style=dashed, constraint=false];
+  askhook -> setupstate [label="15", dir=back, style=dashed];
+  installer -> vendors [label="16"];
+  installer -> setupstate [label="17"];
+  settings -> review [label="18"];
+  settings -> notice [label="18"];
+  claude -> notice [label="19"];
+  notice -> setupstate [label="19", dir=back];
+}

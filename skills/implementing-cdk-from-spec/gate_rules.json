@@ -1,0 +1,173 @@
+{
+  "_doc": "Approval-gate rules for implementing-cdk-from-spec (core/gate/spec-approval-gate.py, plugin mode). Each setting carries a why; each command rule carries examples that the gate's unit tests check. Rule ids start with cdk- because plugin mode merges every skill's rules and the gate's tests require unique, stack-prefixed ids. A rule whose decision is write decides nothing itself: its writes object names what the matched command writes as a side effect (paths relative to the directory it works in, directory_options, file_options, path_options, operands), and the gate judges that like any other write, so it is denied inside the project before approval.",
+  "writable_before_approval": ["ai-planning/", ".claude/"],
+  "writable_why": "Before approval only the plan, its ledger and planning notes may change. .claude/ holds tooling, not product.",
+  "approval_words": ["approve", "approved"],
+  "approval_why": "The skill asks the user to reply 'approve'. Looser words such as 'ok' or 'go' also answer unrelated questions and would unlock edits by accident.",
+  "command_rules": [
+    {
+      "id": "cdk-diff-creates-change-set",
+      "decision": "ask",
+      "match": {"programs": ["cdk", "aws-cdk"],
+                "args_regex": "^(?!.*\\s(?:--method[= ]template(?:\\s|$)|-m[= ]template(?:\\s|$)|--no-change-set(?:\\s|$)|--template(?:-path)?[= ]))\\S+\\s(?:.*\\s)?diff(?:\\s|$)"},
+      "why": "cdk diff --method auto (the default) and --method change-set create a CloudFormation change set with the deploy role (ref-cli-cmd-diff.html). It is the skill's replacement evidence, and it reaches a live account, so the user confirms each run. --method template uses the lookup role and creates nothing.",
+      "message": "this cdk diff creates a CloudFormation change set in the target account with the deploy role. Approve if this is the change-set diff the plan names, against the account you expect.",
+      "examples": {
+        "match": ["cdk diff", "cdk diff StorageStack --method change-set", "npx cdk diff --method=auto", "cdk --profile dev diff StorageStack", "cdk diff --change-set"],
+        "no_match": ["cdk diff --method template", "cdk diff StorageStack --method=template", "cdk diff --no-change-set", "cdk diff StorageStack --template cdk.out/StorageStack.template.json", "cdk synth"]
+      }
+    },
+    {
+      "id": "cdk-deploys-and-live-changes",
+      "decision": "ask",
+      "match": {"programs": ["cdk", "aws-cdk"],
+                "args_regex": "^\\S+\\s(?:.*\\s)?(?:deploy|destroy|bootstrap|import|watch|orphan|publish-assets)(?:\\s|$)"},
+      "why": "These change an account: deploy and watch deploy stacks, destroy deletes them, bootstrap deploys the CDKToolkit stack, import adopts existing resources, orphan detaches resources from a stack, publish-assets uploads assets (ref-cli-cmd.html). The skill stops at a validated app and the change-set diff; the operator deploys.",
+      "message": "this changes stacks or resources in an AWS account. The skill never deploys; approve only if you asked for this exact command.",
+      "examples": {
+        "match": ["cdk deploy StorageStack", "npx cdk deploy --all --require-approval never", "cdk destroy StorageStack --force", "cdk bootstrap aws://111122223333/us-east-1", "cdk import StorageStack", "cdk watch", "cdk --profile dev deploy", "npx aws-cdk deploy"],
+        "no_match": ["cdk synth", "cdk ls", "cdk synth StorageStack --quiet", "cdk diff --method template", "cdk docs"]
+      }
+    },
+    {
+      "id": "cdk-refactor-without-dry-run",
+      "decision": "ask",
+      "match": {"programs": ["cdk", "aws-cdk"],
+                "args_regex": "^(?!.*\\s--dry-run(?:\\s|=|$))\\S+\\s(?:.*\\s)?refactor(?:\\s|$)"},
+      "why": "cdk refactor calls CloudFormation's refactoring API and, in a non-interactive environment, proceeds without prompting (ref-cli-cmd-refactor.html). Only --dry-run, which prints the mapping without applying it, is planning evidence.",
+      "message": "this cdk refactor changes logical IDs in a deployed stack and does not prompt when run non-interactively. Approve only if the user asked for the refactor itself; the skill's evidence is cdk refactor --dry-run.",
+      "examples": {
+        "match": ["cdk refactor --unstable=refactor", "cdk refactor StorageStack --unstable=refactor --force", "cdk refactor --unstable=refactor --override-file=overrides.json", "cdk refactor --unstable=refactor --revert overrides.json"],
+        "no_match": ["cdk refactor --unstable=refactor --dry-run", "cdk refactor StorageStack --dry-run --unstable=refactor", "cdk synth"]
+      }
+    },
+    {
+      "id": "cdk-validate-service-side",
+      "decision": "ask",
+      "match": {"programs": ["cdk", "aws-cdk"], "args_regex": "^\\S+\\s(?:.*\\s)?validate(?:\\s|$)"},
+      "why": "The CloudFormation best-practices page says cdk validate runs CloudFormation pre-deployment validation, which is a service-side check of an account; the CDK CLI command reference read on 2026-10-16 does not list the command. The offline equivalent, the CloudFormationValidatePlugin, already runs in cdk synth.",
+      "message": "cdk validate runs CloudFormation's service-side pre-deployment validation against an account. Approve only if you want that account-level check now.",
+      "examples": {
+        "match": ["cdk validate", "cdk validate StorageStack"],
+        "no_match": ["cdk synth --validation", "cdk synth"]
+      }
+    },
+    {
+      "id": "cdk-aws-cli-read-only",
+      "decision": "ask",
+      "match": {"programs": ["aws"], "aws_mutating": true,
+                "read_only_verbs": ["describe", "list", "get", "lookup", "search", "batch-get", "head", "help", "wait", "ls", "filter", "scan", "query", "validate", "simulate", "estimate", "detect"]},
+      "why": "Planning and verification are read-only. A mutating AWS call from the model bypasses the CDK app and the pipeline, and drifts the stacks.",
+      "message": "this AWS CLI call can change live resources outside the CDK app. Approve only if you intend it.",
+      "examples": {
+        "match": ["aws cloudformation execute-change-set --change-set-name c --stack-name s", "aws cloudformation delete-change-set --change-set-name c --stack-name s", "aws s3 rm s3://bucket/key", "aws ssm put-parameter --name /x --value y"],
+        "no_match": ["aws cloudformation describe-change-set --change-set-name c --stack-name s", "aws cloudformation get-template --stack-name s", "aws sts get-caller-identity", "aws --version"]
+      }
+    },
+    {
+      "id": "cdk-python-package-install",
+      "decision": "ask",
+      "match": {"programs": ["pip", "pip3", "pipx", "uv", "poetry"], "args_regex": "(^|\\s)(install|add|inject)(\\s|$)"},
+      "why": "A new dependency (cdk-nag, a construct library, a test tool) is a design decision the approved plan names with its version. A package that fails to install may be a hallucinated or squatted name, so it never gets a silent substitute.",
+      "message": "this installs or adds a Python package. Approve only if the approved plan names it (and this exact version), or you want it anyway.",
+      "examples": {
+        "match": ["pip install cdk-nag", "python3 -m pip install -r requirements.txt", "uv add aws-cdk-lib==2.192.0", "pipx install cfn-lint"],
+        "no_match": ["pip show aws-cdk-lib", "pip list", "uv run pytest", "python3 -m pytest tests"]
+      }
+    },
+    {
+      "id": "cdk-node-package-install",
+      "decision": "ask",
+      "match": {"programs": ["npm", "pnpm", "yarn"], "subcommands": ["install", "i", "add", "ci", "update", "up"]},
+      "why": "The CDK CLI and any Node-based validation plugin are installed by the user's choice: a missing tool is reported, never installed silently, and a failed install never gets a substitute package.",
+      "message": "this installs Node packages. Approve only if you want this exact package installed.",
+      "examples": {
+        "match": ["npm install -g aws-cdk", "npm i cdk-nag", "yarn add cdk-nag", "npm ci"],
+        "no_match": ["npm ls -g aws-cdk", "npm run build", "npx cdk synth"]
+      }
+    },
+    {
+      "id": "cdk-maven-dependency-change",
+      "decision": "ask",
+      "match": {"programs": ["mvn", "mvnw"],
+                "args_regex": "(^|\\s)(dependency:get|dependency:copy|install:install-file|versions:(use|update)-[\\w-]+|versions:set)(\\s|$)"},
+      "why": "In a Java CDK app dependencies live in pom.xml, and Maven installs them on the next build (work-with-cdk-java.html); a pom.xml edit is a gated write. These goals fetch or rewrite dependencies outside that path, so the user confirms them.",
+      "message": "this fetches or rewrites Maven dependencies outside pom.xml review. Approve only if the approved plan names the change.",
+      "examples": {
+        "match": ["mvn dependency:get -Dartifact=io.github.cdklabs:cdknag:2.0.0", "./mvnw versions:use-latest-releases", "mvn -q versions:set -DnewVersion=1.1"],
+        "no_match": ["mvn -q compile", "mvn test", "mvn dependency:tree"]
+      }
+    },
+    {
+      "id": "cdk-tool-install",
+      "decision": "ask",
+      "match": {"programs": ["brew"], "subcommands": ["install", "reinstall", "upgrade"]},
+      "why": "Validation tools (cfn-lint, cfn-guard, the CDK CLI) are installed by the user's choice; a missing tool is reported, not installed silently.",
+      "message": "this installs software. Approve only if you want this exact package installed.",
+      "examples": {
+        "match": ["brew install cloudformation-guard", "brew upgrade aws-cdk"],
+        "no_match": ["brew list", "brew info aws-cdk"]
+      }
+    },
+    {
+      "id": "cdk-synth-writes-cloud-assembly",
+      "decision": "write",
+      "match": {"programs": ["cdk", "aws-cdk"], "args_regex": "^\\S+\\s(?:.*\\s)?(?:synth|synthesize|ls|list|diff|deploy|watch|destroy|import|metadata|refactor|drift|migrate|init|acknowledge|ack)(?:\\s|$)|^\\S+\\s(?:.*\\s)?context\\s(?:.*\\s)?--(?:reset|clear)(?:\\s|=|$)"},
+      "writes": {"paths": ["cdk.out", "cdk.context.json"], "path_options": ["--output", "-o"]},
+      "why": "Commands that synthesise the app write the cloud assembly to cdk.out (ref-cli-cmd-synth.html), and when a lookup's context value is missing the CLI \"stores the resulting context information in the cdk.context.json file\" (context.html); cdk context --reset or --clear and acknowledge rewrite that file, and the app command itself runs in the project (target/ for a Java app, __pycache__/ for Python). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this cdk command synthesises the app where it runs, writing cdk.out/ and possibly cdk.context.json and the app's build output. Before approval synthesise a copy outside the project: mkdir -p \"${TMPDIR:-/tmp}/<slug>-synth\" && tar -C . --exclude ./cdk.out --exclude ./.git -cf - . | tar -C \"${TMPDIR:-/tmp}/<slug>-synth\" -xf -, then, in a separate Bash call, run cdk synth --quiet in that directory. Write the path with ${TMPDIR:-/tmp}: an unset $TMPDIR or a $(mktemp -d) result is a target the gate cannot resolve, and it is denied.",
+      "examples": {
+        "match": ["cdk synth --quiet", "npx cdk --profile dev ls", "cdk diff --method template", "cdk context --clear", "cdk acknowledge 31885"],
+        "no_match": ["cdk docs", "cdk --version", "cdk context", "cdk doctor"]
+      }
+    },
+    {
+      "id": "cdk-node-install-writes-node-modules",
+      "decision": "write",
+      "match": {"programs": ["npm", "pnpm", "yarn", "bun"], "args_regex": "^(?!.*\\s(?:-g|--global|--dry-run)(?:\\s|$))(?:\\S+(?:\\s+\\S+)*?\\s+(?:install|i|ci|add|update|up|upgrade|remove|rm|uninstall|un)(?:\\s|$)|\\S*yarn$)"},
+      "writes": {"paths": ["node_modules", "package-lock.json"], "directory_options": ["--prefix", "-C", "--dir"]},
+      "why": "npm install installs into node_modules and updates package-lock.json (npm install); --prefix (-C) \"forces non-global commands to run in the specified folder\" (npm config), and pnpm -C/--dir runs \"as if pnpm was started in <path>\" (pnpm CLI). -g installs into the global prefix instead. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this installs Node packages into node_modules/ in the project. Planning installs nothing: report a missing package, name it in the plan, and install after approval.",
+      "examples": {
+        "match": ["npm ci", "npm --prefix /w install", "pnpm -C app add cdk-nag", "yarn"],
+        "no_match": ["npm install -g aws-cdk", "npm ls", "npm run build"]
+      }
+    },
+    {
+      "id": "cdk-maven-build-writes-target",
+      "decision": "write",
+      "match": {"programs": ["mvn", "mvnw", "mvnd"], "args_regex": "(?:^|\\s)(?:(?:pre-|post-)?clean|initialize|(?:generate|process)-(?:test-)?(?:sources|resources)|(?:test-)?compile|process-(?:test-)?classes|test|prepare-package|package|(?:pre-|post-)?integration-test|verify|install|deploy|(?:pre-|post-)?site|site-deploy|(?:[\\w.-]+:)?(?:maven-)?(?:compiler|surefire|failsafe|jar|war|shade|assembly|resources|jacoco|exec|spring-boot|antrun)(?:-maven-plugin|-plugin)?(?::[\\w.-]+)?:[\\w-]+)(?:\\s|$)"},
+      "writes": {"paths": ["target"], "file_options": ["-f", "--file"]},
+      "why": "Maven's lifecycle phases and the build plugins' goals write the build output into target/ (\"The target directory is used to house all output of the build\", Maven standard directory layout), in the project of the pom -f names or the working directory. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. After approval the build is routine verification and the write is allowed.",
+      "message": "this Maven build writes target/ in the project. Planning is read-only: read pom.xml and the sources instead of building, and build after the plan is approved.",
+      "examples": {
+        "match": ["./mvnw -q verify", "mvn -q -B clean test", "mvn -f sub/pom.xml compile", "mvn org.apache.maven.plugins:maven-surefire-plugin:3.2.5:test", "mvn exec:java -Dexec.mainClass=App"],
+        "no_match": ["mvn --version", "./mvnw -q dependency:tree", "mvn versions:display-dependency-updates", "mvn help:effective-pom"]
+      }
+    },
+    {
+      "id": "cdk-venv-writes-environment",
+      "decision": "write",
+      "match": {"programs": ["venv"]},
+      "writes": {"operands": true},
+      "why": "python -m venv DIR \"creates the target directory\" with the environment in it (Python venv documentation). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this creates a virtual environment in the directory it names. Never refresh the project's environment before approval; a missing or broken environment is reported with the setup command from the project's rules.",
+      "examples": {
+        "match": ["python3 -m venv .venv", "python3 -m venv --clear .venv"],
+        "no_match": ["python3 -m pytest", "python3 -c 'import venv'"]
+      }
+    },
+    {
+      "id": "cdk-pip-writes-environment",
+      "decision": "write",
+      "match": {"programs": ["pip", "pip3"], "subcommands": ["install", "uninstall"], "args_regex": "^(?!.*\\s(?:--user|-t|--target|--prefix|--root|--dry-run)(?:[=\\s]|$))"},
+      "writes": {"paths": ["${VIRTUAL_ENV:-}", "{program_dir}/.."]},
+      "why": "Inside a virtual environment pip \"will install Python packages into a virtual environment without needing to be told to do so\" (Python venv documentation): the environment VIRTUAL_ENV names, or the one whose bin/ holds the pip or python run (.venv/bin/pip, .venv/bin/python -m pip). A virtual environment inside the project is part of it. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. Outside a virtual environment (and with --user, --target, --prefix or --root, which the gate models separately) the install lands outside the project and only the dependency rule asks.",
+      "message": "this pip call installs into or removes from a virtual environment inside the project. Planning installs nothing: name the dependency in the plan, and install it after approval.",
+      "examples": {
+        "match": [".venv/bin/pip install requests", ".venv/bin/python -m pip install -r requirements.txt", "VIRTUAL_ENV=/w/.venv pip install requests"],
+        "no_match": ["pip install --user cfn-lint", "pip show requests", "pip list", ".venv/bin/pip install --dry-run requests"]
+      }
+    }
+  ]
+}

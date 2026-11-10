@@ -1,0 +1,298 @@
+{
+  "_doc": "Approval-gate (K22) rules for implementing-python-from-spec, read by the plugin's core/gate/spec-approval-gate.py; the file's presence is what gates this skill. Rule IDs carry the skill's prefix because the gate merges every skill's rules by ID. Each setting carries a why; each command rule carries examples that the gate's unit tests execute. A rule whose decision is write decides nothing itself: its writes object names what the matched command writes as a side effect (paths relative to the directory it works in, directory_options, file_options, path_options, operands), and the gate judges that like any other write, so it is denied inside the project before approval.",
+  "writable_before_approval": [
+    "ai-planning/",
+    ".claude/"
+  ],
+  "writable_why": "Before approval only the plan, its ledger and planning notes may change. .claude/ holds tooling, not product.",
+  "approval_words": [
+    "approve",
+    "approved"
+  ],
+  "approval_why": "The skill asks the user to reply 'approve'. Looser words such as 'ok' or 'go' also answer unrelated questions and would unlock edits by accident.",
+  "command_rules": [
+    {
+      "id": "python-dependency-from-plan-only",
+      "decision": "ask",
+      "match": {
+        "programs": [
+          "pip",
+          "pip3",
+          "pipx",
+          "uv",
+          "poetry",
+          "pdm",
+          "conda",
+          "pipenv"
+        ],
+        "args_regex": "(^|\\s)(install|add|inject)(\\s|$)|(^|\\s)--with(-requirements)?(\\s|=)"
+      },
+      "why": "A new dependency is a design decision the approved plan names with its version. A package that fails to install may be a hallucinated or squatted name, so it never gets a silent substitute.",
+      "message": "this installs or adds a package. Approve only if the approved plan names it (and this exact version), or you want it anyway.",
+      "examples": {
+        "match": [
+          "uv add pydantic==2.12.0",
+          "pip install requests",
+          "uv pip install -r requirements.txt",
+          "poetry add boto3",
+          "python3 -m pip install requests",
+          "uv run --with requests python x.py",
+          "pipenv install requests"
+        ],
+        "no_match": [
+          "uv sync --locked",
+          "uv run pytest",
+          "pip show pydantic",
+          "uv lock --check"
+        ]
+      }
+    },
+    {
+      "id": "python-lockfile-from-plan-only",
+      "decision": "ask",
+      "match": {
+        "programs": [
+          "uv",
+          "poetry",
+          "pdm",
+          "pipenv",
+          "pip-compile"
+        ],
+        "args_regex": "^(?!.*\\s--(check|locked|frozen|dry-run)(=|\\s|$))\\S+(\\s+-\\S+)*\\s+(lock|sync|remove|update)(\\s|$)|^\\S+(\\s+-\\S+)*\\s+pip\\s+compile(\\s|$)|^\\S*pip-compile(\\s|$)"
+      },
+      "why": "A lock file change is a dependency change: it is the approved plan's to describe (which tool regenerates it, and why). uv run and uv sync update the lock on their own unless --locked or --frozen is passed, so the skill uses those flags and asks before anything else rewrites a lock.",
+      "message": "this can rewrite a lock file or remove a dependency. Approve only if the approved plan describes this lock change, or you want it anyway.",
+      "examples": {
+        "match": [
+          "uv lock",
+          "uv lock --upgrade-package boto3",
+          "uv sync",
+          "uv remove requests",
+          "poetry lock",
+          "pdm update",
+          "pipenv lock",
+          "pip-compile requirements.in",
+          "uv pip compile requirements.in -o requirements.txt"
+        ],
+        "no_match": [
+          "uv lock --check",
+          "uv sync --locked",
+          "uv sync --frozen",
+          "uv run --locked pytest -k sync",
+          "poetry check --lock",
+          "pdm list"
+        ]
+      }
+    },
+    {
+      "id": "python-operator-deploys",
+      "decision": "ask",
+      "match": {
+        "programs": [
+          "sam",
+          "cdk",
+          "serverless",
+          "sls"
+        ],
+        "args_regex": "^\\S+(\\s+-\\S+)*\\s+(deploy|destroy|bootstrap|watch|sync|delete|remove)(\\s|$)"
+      },
+      "why": "Implementation and verification are local. A deploy, a sync to the cloud or a stack deletion changes a live account, so it is the operator's step, approved explicitly in the session; the skill hands the operator the command instead.",
+      "message": "this deploys, syncs or deletes live resources. Approve only if you intend this change to your AWS account now.",
+      "examples": {
+        "match": [
+          "sam deploy --guided",
+          "sam sync --watch --stack-name app",
+          "sam delete --stack-name app",
+          "cdk deploy --all",
+          "npx cdk destroy AppStack",
+          "cdk bootstrap",
+          "serverless deploy --stage dev",
+          "sls remove"
+        ],
+        "no_match": [
+          "sam build",
+          "sam local invoke Fn -e events/event.json",
+          "sam validate --lint",
+          "cdk synth",
+          "serverless print"
+        ]
+      }
+    },
+    {
+      "id": "python-aws-cli-read-only",
+      "decision": "ask",
+      "match": {
+        "programs": [
+          "aws"
+        ],
+        "aws_mutating": true,
+        "read_only_verbs": [
+          "describe",
+          "list",
+          "get",
+          "lookup",
+          "search",
+          "batch-get",
+          "head",
+          "help",
+          "wait",
+          "ls",
+          "filter",
+          "scan",
+          "query",
+          "validate",
+          "simulate",
+          "estimate"
+        ],
+        "read_only_operations": [
+          "test-event-pattern",
+          "test-dns-answer"
+        ]
+      },
+      "why": "Implementation and verification are local or read-only. A mutating AWS call from the model changes a shared account outside the pipeline.",
+      "message": "this AWS CLI call can change live resources. Approve only if you intend it.",
+      "examples": {
+        "match": [
+          "aws dynamodb put-item --table-name t --item file://i.json",
+          "aws lambda update-function-code --function-name f --zip-file fileb://f.zip",
+          "aws s3 cp out.json s3://bucket/key",
+          "aws stepfunctions test-state --definition file://d.json"
+        ],
+        "no_match": [
+          "aws sts get-caller-identity",
+          "aws events test-event-pattern --event-pattern file://p.json --event file://e.json",
+          "aws dynamodb describe-table --table-name t",
+          "aws dynamodb batch-get-item --request-items file://r.json"
+        ]
+      }
+    },
+    {
+      "id": "python-venv-writes-environment",
+      "decision": "write",
+      "match": {
+        "programs": [
+          "venv"
+        ]
+      },
+      "writes": {
+        "operands": true
+      },
+      "why": "python -m venv DIR \"creates the target directory\" with the environment in it (Python venv documentation). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this creates a virtual environment in the directory it names. Never refresh the project's environment before approval; a missing or broken environment is reported with the setup command from the project's rules.",
+      "examples": {
+        "match": [
+          "python3 -m venv .venv",
+          "python3 -m venv --clear .venv"
+        ],
+        "no_match": [
+          "python3 -m pytest",
+          "python3 -c 'import venv'"
+        ]
+      }
+    },
+    {
+      "id": "python-pip-writes-environment",
+      "decision": "write",
+      "match": {
+        "programs": [
+          "pip",
+          "pip3"
+        ],
+        "subcommands": [
+          "install",
+          "uninstall"
+        ],
+        "args_regex": "^(?!.*\\s(?:--user|-t|--target|--prefix|--root|--dry-run)(?:[=\\s]|$))"
+      },
+      "writes": {
+        "paths": [
+          "${VIRTUAL_ENV:-}",
+          "{program_dir}/.."
+        ]
+      },
+      "why": "Inside a virtual environment pip \"will install Python packages into a virtual environment without needing to be told to do so\" (Python venv documentation): the environment VIRTUAL_ENV names, or the one whose bin/ holds the pip or python run (.venv/bin/pip, .venv/bin/python -m pip). A virtual environment inside the project is part of it. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. Outside a virtual environment (and with --user, --target, --prefix or --root, which the gate models separately) the install lands outside the project and only the dependency rule asks.",
+      "message": "this pip call installs into or removes from a virtual environment inside the project. Planning installs nothing: name the dependency in the plan, and install it after approval.",
+      "examples": {
+        "match": [
+          ".venv/bin/pip install requests",
+          ".venv/bin/python -m pip install -r requirements.txt",
+          "VIRTUAL_ENV=/w/.venv pip install requests"
+        ],
+        "no_match": [
+          "pip install --user cfn-lint",
+          "pip show requests",
+          "pip list",
+          ".venv/bin/pip install --dry-run requests"
+        ]
+      }
+    },
+    {
+      "id": "python-uv-pip-writes-environment",
+      "decision": "write",
+      "match": {
+        "programs": [
+          "uv"
+        ],
+        "subcommands": [
+          "pip install",
+          "pip sync",
+          "pip uninstall"
+        ],
+        "args_regex": "^(?!.*\\s(?:--system|--target|--prefix|--dry-run)(?:[=\\s]|$))"
+      },
+      "writes": {
+        "paths": [
+          "${VIRTUAL_ENV:-.venv}"
+        ]
+      },
+      "why": "uv pip install, sync and uninstall change the environment VIRTUAL_ENV names, else \"a virtual environment at .venv in the current directory, or in the nearest parent directory\" (uv documentation, Python environments); --system targets the system interpreter instead. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this uv pip call changes the project's virtual environment. Planning installs nothing: name the dependency in the plan, and install it after approval.",
+      "examples": {
+        "match": [
+          "uv pip install requests",
+          "uv pip sync requirements.txt"
+        ],
+        "no_match": [
+          "uv pip install --system cfn-lint",
+          "uv pip list",
+          "uv pip show requests"
+        ]
+      }
+    },
+    {
+      "id": "python-sam-build-writes-artifacts",
+      "decision": "write",
+      "match": {
+        "programs": [
+          "sam"
+        ],
+        "subcommands": [
+          "build"
+        ]
+      },
+      "writes": {
+        "paths": [
+          ".aws-sam"
+        ],
+        "path_options": [
+          "--build-dir",
+          "-b",
+          "--cache-dir"
+        ]
+      },
+      "why": "sam build stores the built artifacts in its build directory (--build-dir, under .aws-sam/ by default) and its cache in .aws-sam/cache (AWS SAM CLI sam build reference). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this sam build writes .aws-sam/ (or the build directory it names) in the project. Build after the plan is approved.",
+      "examples": {
+        "match": [
+          "sam build",
+          "sam build --use-container",
+          "sam build -b out/build"
+        ],
+        "no_match": [
+          "sam validate --lint",
+          "sam local invoke Fn -e events/event.json"
+        ]
+      }
+    }
+  ]
+}

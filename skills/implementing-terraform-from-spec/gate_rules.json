@@ -1,0 +1,101 @@
+{
+  "_doc": "K22 rules for implementing-terraform-from-spec, read by the plugin's approval gate (core/gate/spec-approval-gate.py), which gates every skill whose directory holds a gate_rules.json. Each setting carries a why; each command rule carries examples that the gate's unit tests check. A rule whose decision is write decides nothing itself: its writes object names what the matched command writes as a side effect (paths relative to the directory it works in, directory_options, file_options, path_options, operands), and the gate judges that like any other write, so it is denied inside the project before approval.",
+  "writable_before_approval": ["ai-planning/", ".claude/"],
+  "writable_why": "Before approval only the plan, its ledger and planning notes may change. .claude/ holds tooling, not product.",
+  "approval_words": ["approve", "approved"],
+  "approval_why": "The skill asks the user to reply 'approve'. Looser words such as 'ok' or 'go' also answer unrelated questions and would unlock edits by accident.",
+  "command_rules": [
+    {
+      "id": "terraform-operator-applies",
+      "decision": "ask",
+      "match": {"programs": ["terraform", "tofu"], "subcommands": ["apply", "destroy", "import", "taint", "untaint", "force-unlock", "refresh", "state rm", "state mv", "state push", "state replace-provider", "workspace delete"]},
+      "why": "An apply touches live AWS state and may be hard to reverse; a state edit can orphan real resources. The skill stops at a targeted plan and the operator applies.",
+      "message": "this changes live infrastructure or Terraform state. The skill stops at the targeted plan and the operator applies. Approve only if you want this run now.",
+      "examples": {
+        "match": ["AWS_PROFILE=prod terraform -chdir=environment apply -var-file=envs/prod.tfvars", "terraform destroy -target=module.queue", "terraform -chdir=environment state rm module.old"],
+        "no_match": ["AWS_PROFILE=prod terraform -chdir=environment plan -var-file=envs/prod.tfvars -target=module.queue", "terraform -chdir=environment validate", "terraform fmt -check -recursive", "terraform -chdir=environment state list"]
+      }
+    },
+    {
+      "id": "terraform-live-plan-and-test",
+      "decision": "ask",
+      "match": {"programs": ["terraform", "tofu"], "subcommands": ["plan", "test"]},
+      "why": "A plan reads live state under whatever AWS profile is active, so the user confirms the account; terraform test runs apply by default and provisions real infrastructure unless its run blocks use command = plan or mock providers.",
+      "message": "this reads live AWS state (plan) or may create real resources (test). Check the AWS profile and account, and that test run blocks use command = plan or mocks, before approving.",
+      "examples": {
+        "match": ["AWS_PROFILE=dev terraform -chdir=environment plan -var-file=envs/dev.tfvars -target=module.queue", "terraform test"],
+        "no_match": ["terraform -chdir=environment validate", "terraform fmt -check -recursive", "terraform version"]
+      }
+    },
+    {
+      "id": "terraform-migrate-state",
+      "decision": "ask",
+      "match": {"programs": ["terraform", "tofu"], "args_regex": "(^|\\s)--?(migrate-state|force-copy)(=(?!(false|f|0|FALSE|False|F)(\\s|$))\\S*)?(\\s|$)"},
+      "why": "Migrating state moves the source of truth for live resources. -force-copy also enables -migrate-state and answers yes to its prompts (cli/commands/init); Terraform's flags take one or two dashes (Go flag package).",
+      "message": "this migrates Terraform state. Approve only if you intend it.",
+      "examples": {
+        "match": ["terraform -chdir=environment init -migrate-state", "terraform init --migrate-state", "terraform init -backend=false -force-copy", "terraform init -migrate-state=true"],
+        "no_match": ["terraform -chdir=environment init -backend-config=envs/prod-backend.hcl", "terraform init -backend=false -migrate-state=false", "terraform init -backend=false -force-copy=0"]
+      }
+    },
+    {
+      "id": "terraform-backend-init",
+      "decision": "ask",
+      "match": {"programs": ["terraform", "tofu"], "subcommands": ["init"],
+                "args_regex": "^(?!.*\\s--?(?:backend|cloud)=(?:false|f|0|FALSE|False|F)(?=\\s|$)(?!.*\\s--?(?:backend|cloud)(?:=|\\s|$)))"},
+      "why": "init with the backend enabled (the default) initializes the configured backend, so it connects to remote state under whatever AWS profile is active; -backend-config can point it at a production backend. -backend=false (or its alias -cloud=false, any Go boolean false, the last occurrence winning) skips backend initialization (cli/commands/init), and it is how cli/commands/validate prepares a directory for validation.",
+      "message": "this terraform init connects to the configured remote state backend under the active AWS profile. Check the profile, account and backend config before approving; for validation use init -backend=false.",
+      "examples": {
+        "match": ["AWS_PROFILE=prod terraform -chdir=environment init -backend-config=../envs/prod-backend.hcl", "terraform init", "tofu init -reconfigure", "terraform init -backend=false -backend=true", "terraform init -input=false -backend=true", "terraform init '-backend-config=key=example -backend=false'"],
+        "no_match": ["terraform -chdir=environment init -backend=false -input=false", "terraform -chdir=environment validate", "terraform init --backend=false", "tofu init -cloud=false -upgrade", "terraform -chdir=environment init -backend=true -backend=false", "terraform init -backend=false '-backend-config=key=example -backend=true'"]
+      }
+    },
+    {
+      "id": "terraform-aws-cli-read-only",
+      "decision": "ask",
+      "match": {"programs": ["aws"], "aws_mutating": true, "read_only_verbs": ["describe", "list", "get", "lookup", "search", "batch-get", "head", "help", "wait", "ls", "filter", "scan", "query", "validate", "simulate", "estimate"]},
+      "why": "Planning never touches live AWS state, and the post-apply smoke checks are read-only. A mutating AWS CLI call from the model bypasses Terraform and drifts the state.",
+      "message": "this AWS CLI call can change live resources outside Terraform. Approve only if you intend it.",
+      "examples": {
+        "match": ["aws s3 rm s3://bucket/key", "aws --profile prod ec2 terminate-instances --instance-ids i-1", "aws iam put-role-policy --role-name r --policy-name p --policy-document file://p.json"],
+        "no_match": ["aws sts get-caller-identity", "aws --region us-east-1 s3api list-buckets", "aws ec2 describe-instances --profile prod", "aws --version"]
+      }
+    },
+    {
+      "id": "terraform-init-writes-data-dir",
+      "decision": "write",
+      "match": {"programs": ["terraform", "tofu"], "subcommands": ["init", "get", "workspace new", "workspace select"]},
+      "writes": {"paths": ["${TF_DATA_DIR:-.terraform}"], "directory_options": ["-chdir"]},
+      "why": "init and get install providers and modules into the working directory's data directory, .terraform/ unless TF_DATA_DIR names another (cli/commands/init; cli/config/environment-variables, TF_DATA_DIR), and workspace new or select records the selection there. -chdir makes Terraform look in the given directory for all files (cli/commands/init). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. An eval run (terraform-plan-and-stop) ran init -backend=false in environment/ before approval and left .terraform/ there.",
+      "message": "terraform init, get and workspace new/select write .terraform/ (or $TF_DATA_DIR) in the directory they run in. Before approval read provider schemas from the Registry, or initialise a throwaway root outside the project (copy the root's versions.tf to \"${TMPDIR:-/tmp}/<slug>-schema\", then terraform -chdir=\"${TMPDIR:-/tmp}/<slug>-schema\" init -backend=false; write the path with ${TMPDIR:-/tmp}, since an unset $TMPDIR is a target the gate cannot resolve); init in the project waits for the approved plan.",
+      "examples": {
+        "match": ["terraform -chdir=environment init -backend=false", "cd environment && terraform init -backend=false", "tofu get", "terraform -chdir=environment workspace select dev", "TF_DATA_DIR=/tmp/tfdata terraform init -backend=false -lockfile=readonly"],
+        "no_match": ["terraform -chdir=environment validate", "terraform providers schema -json", "terraform workspace list", "terraform version"]
+      }
+    },
+    {
+      "id": "terraform-init-writes-lock-file",
+      "decision": "write",
+      "match": {"programs": ["terraform", "tofu"], "subcommands": ["init", "providers lock"], "args_regex": "^(?!.*\\s--?lockfile=readonly(?:\\s|$))"},
+      "writes": {"paths": [".terraform.lock.hcl"], "directory_options": ["-chdir"]},
+      "why": "Terraform \"automatically creates or updates the dependency lock file each time you run the terraform init command\", and providers lock pre-populates it; the file lives in the root module's directory (language/files/dependency-lock), whatever TF_DATA_DIR says. -lockfile=readonly suppresses the lock file changes (cli/commands/init). Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in.",
+      "message": "this writes .terraform.lock.hcl in the root module directory. Before approval initialise a throwaway root outside the project instead; a provider change is named in the plan and the lock file changes after approval.",
+      "examples": {
+        "match": ["terraform -chdir=environment init -backend=false", "terraform providers lock -platform=linux_amd64", "TF_DATA_DIR=/tmp/tfdata terraform init -backend=false"],
+        "no_match": ["terraform init -backend=false -lockfile=readonly", "terraform providers schema -json", "terraform -chdir=environment validate"]
+      }
+    },
+    {
+      "id": "terraform-plan-out-writes-plan-file",
+      "decision": "write",
+      "match": {"programs": ["terraform", "tofu"], "subcommands": ["plan"], "args_regex": "\\s--?out(?:=|\\s)"},
+      "writes": {"path_options": ["-out"], "directory_options": ["-chdir"]},
+      "why": "plan -out=FILE saves the plan to FILE, relative to the -chdir directory. Before approval only ai-planning/ and .claude/ may change, and planning is read-only, so the gate counts it as a write inside the project at the directory the command works in. The skill runs its targeted plan after approval.",
+      "message": "this plan writes its -out file in the project. Run the targeted plan after the plan is approved.",
+      "examples": {
+        "match": ["terraform -chdir=environment plan -out=tfplan"],
+        "no_match": ["terraform -chdir=environment plan -var-file=envs/dev.tfvars", "terraform -chdir=environment validate"]
+      }
+    }
+  ]
+}

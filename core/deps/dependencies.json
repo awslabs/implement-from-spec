@@ -1,0 +1,930 @@
+{
+  "schema": 1,
+  "checked": "2026-10-16",
+  "about": "The binary dependencies of the implement-from-spec skills: what needs each one and when, how to detect it, the minimum version and where that minimum comes from, and per-platform install recipes read from each vendor's documentation on the checked date. Read only by doctor.py and install.py. Steps are argument arrays; manual steps are printed for the user and never executed; {placeholders} are expanded by depslib.platform_variables.",
+  "stacks": {
+    "terraform": ["implementing-terraform-from-spec"],
+    "cdk": ["implementing-cdk-from-spec"],
+    "cloudformation": ["implementing-cloudformation-from-spec"],
+    "java": ["implementing-java-from-spec", "reviewing-java-changes"],
+    "python": ["implementing-python-from-spec", "reviewing-python-changes"],
+    "external-review": ["the GPT review stage of every implementing skill (core/scripts/spec-external-review.py, core/scripts/bedrock-gpt)"]
+  },
+  "extra_bin_dirs": ["{home}/.guard/bin", "{home}/.cargo/bin"],
+  "group_preference": {
+    "java-build": {"build-maven": "maven", "build-gradle": "gradle", "order": ["maven", "gradle"]},
+    "python-cli-installer": {"order": ["uv", "pipx"]}
+  },
+  "pinned_keys": {
+    "aws-cli": {
+      "fingerprint": "FB5DB77FD5C118B80511ADA8A6310ACC4672475C",
+      "uid": "AWS CLI Team <aws-cli@amazon.com>",
+      "file": "aws-cli.asc",
+      "expires": "2027-07-01",
+      "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+    },
+    "aws-sam-cli-signer": {
+      "fingerprint": "EF463E86CA31933BB688CC1A4094ABB1BEDFDAB4",
+      "uid": "AWS SAM CLI Team <aws-sam-cli-signer@amazon.com>",
+      "file": "aws-sam-cli-signer.asc",
+      "expires": "2027-05-19",
+      "source": "https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/reference-sam-cli-install-verify.html"
+    },
+    "hashicorp-release": {
+      "fingerprint": "C874011F0AB405110D02105534365D9472D7468F",
+      "uid": "HashiCorp release signing key (key ID 72D7468F); signs each release's SHA256SUMS file",
+      "url": "https://www.hashicorp.com/.well-known/pgp-key.txt",
+      "source": "https://www.hashicorp.com/en/trust/security"
+    },
+    "hashicorp-linux-repo": {
+      "fingerprint": "D55C0D1AC78A8D8126CB631CFC9CA96ACA026560",
+      "uid": "HashiCorp Linux repository signing key, in use since 2026-09-10 (the previous key 798AEC654E5C15428C8E42EEAA16FCBCA621E701 was retired)",
+      "url": "https://apt.releases.hashicorp.com/gpg",
+      "source": "https://www.hashicorp.com/en/trust/security"
+    },
+    "corretto": {
+      "long_id": "A122542AB04F24E3",
+      "uid": "Amazon Corretto repository key; Corretto publishes the key ID A122542AB04F24E3 but no full fingerprint, so setup checks the 64-bit key ID",
+      "url": "https://apt.corretto.aws/corretto.key",
+      "source": "https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/generic-linux-install.html"
+    },
+    "claude-code": {
+      "fingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+      "uid": "Anthropic Claude Code Release Signing <security@anthropic.com>",
+      "url": "https://downloads.claude.ai/keys/claude-code.asc",
+      "source": "https://code.claude.com/docs/en/setup"
+    }
+  },
+  "dependencies": {
+    "git": {
+      "purpose": "Version control; the approval gate and the reviews read git work trees",
+      "needed_by": [
+        {"stack": "core", "skill": "every skill", "level": "required", "when": "always: the gate finds the project by its git work tree"}
+      ],
+      "detect": {"command": ["git", "--version"], "version_regex": "git version (\\d+\\.\\d+(?:\\.\\d+)?)"},
+      "stub": {"os": "macos", "paths": ["/usr/bin/git"], "probe": ["xcode-select", "-p"]},
+      "verify": ["git", "--version"],
+      "windows": "Use WSL2 and install git inside your Linux distribution",
+      "recipes": {
+        "macos": [
+          {"id": "xcode-command-line-tools", "label": "official", "admin": false, "scope": "system",
+           "source": "https://git-scm.com/install/mac",
+           "integrity": {"method": "package-manager", "detail": "Apple's Software Update downloads and verifies the Command Line Tools"},
+           "steps": [{"kind": "manual", "admin": false, "argv": ["xcode-select", "--install"], "why": "opens Apple's installer dialog, which only you can accept"}]},
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://git-scm.com/install/mac",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "git"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "git"]}]}
+        ],
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://git-scm.com/install/linux",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "git"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://git-scm.com/install/linux",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "git"]}]}
+        ]
+      }
+    },
+    "python3": {
+      "purpose": "Runs the plugin's gate, checkers and setup scripts (standard library only)",
+      "needed_by": [
+        {"stack": "core", "skill": "every skill", "level": "required", "when": "always: the approval gate and every core script are Python"},
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "if": "cdk-python", "when": "Python CDK apps run on Python 3 with pip"}
+      ],
+      "detect": {"command": ["python3", "--version"], "version_regex": "Python (\\d+\\.\\d+\\.\\d+)"},
+      "minimum": {"version": "3.9", "source": "docs/design-notes.md, Python minimum (decided 2026-10-16): the python3 macOS ships by default"},
+      "stub": {"os": "macos", "paths": ["/usr/bin/python3"], "probe": ["xcode-select", "-p"]},
+      "verify": ["python3", "--version"],
+      "windows": "Use WSL2 and install python3 inside your Linux distribution",
+      "recipes": {
+        "macos": [
+          {"id": "xcode-command-line-tools", "label": "official", "admin": false, "scope": "system",
+           "source": "https://www.python.org/downloads/macos/",
+           "integrity": {"method": "package-manager", "detail": "Apple's Software Update downloads and verifies the Command Line Tools, which provide python3"},
+           "steps": [{"kind": "manual", "admin": false, "argv": ["xcode-select", "--install"], "why": "opens Apple's installer dialog, which only you can accept"}]}
+        ],
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://www.python.org/downloads/",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "python3"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://www.python.org/downloads/",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "python3"]}]}
+        ]
+      }
+    },
+    "bash": {
+      "purpose": "Runs the hooks' commands and the external-review wrapper core/scripts/bedrock-gpt",
+      "needed_by": [
+        {"stack": "core", "skill": "every skill", "level": "required", "when": "always"}
+      ],
+      "detect": {"command": ["bash", "--version"], "version_regex": "version (\\d+\\.\\d+(?:\\.\\d+)?)"},
+      "verify": ["bash", "--version"],
+      "windows": "Use WSL2; bash comes with every Linux distribution",
+      "recipes": {
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://www.gnu.org/software/bash/",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "bash"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://www.gnu.org/software/bash/",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "bash"]}]}
+        ]
+      }
+    },
+    "claude": {
+      "purpose": "Claude Code itself; the plugin's settings with fixed choices need a recent release",
+      "needed_by": [
+        {"stack": "core", "skill": "every skill", "level": "required", "when": "always: the plugin's userConfig options need Claude Code 2.1.271 or later to load; from 2.1.295 the gate's guard hooks also block when they cannot run (onFailure: block)"}
+      ],
+      "detect": {"command": ["claude", "--version"], "version_regex": "^(\\d+\\.\\d+\\.\\d+) \\(Claude Code\\)"},
+      "minimum": {"version": "2.1.271", "source": "https://code.claude.com/docs/en/plugins-reference (userConfig options: \"Requires Claude Code v2.1.271 or later\"; \"users on Claude Code versions before v2.1.271 can't load the plugin\"; .claude-plugin/plugin.json declares options)",
+        "recommended": {"version": "2.1.295", "why": "guard hooks fail open if python3 cannot run", "source": "https://code.claude.com/docs/en/hooks (onFailure: \"Requires Claude Code v2.1.295 or later\"; hooks/hooks.json sets \"block\" on the gate's guards; older releases run the hooks without it)"}},
+      "verify": ["claude", "--version"],
+      "installable": false,
+      "install_note": "Setup never installs or updates Claude Code. Update it through the channel you installed it with (claude update for the native installer). Release manifests are signed with the key whose fingerprint is pinned as claude-code (31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE); the verification steps are at https://code.claude.com/docs/en/setup",
+      "windows": "Use WSL2 and install Claude Code inside your Linux distribution",
+      "recipes": {}
+    },
+    "brew": {
+      "purpose": "Homebrew, the package manager several macOS recipes use",
+      "needed_by": [
+        {"stack": "setup", "skill": "setup", "level": "optional", "when": "macOS recipes that install through Homebrew"}
+      ],
+      "detect": {"command": ["brew", "--version"], "version_regex": "Homebrew (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["brew", "--version"],
+      "installable": false,
+      "install_note": "Setup does not install Homebrew (a community project whose installer is a piped script). Install it yourself from https://brew.sh, or choose a recipe that does not need it",
+      "windows": "Not used on WSL2",
+      "recipes": {}
+    },
+    "cargo": {
+      "purpose": "Rust's package manager; preferred for cfn-guard when present",
+      "needed_by": [
+        {"stack": "setup", "skill": "setup", "level": "optional", "when": "the cfn-guard recipe that builds from crates.io"}
+      ],
+      "detect": {"command": ["cargo", "--version"], "version_regex": "cargo (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["cargo", "--version"],
+      "installable": false,
+      "install_note": "Setup does not install Rust; https://rustup.rs is its installer. Without cargo, setup offers the other cfn-guard recipes",
+      "windows": "Not used on WSL2 unless you install Rust there",
+      "recipes": {}
+    },
+    "gpg": {
+      "purpose": "GnuPG, which checks the signatures of signed downloads and repository keys",
+      "needed_by": [
+        {"stack": "setup", "skill": "setup", "level": "required", "when": "recipes that verify a GPG signature or a repository key (AWS CLI and SAM CLI archives, HashiCorp and Corretto repositories)"}
+      ],
+      "detect": {"command": ["gpg", "--version"], "version_regex": "gpg \\(GnuPG\\) (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["gpg", "--version"],
+      "windows": "Use WSL2 and install gnupg inside your Linux distribution",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://gnupg.org/download/",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "gnupg"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "gnupg"]}]}
+        ],
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://gnupg.org/download/",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "gnupg"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://gnupg.org/download/",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "gnupg2"]}]}
+        ]
+      }
+    },
+    "unzip": {
+      "purpose": "Extracts the AWS CLI, SAM CLI and TFLint archives",
+      "needed_by": [
+        {"stack": "setup", "skill": "setup", "level": "required", "when": "recipes that install from a zip archive"}
+      ],
+      "detect": {"command": ["unzip", "-v"], "version_regex": "UnZip (\\d+\\.\\d+)"},
+      "verify": ["unzip", "-v"],
+      "windows": "Use WSL2 and install unzip inside your Linux distribution",
+      "recipes": {
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "unzip"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "unzip"]}]}
+        ]
+      }
+    },
+    "tar": {
+      "purpose": "tar and gzip, which unpack the Node.js archive and which the uv and CloudFormation Guard installers need",
+      "needed_by": [
+        {"stack": "setup", "skill": "setup", "level": "required", "when": "recipes that unpack a .tar.gz archive"}
+      ],
+      "detect": {"command": ["tar", "--version"], "version_regex": "^(?:tar \\(GNU tar\\)|bsdtar) (\\d+\\.\\d+(?:\\.\\d+)?)"},
+      "verify": ["tar", "--version"],
+      "windows": "Use WSL2 and install tar inside your Linux distribution",
+      "recipes": {
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://www.gnu.org/software/tar/",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "tar", "gzip"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://www.gnu.org/software/tar/",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "tar", "gzip"]}]}
+        ]
+      }
+    },
+    "curl": {
+      "purpose": "HTTP client the external reviewer uses in api-key mode",
+      "needed_by": [
+        {"stack": "external-review", "skill": "external review (core/scripts/bedrock-gpt)", "level": "required", "if": "review-api-key", "when": "external review in api-key mode calls the Bedrock Responses API with curl"}
+      ],
+      "detect": {"command": ["curl", "--version"], "version_regex": "^curl (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["curl", "--version"],
+      "windows": "Use WSL2 and install curl inside your Linux distribution",
+      "recipes": {
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://curl.se/download.html",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "curl"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://curl.se/download.html",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "curl"]}]}
+        ]
+      }
+    },
+    "jq": {
+      "purpose": "JSON processor the external reviewer uses in api-key mode",
+      "needed_by": [
+        {"stack": "external-review", "skill": "external review (core/scripts/bedrock-gpt)", "level": "required", "if": "review-api-key", "when": "external review in api-key mode builds the request and reads the reply with jq"}
+      ],
+      "detect": {"command": ["jq", "--version"], "version_regex": "jq-(\\d+\\.\\d+(?:\\.\\d+)?)"},
+      "verify": ["jq", "--version"],
+      "windows": "Use WSL2 and install jq inside your Linux distribution",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://jqlang.org/download/",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "jq"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "jq"]}]}
+        ],
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://jqlang.org/download/",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "jq"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system",
+           "source": "https://jqlang.org/download/",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "jq"]}]}
+        ]
+      }
+    },
+    "aws": {
+      "purpose": "AWS CLI version 2: read-only checks, the operator's deploy commands, and the external reviewer in aws-profile mode",
+      "needed_by": [
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "when": "read-only checks and the deploy command handed to the operator"},
+        {"stack": "cloudformation", "skill": "implementing-cloudformation-from-spec", "level": "required", "when": "change-set creation and read-only stack checks"},
+        {"stack": "terraform", "skill": "implementing-terraform-from-spec", "level": "optional", "when": "read-only checks of the target account"},
+        {"stack": "java", "skill": "implementing-java-from-spec", "level": "optional", "when": "read-only checks of the target account"},
+        {"stack": "python", "skill": "implementing-python-from-spec", "level": "optional", "when": "read-only checks of the target account"},
+        {"stack": "external-review", "skill": "external review (core/scripts/bedrock-gpt)", "level": "required", "if": "review-aws-profile", "when": "external review in aws-profile mode calls the Bedrock Converse API through the AWS CLI"}
+      ],
+      "detect": {"command": ["aws", "--version"], "version_regex": "^aws-cli/(\\d+\\.\\d+\\.\\d+)"},
+      "minimum": {"version": "2.0.0", "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html (AWS CLI version 2)"},
+      "verify": ["aws", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "linux": [
+          {"id": "zip-gpg-user", "label": "official", "admin": false, "scope": "user", "requires": ["gpg", "unzip"],
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "gpg-signature", "key": "aws-cli", "detail": "the zip's detached signature checked against the AWS CLI Team key, fingerprint pinned from the install page"},
+           "steps": [
+             {"kind": "download", "url": "https://awscli.amazonaws.com/awscli-exe-linux-{arch_aws}.zip", "to": "{staging}/awscliv2.zip"},
+             {"kind": "download", "url": "https://awscli.amazonaws.com/awscli-exe-linux-{arch_aws}.zip.sig", "to": "{staging}/awscliv2.sig"},
+             {"kind": "gpg_key", "key": "aws-cli"},
+             {"kind": "gpg_verify", "key": "aws-cli", "signature": "{staging}/awscliv2.sig", "file": "{staging}/awscliv2.zip"},
+             {"kind": "run", "argv": ["unzip", "-q", "-o", "{staging}/awscliv2.zip", "-d", "{staging}/unpacked"]},
+             {"kind": "run", "argv": ["mkdir", "-p", "{user_bin}"]},
+             {"kind": "run", "argv": ["{staging}/unpacked/aws/install", "-i", "{home}/.local/share/aws-cli", "-b", "{user_bin}"]}
+           ],
+           "owns": ["{home}/.local/share/aws-cli", "{user_bin}/aws", "{user_bin}/aws_completer"]},
+          {"id": "install-script", "label": "official", "admin": false, "scope": "user", "requires": ["curl", "unzip"],
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "vendor-script", "detail": "piped remote script: AWS states it downloads and verifies the CLI; setup downloads it first, shows it with its sha256, and runs it only after your confirmation"},
+           "steps": [
+             {"kind": "script", "url": "https://awscli.amazonaws.com/v2/install.sh", "to": "{staging}/aws-install.sh", "interpreter": ["bash"]}
+           ],
+           "owns": ["{home}/.local/share/aws-cli", "{user_bin}/aws", "{user_bin}/aws_completer"]},
+          {"id": "zip-gpg-system", "label": "official", "admin": true, "scope": "system", "requires": ["gpg", "unzip"],
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "gpg-signature", "key": "aws-cli", "detail": "the zip's detached signature checked against the pinned AWS CLI Team key"},
+           "steps": [
+             {"kind": "download", "url": "https://awscli.amazonaws.com/awscli-exe-linux-{arch_aws}.zip", "to": "{staging}/awscliv2.zip"},
+             {"kind": "download", "url": "https://awscli.amazonaws.com/awscli-exe-linux-{arch_aws}.zip.sig", "to": "{staging}/awscliv2.sig"},
+             {"kind": "gpg_key", "key": "aws-cli"},
+             {"kind": "gpg_verify", "key": "aws-cli", "signature": "{staging}/awscliv2.sig", "file": "{staging}/awscliv2.zip"},
+             {"kind": "run", "argv": ["unzip", "-q", "-o", "{staging}/awscliv2.zip", "-d", "{staging}/unpacked"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "{staging}/unpacked/aws/install"], "why": "installs for all users into /usr/local/aws-cli"}
+           ]}
+        ],
+        "macos": [
+          {"id": "install-script", "label": "official", "admin": false, "scope": "user",
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "vendor-script", "detail": "piped remote script, the method AWS recommends on macOS: AWS states it downloads and verifies the CLI; setup downloads it first, shows it with its sha256, and runs it only after your confirmation"},
+           "steps": [
+             {"kind": "script", "url": "https://awscli.amazonaws.com/v2/install.sh", "to": "{staging}/aws-install.sh", "interpreter": ["bash"]}
+           ],
+           "owns": ["{home}/.local/share/aws-cli", "{user_bin}/aws", "{user_bin}/aws_completer"]},
+          {"id": "pkg-system", "label": "official", "admin": true, "scope": "system",
+           "source": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+           "integrity": {"method": "pkg-signature", "detail": "pkgutil must report an Apple-issued Developer ID signature, Apple notarization, and the Developer ID Installer AMZN Mobile LLC (94KV3E626L) with its SHA-256 certificate fingerprint. The AWS CLI install page documents no signer for AWSCLIV2.pkg, so this pin is empirical: it is the installer certificate AWS publishes for the SAM CLI pkg (https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/reference-sam-cli-install-verify.html), and AWSCLIV2.pkg signed 2026-10-14 carried exactly that certificate when checked on 2026-10-16. The full pkgutil output is kept in the setup journal"},
+           "steps": [
+             {"kind": "download", "url": "https://awscli.amazonaws.com/AWSCLIV2.pkg", "to": "{staging}/AWSCLIV2.pkg"},
+             {"kind": "run", "argv": ["pkgutil", "--check-signature", "{staging}/AWSCLIV2.pkg"],
+              "expect": ["Status: signed by a developer certificate issued by Apple for distribution", "Notarization: trusted by the Apple notary service", "Developer ID Installer: AMZN Mobile LLC \\(94KV3E626L\\)", "5C 45 BE 63 FD 52 10 07 2D 66 56 77 5C A9 FF 25 91 6D 3F 01 F7 0E\\s+9A 8A 05 F6 2D 62 B2 88 8D A9"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "installer", "-pkg", "{staging}/AWSCLIV2.pkg", "-target", "/"], "why": "installs for all users into /usr/local/aws-cli"}
+           ]}
+        ]
+      }
+    },
+    "sam": {
+      "purpose": "AWS SAM CLI for building and locally invoking serverless functions",
+      "needed_by": [
+        {"stack": "java", "skill": "implementing-java-from-spec", "level": "optional", "when": "projects that build or test Lambda functions with SAM"},
+        {"stack": "python", "skill": "implementing-python-from-spec", "level": "optional", "when": "projects that build or test Lambda functions with SAM"}
+      ],
+      "detect": {"command": ["sam", "--version"], "version_regex": "SAM CLI, version (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["sam", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "linux": [
+          {"id": "zip-gpg-system", "label": "official", "admin": true, "scope": "system", "requires": ["gpg", "unzip"],
+           "source": "https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html",
+           "integrity": {"method": "gpg-signature", "key": "aws-sam-cli-signer", "detail": "the zip's detached signature checked against the AWS SAM CLI Team signer key, fingerprint pinned from the verification page"},
+           "steps": [
+             {"kind": "download", "url": "https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-{arch_sam}.zip", "to": "{staging}/aws-sam-cli.zip"},
+             {"kind": "download", "url": "https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-{arch_sam}.zip.sig", "to": "{staging}/aws-sam-cli.zip.sig"},
+             {"kind": "gpg_key", "key": "aws-sam-cli-signer"},
+             {"kind": "gpg_verify", "key": "aws-sam-cli-signer", "signature": "{staging}/aws-sam-cli.zip.sig", "file": "{staging}/aws-sam-cli.zip"},
+             {"kind": "run", "argv": ["unzip", "-q", "-o", "{staging}/aws-sam-cli.zip", "-d", "{staging}/sam-installation"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "{staging}/sam-installation/install"], "why": "the SAM CLI installer documents no user-scope option"}
+           ]}
+        ],
+        "macos": [
+          {"id": "pkg-system", "label": "official", "admin": true, "scope": "system",
+           "source": "https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html",
+           "integrity": {"method": "pkg-signature", "detail": "pkgutil must report the Developer ID Installer AMZN Mobile LLC (94KV3E626L) with the SHA-256 certificate fingerprint published on the verification page"},
+           "steps": [
+             {"kind": "download", "url": "https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-macos-{arch_sam}.pkg", "to": "{staging}/aws-sam-cli.pkg"},
+             {"kind": "run", "argv": ["pkgutil", "--check-signature", "{staging}/aws-sam-cli.pkg"],
+              "expect": ["Developer ID Installer: AMZN Mobile LLC \\(94KV3E626L\\)", "5C 45 BE 63 FD 52 10 07 2D 66 56 77 5C A9 FF 25 91 6D 3F 01 F7 0E\\s+9A 8A 05 F6 2D 62 B2 88 8D A9"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "installer", "-pkg", "{staging}/aws-sam-cli.pkg", "-target", "/"], "why": "installs for all users"}
+           ]}
+        ]
+      }
+    },
+    "terraform": {
+      "purpose": "Terraform CLI: fmt, validate, plan and terraform test",
+      "needed_by": [
+        {"stack": "terraform", "skill": "implementing-terraform-from-spec", "level": "required", "when": "formatting, validation, plans and terraform test"}
+      ],
+      "detect": {"command": ["terraform", "-version"], "version_regex": "^Terraform v(\\d+\\.\\d+\\.\\d+)"},
+      "minimum": {"version": "1.6.0", "source": "https://developer.hashicorp.com/terraform/language/tests (\"available in Terraform v1.6.0 and later\")"},
+      "verify": ["terraform", "-version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "macos": [
+          {"id": "brew-hashicorp-tap", "label": "official", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://developer.hashicorp.com/terraform/install",
+           "integrity": {"method": "package-manager", "detail": "HashiCorp's own Homebrew tap; Homebrew checks each download's sha256"},
+           "steps": [
+             {"kind": "run", "argv": ["brew", "tap", "hashicorp/tap"]},
+             {"kind": "run", "argv": ["brew", "install", "hashicorp/tap/terraform"]}
+           ],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "hashicorp/tap/terraform"]}]}
+        ],
+        "debian": [
+          {"id": "apt-repository", "label": "official", "admin": true, "scope": "system", "requires": ["gpg"],
+           "source": "https://developer.hashicorp.com/terraform/install",
+           "integrity": {"method": "gpg-signed-repository", "key": "hashicorp-linux-repo", "detail": "the repository key's fingerprint is checked against the pinned HashiCorp Linux repository key before you trust it; apt then checks every package"},
+           "steps": [
+             {"kind": "download", "url": "https://apt.releases.hashicorp.com/gpg", "to": "{staging}/hashicorp.asc"},
+             {"kind": "gpg_key", "key": "hashicorp-linux-repo", "file": "{staging}/hashicorp.asc"},
+             {"kind": "gpg_dearmor", "file": "{staging}/hashicorp.asc", "to": "{staging}/hashicorp-archive-keyring.gpg"},
+             {"kind": "write_file", "to": "{staging}/hashicorp.list", "content": "deb [arch={deb_arch} signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {codename} main\n"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "install", "-m", "0644", "{staging}/hashicorp-archive-keyring.gpg", "/usr/share/keyrings/hashicorp-archive-keyring.gpg"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "install", "-m", "0644", "{staging}/hashicorp.list", "/etc/apt/sources.list.d/hashicorp.list"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "update"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "terraform"]}
+           ]}
+        ],
+        "amzn": [
+          {"id": "yum-repository-amazonlinux", "label": "official", "admin": true, "scope": "system", "requires": ["gpg"],
+           "distros": ["amzn"],
+           "source": "https://developer.hashicorp.com/terraform/install",
+           "integrity": {"method": "gpg-signed-repository", "key": "hashicorp-linux-repo", "detail": "the repository key's fingerprint is checked against the pinned HashiCorp Linux repository key and imported before HashiCorp's Amazon Linux repository is added"},
+           "steps": [
+             {"kind": "download", "url": "https://rpm.releases.hashicorp.com/gpg", "to": "{staging}/hashicorp.asc"},
+             {"kind": "gpg_key", "key": "hashicorp-linux-repo", "file": "{staging}/hashicorp.asc"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "rpm", "--import", "{staging}/hashicorp.asc"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "yum", "install", "-y", "yum-utils", "shadow-utils"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "yum-config-manager", "--add-repo", "https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "yum", "install", "-y", "terraform"]}
+           ]}
+        ],
+        "fedora": [
+          {"id": "dnf-repository-fedora", "label": "official", "admin": true, "scope": "system", "requires": ["gpg"],
+           "distros": ["fedora"],
+           "source": "https://developer.hashicorp.com/terraform/install",
+           "integrity": {"method": "gpg-signed-repository", "key": "hashicorp-linux-repo", "detail": "the repository key's fingerprint is checked against the pinned HashiCorp Linux repository key and imported before the repository file is installed"},
+           "steps": [
+             {"kind": "download", "url": "https://rpm.releases.hashicorp.com/gpg", "to": "{staging}/hashicorp.asc"},
+             {"kind": "gpg_key", "key": "hashicorp-linux-repo", "file": "{staging}/hashicorp.asc"},
+             {"kind": "download", "url": "https://rpm.releases.hashicorp.com/fedora/hashicorp.repo", "to": "{staging}/hashicorp.repo"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "rpm", "--import", "{staging}/hashicorp.asc"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "install", "-m", "0644", "{staging}/hashicorp.repo", "/etc/yum.repos.d/hashicorp.repo"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "dnf", "-y", "install", "terraform"]}
+           ]}
+        ],
+        "rhel": [
+          {"id": "yum-repository-rhel", "label": "official", "admin": true, "scope": "system", "requires": ["gpg"],
+           "distros": ["rhel"],
+           "source": "https://developer.hashicorp.com/terraform/install",
+           "integrity": {"method": "gpg-signed-repository", "key": "hashicorp-linux-repo", "detail": "the repository key's fingerprint is checked against the pinned HashiCorp Linux repository key and imported before HashiCorp's RHEL repository is added (RHEL, CentOS, Rocky, AlmaLinux, Oracle Linux)"},
+           "steps": [
+             {"kind": "download", "url": "https://rpm.releases.hashicorp.com/gpg", "to": "{staging}/hashicorp.asc"},
+             {"kind": "gpg_key", "key": "hashicorp-linux-repo", "file": "{staging}/hashicorp.asc"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "rpm", "--import", "{staging}/hashicorp.asc"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "yum", "install", "-y", "yum-utils"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "yum-config-manager", "--add-repo", "https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "yum", "-y", "install", "terraform"]}
+           ]}
+        ]
+      }
+    },
+    "tflint": {
+      "purpose": "TFLint, the Terraform linter",
+      "needed_by": [
+        {"stack": "terraform", "skill": "implementing-terraform-from-spec", "level": "optional", "when": "projects that configure TFLint (.tflint.hcl); the skill reports the check as not run otherwise"}
+      ],
+      "detect": {"command": ["tflint", "--version"], "version_regex": "TFLint version (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["tflint", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "macos": [
+          {"id": "brew-tap", "label": "official", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://github.com/terraform-linters/tflint",
+           "integrity": {"method": "package-manager", "detail": "the project's own Homebrew tap; Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "terraform-linters/tap/tflint"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "terraform-linters/tap/tflint"]}]}
+        ],
+        "linux": [
+          {"id": "release-zip", "label": "official", "admin": false, "scope": "user", "requires": ["unzip"],
+           "source": "https://github.com/terraform-linters/tflint",
+           "integrity": {"method": "sha256", "detail": "checksums.txt from the same release; when the gh CLI is installed its GitHub artifact attestation is verified too, as the project recommends"},
+           "steps": [
+             {"kind": "download", "url": "https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_{arch_go}.zip", "to": "{staging}/tflint_linux_{arch_go}.zip"},
+             {"kind": "download", "url": "https://github.com/terraform-linters/tflint/releases/latest/download/checksums.txt", "to": "{staging}/checksums.txt"},
+             {"kind": "run", "if_tool": "gh", "argv": ["gh", "attestation", "verify", "{staging}/checksums.txt", "-R", "terraform-linters/tflint"]},
+             {"kind": "sha256", "file": "{staging}/tflint_linux_{arch_go}.zip", "sums": "{staging}/checksums.txt", "entry": "tflint_linux_{arch_go}.zip"},
+             {"kind": "run", "argv": ["unzip", "-q", "-o", "{staging}/tflint_linux_{arch_go}.zip", "-d", "{staging}/unpacked"]},
+             {"kind": "run", "argv": ["mkdir", "-p", "{user_bin}"]},
+             {"kind": "run", "argv": ["install", "-m", "0755", "{staging}/unpacked/tflint", "{user_bin}/tflint"]}
+           ],
+           "owns": ["{user_bin}/tflint"]}
+        ]
+      }
+    },
+    "checkov": {
+      "purpose": "Checkov, a policy scanner for infrastructure code",
+      "needed_by": [
+        {"stack": "terraform", "skill": "implementing-terraform-from-spec", "level": "optional", "when": "projects whose CI runs Checkov"},
+        {"stack": "cloudformation", "skill": "implementing-cloudformation-from-spec", "level": "optional", "when": "projects that adopt Checkov"}
+      ],
+      "detect": {"command": ["checkov", "--version"], "version_regex": "^(\\d+\\.\\d+\\.\\d+)\\s*$"},
+      "verify": ["checkov", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "any": [
+          {"id": "uv-tool", "label": "official", "admin": false, "scope": "user", "requires": ["uv"],
+           "source": "https://www.checkov.io/2.Basics/Installing%20Checkov.html",
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment (the docs show pip; the isolated install is this plugin's choice)"},
+           "steps": [{"kind": "run", "argv": ["uv", "tool", "install", "checkov"]}],
+           "uninstall": [{"kind": "run", "argv": ["uv", "tool", "uninstall", "checkov"]}]},
+          {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
+           "source": "https://www.checkov.io/2.Basics/Installing%20Checkov.html",
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment"},
+           "steps": [{"kind": "run", "argv": ["pipx", "install", "checkov"]}],
+           "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "checkov"]}]}
+        ]
+      }
+    },
+    "cfn-lint": {
+      "purpose": "cfn-lint, the CloudFormation template linter",
+      "needed_by": [
+        {"stack": "cloudformation", "skill": "implementing-cloudformation-from-spec", "level": "required", "when": "linting every template, unless the project has its own validate entry point"}
+      ],
+      "detect": {"command": ["cfn-lint", "--version"], "version_regex": "^cfn-lint (\\d+\\.\\d+\\.\\d+)"},
+      "minimum": {"version": "1.47.0", "source": "https://pypi.org/pypi/cfn-lint/json (read 2026-10-16): 1.46.0 of 2026-03-02 is the last release for Python 3.9 (Requires-Python >=3.9), 1.47.0 and later need >=3.10 (1.57.2: >=3.10,<3.15), and the README says \"Python 3.10 to 3.14 are supported\". An installer running on Python 3.9 silently settles on 1.46.0 with resource schemas frozen in March 2026; this floor reports that as a gap"},
+      "verify": ["cfn-lint", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "any": [
+          {"id": "uv-tool", "label": "official", "admin": false, "scope": "user", "requires": ["uv"],
+           "source": "https://github.com/aws-cloudformation/cfn-lint",
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment. --python requests the 3.10 to 3.14 range cfn-lint supports: uv uses a system Python in that range, else downloads a uv-managed CPython (https://docs.astral.sh/uv/concepts/python-versions/, read 2026-10-16). Without it uv used Amazon Linux 2023's and RHEL 9's Python 3.9 and resolved cfn-lint 1.46.0"},
+           "steps": [
+             {"kind": "run", "argv": ["uv", "tool", "install", "--python", ">=3.10,<3.15", "cfn-lint"]},
+             {"kind": "note", "text": "when no Python 3.10 to 3.14 was on the system, uv downloaded a managed CPython for cfn-lint; uv python list --only-installed shows it and uv python uninstall removes it once no tool uses it"}
+           ],
+           "uninstall": [{"kind": "run", "argv": ["uv", "tool", "uninstall", "cfn-lint"]}]},
+          {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
+           "source": "https://github.com/aws-cloudformation/cfn-lint",
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment on the Python pipx runs on; on a Python older than 3.10 pip resolves an old cfn-lint, which the minimum then reports"},
+           "steps": [{"kind": "run", "argv": ["pipx", "install", "cfn-lint"]}],
+           "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "cfn-lint"]}]}
+        ]
+      }
+    },
+    "cfn-guard": {
+      "purpose": "AWS CloudFormation Guard, the policy-as-code checker",
+      "needed_by": [
+        {"stack": "cloudformation", "skill": "implementing-cloudformation-from-spec", "level": "required", "when": "cfn-guard validate and the rules' own tests"}
+      ],
+      "detect": {"command": ["cfn-guard", "--version"], "version_regex": "^cfn-guard (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["cfn-guard", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "macos": [
+          {"id": "cargo", "label": "official", "admin": false, "scope": "user", "requires": ["cargo"],
+           "source": "https://github.com/aws-cloudformation/cloudformation-guard",
+           "integrity": {"method": "package-manager", "detail": "the crate from crates.io over HTTPS, built from source; preferred because no checksum is published for the prebuilt binaries"},
+           "steps": [{"kind": "run", "argv": ["cargo", "install", "cfn-guard"]}],
+           "uninstall": [{"kind": "run", "argv": ["cargo", "uninstall", "cfn-guard"]}]},
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://github.com/aws-cloudformation/cloudformation-guard",
+           "integrity": {"method": "package-manager", "detail": "the Homebrew formula the project's README lists; Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "cloudformation-guard"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "cloudformation-guard"]}]},
+          {"id": "install-script", "label": "official", "admin": false, "scope": "user",
+           "source": "https://github.com/aws-cloudformation/cloudformation-guard",
+           "integrity": {"method": "none-documented", "detail": "piped remote script; neither the script nor the binaries it downloads have a published checksum or signature. Setup shows the script with its sha256 and runs it only after your confirmation"},
+           "steps": [
+             {"kind": "script", "url": "https://raw.githubusercontent.com/aws-cloudformation/cloudformation-guard/main/install-guard.sh", "to": "{staging}/install-guard.sh", "interpreter": ["sh"]},
+             {"kind": "note", "text": "the script installs into ~/.guard/bin; add that directory to PATH"}
+           ],
+           "owns": ["{home}/.guard"]}
+        ],
+        "linux": [
+          {"id": "cargo", "label": "official", "admin": false, "scope": "user", "requires": ["cargo"],
+           "source": "https://github.com/aws-cloudformation/cloudformation-guard",
+           "integrity": {"method": "package-manager", "detail": "the crate from crates.io over HTTPS, built from source; preferred because no checksum is published for the prebuilt binaries"},
+           "steps": [{"kind": "run", "argv": ["cargo", "install", "cfn-guard"]}],
+           "uninstall": [{"kind": "run", "argv": ["cargo", "uninstall", "cfn-guard"]}]},
+          {"id": "install-script", "label": "official", "admin": false, "scope": "user", "requires": ["curl", "tar"],
+           "source": "https://github.com/aws-cloudformation/cloudformation-guard",
+           "integrity": {"method": "none-documented", "detail": "piped remote script; neither the script nor the binaries it downloads have a published checksum or signature. Setup shows the script with its sha256 and runs it only after your confirmation. The script itself needs curl (or wget) and tar"},
+           "steps": [
+             {"kind": "script", "url": "https://raw.githubusercontent.com/aws-cloudformation/cloudformation-guard/main/install-guard.sh", "to": "{staging}/install-guard.sh", "interpreter": ["sh"]},
+             {"kind": "note", "text": "the script installs into ~/.guard/bin; add that directory to PATH"}
+           ],
+           "owns": ["{home}/.guard"]}
+        ]
+      }
+    },
+    "cloudformation-validate": {
+      "purpose": "cloudformation-validate (cfn-validate), AWS's local template validator",
+      "needed_by": [
+        {"stack": "cloudformation", "skill": "implementing-cloudformation-from-spec", "level": "optional", "when": "recommended alongside cfn-lint"},
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "optional", "when": "validating the synthesised templates"}
+      ],
+      "detect": {"command": ["cfn-validate", "{deps_dir}/probes/cloudformation-validate.yaml", "--region", "us-east-1", "--level", "error", "--format", "standard"],
+                 "version_regex": "\"version\":\\s*\"(\\d+\\.\\d+\\.\\d+)\"",
+                 "why": "the pinned release has no --version flag (it exits 2, Unknown option); validating the bundled one-resource template exits 0 when the tool works (0 no errors, 1 errors found, 2 usage error: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cloudformation-validate.html), and its JSON report carries a version field; without one the doctor reports it present, version unknown"},
+      "windows": "Use WSL2 and follow the Linux steps there",
+      "recipes": {
+        "unix": [
+          {"id": "release-binary-manual", "label": "official", "admin": false, "scope": "user",
+           "source": "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cloudformation-validate.html",
+           "integrity": {"method": "release-signature", "detail": "each binary has a detached .sig checked with openssl against signing-key.pem from the same release; no key fingerprint is published elsewhere, so this is not an independent pin"},
+           "steps": [
+             {"kind": "note", "text": "release asset names carry the version, so setup prints these steps instead of running them: download cfn-validate-<version>-<platform> (linux-x64, linux-aarch64, darwin-aarch64 or darwin-x64), its .sig and signing-key.pem from https://github.com/aws-cloudformation/cloudformation-validate/releases/latest"},
+             {"kind": "manual", "admin": false, "argv": ["openssl", "dgst", "-sha256", "-verify", "signing-key.pem", "-signature", "cfn-validate-<version>-<platform>.sig", "cfn-validate-<version>-<platform>"], "why": "must print Verified OK"},
+             {"kind": "manual", "admin": false, "argv": ["install", "-m", "0755", "cfn-validate-<version>-<platform>", "{user_bin}/cfn-validate"]}
+           ]}
+        ]
+      }
+    },
+    "taskcat": {
+      "purpose": "TaskCat, which deploys templates into real accounts to test them",
+      "needed_by": [
+        {"stack": "cloudformation", "skill": "implementing-cloudformation-from-spec", "level": "optional", "when": "only when you opt in: TaskCat creates real stacks"}
+      ],
+      "opt_in": true,
+      "detect": {"command": ["taskcat", "--version"], "version_regex": "(\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["taskcat", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "any": [
+          {"id": "uv-tool", "label": "official", "admin": false, "scope": "user", "requires": ["uv"],
+           "source": "https://aws-ia.github.io/taskcat/installation/",
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment"},
+           "steps": [{"kind": "run", "argv": ["uv", "tool", "install", "taskcat"]}],
+           "uninstall": [{"kind": "run", "argv": ["uv", "tool", "uninstall", "taskcat"]}]},
+          {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
+           "source": "https://aws-ia.github.io/taskcat/installation/",
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment"},
+           "steps": [{"kind": "run", "argv": ["pipx", "install", "taskcat"]}],
+           "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "taskcat"]}]}
+        ]
+      }
+    },
+    "node": {
+      "purpose": "Node.js, which runs the AWS CDK CLI",
+      "needed_by": [
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "when": "the CDK CLI runs on Node.js for every CDK app language"}
+      ],
+      "detect": {"command": ["node", "--version"], "version_regex": "^v(\\d+\\.\\d+\\.\\d+)"},
+      "minimum": {"version": "22.0.0", "source": "https://docs.aws.amazon.com/cdk/v2/guide/prerequisites.html (\"require Node.js 22.x or later\")"},
+      "verify": ["node", "--version"],
+      "windows": "Use WSL2 and follow the Linux steps there",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://nodejs.org/en/download",
+           "integrity": {"method": "package-manager", "detail": "nodejs.org lists Homebrew among channels the Node.js project does not maintain; Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "node"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "node"]}]}
+        ],
+        "linux": [
+          {"id": "official-tarball", "label": "official", "admin": false, "scope": "user", "requires": ["tar"],
+           "source": "https://nodejs.org/en/download",
+           "integrity": {"method": "sha256", "detail": "the archive's sha256 against SHASUMS256.txt, both from https://nodejs.org/dist/latest-v24.x/ (Node.js 24, the Active LTS line on the checked date). Setup does not check the release signature on SHASUMS256.txt.asc: the Node.js release keyring has many keys and no single fingerprint to pin. To check it yourself, follow https://github.com/nodejs/node#verifying-binaries"},
+           "steps": [
+             {"kind": "download", "url": "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt", "to": "{staging}/SHASUMS256.txt"},
+             {"kind": "resolve", "file": "{staging}/SHASUMS256.txt", "pattern": "^[0-9a-f]{64}\\s+(node-v24\\.\\d+\\.\\d+-linux-{arch_node})\\.tar\\.gz$", "var": "node_dist"},
+             {"kind": "download", "url": "https://nodejs.org/dist/latest-v24.x/{node_dist}.tar.gz", "to": "{staging}/{node_dist}.tar.gz"},
+             {"kind": "sha256", "file": "{staging}/{node_dist}.tar.gz", "sums": "{staging}/SHASUMS256.txt", "entry": "{node_dist}.tar.gz"},
+             {"kind": "run", "argv": ["tar", "-xzf", "{staging}/{node_dist}.tar.gz", "-C", "{staging}"]},
+             {"kind": "run", "argv": ["mkdir", "-p", "{home}/.local/share", "{user_bin}"]},
+             {"kind": "run", "argv": ["mv", "{staging}/{node_dist}", "{home}/.local/share/nodejs"]},
+             {"kind": "run", "argv": ["ln", "-s", "{home}/.local/share/nodejs/bin/node", "{user_bin}/node"]},
+             {"kind": "run", "argv": ["ln", "-s", "{home}/.local/share/nodejs/bin/npm", "{user_bin}/npm"]},
+             {"kind": "run", "argv": ["ln", "-s", "{home}/.local/share/nodejs/bin/npx", "{user_bin}/npx"]}
+           ],
+           "owns": ["{home}/.local/share/nodejs", "{user_bin}/node", "{user_bin}/npm", "{user_bin}/npx"]}
+        ],
+        "unix": [
+          {"id": "official-download-manual", "label": "official", "admin": false, "scope": "user",
+           "source": "https://nodejs.org/en/download",
+           "integrity": {"method": "gpg-signature", "detail": "SHASUMS256.txt.asc is signed by the Node.js release keys (https://github.com/nodejs/node#verifying-binaries); the keyring has many keys and no single fingerprint to pin, so setup prints these steps instead of running them"},
+           "steps": [
+             {"kind": "note", "text": "download the current LTS binary for your platform from https://nodejs.org/en/download (the macOS .pkg or the Linux .tar.xz), check it against SHASUMS256.txt.asc as https://github.com/nodejs/node#verifying-binaries describes, and put its bin/ directory on PATH. Distribution packages and NodeSource are community channels and are often older than Node.js 22"}
+           ]}
+        ]
+      }
+    },
+    "cdk": {
+      "purpose": "The AWS CDK CLI (synth, diff and the operator's deploy command)",
+      "needed_by": [
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "when": "cdk synth and cdk diff; the project's own pinned CLI is used when it has one"}
+      ],
+      "project_local": ["node_modules/.bin/cdk"],
+      "detect": {"command": ["cdk", "--version"], "version_regex": "^(\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["cdk", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "unix": [
+          {"id": "npm-user-prefix", "label": "official", "admin": false, "scope": "user", "requires": ["node"],
+           "source": "https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html",
+           "integrity": {"method": "package-manager", "detail": "the aws-cdk package from the npm registry, which checks each package's integrity hash; installed under ~/.local instead of a global prefix that needs sudo"},
+           "steps": [
+             {"kind": "note", "text": "a project-local CLI (npm install aws-cdk in the project, then npx aws-cdk) takes precedence; setup never installs into a project, so add it there through an approved plan if the project should pin its CLI"},
+             {"kind": "run", "argv": ["npm", "install", "-g", "--prefix", "{user_local}", "aws-cdk"]}
+           ],
+           "uninstall": [{"kind": "run", "argv": ["npm", "uninstall", "-g", "--prefix", "{user_local}", "aws-cdk"]}]},
+          {"id": "npm-global-admin", "label": "official", "admin": true, "scope": "system", "requires": ["node"],
+           "source": "https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html",
+           "integrity": {"method": "package-manager", "detail": "the aws-cdk package from the npm registry, which checks each package's integrity hash"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "npm", "install", "-g", "aws-cdk"], "why": "the documented global install, when npm's global prefix needs root"}]}
+        ]
+      }
+    },
+    "java": {
+      "purpose": "A Java Development Kit (Amazon Corretto offered)",
+      "needed_by": [
+        {"stack": "java", "skill": "implementing-java-from-spec", "level": "required", "when": "compiling and testing"},
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "if": "cdk-java", "when": "Java CDK apps compile with a JDK"}
+      ],
+      "detect": {"command": ["java", "-version"], "version_regex": "version \"(\\d+(?:\\.\\d+)*)"},
+      "stub": {"os": "macos", "paths": ["/usr/bin/java"], "probe": ["/usr/libexec/java_home"]},
+      "verify": ["java", "-version"],
+      "version_note": "the project's own Java version decides what is enough; setup offers Corretto {java_major} (21 by default, --java-major 25 when the project targets 25)",
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "debian": [
+          {"id": "corretto-apt", "label": "official", "admin": true, "scope": "system", "requires": ["gpg"],
+           "source": "https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/generic-linux-install.html",
+           "integrity": {"method": "gpg-signed-repository", "key": "corretto", "detail": "the repository key is checked against Corretto's published key ID A122542AB04F24E3 (no full fingerprint is published); apt then checks every package"},
+           "steps": [
+             {"kind": "download", "url": "https://apt.corretto.aws/corretto.key", "to": "{staging}/corretto.key"},
+             {"kind": "gpg_key", "key": "corretto", "file": "{staging}/corretto.key"},
+             {"kind": "gpg_dearmor", "file": "{staging}/corretto.key", "to": "{staging}/corretto-keyring.gpg"},
+             {"kind": "write_file", "to": "{staging}/corretto.list", "content": "deb [signed-by=/usr/share/keyrings/corretto-keyring.gpg] https://apt.corretto.aws stable main\n"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "install", "-m", "0644", "{staging}/corretto-keyring.gpg", "/usr/share/keyrings/corretto-keyring.gpg"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "install", "-m", "0644", "{staging}/corretto.list", "/etc/apt/sources.list.d/corretto.list"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "update"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "java-{java_major}-amazon-corretto-jdk"]}
+           ]}
+        ],
+        "rhel": [
+          {"id": "corretto-yum", "label": "official", "admin": true, "scope": "system", "requires": ["gpg"],
+           "source": "https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/generic-linux-install.html",
+           "integrity": {"method": "gpg-signed-repository", "key": "corretto", "detail": "the repository key is checked against Corretto's published key ID A122542AB04F24E3 (no full fingerprint is published) and imported before the repository file is installed"},
+           "steps": [
+             {"kind": "download", "url": "https://yum.corretto.aws/corretto.key", "to": "{staging}/corretto.key"},
+             {"kind": "gpg_key", "key": "corretto", "file": "{staging}/corretto.key"},
+             {"kind": "download", "url": "https://yum.corretto.aws/corretto.repo", "to": "{staging}/corretto.repo"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "rpm", "--import", "{staging}/corretto.key"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "install", "-m", "0644", "{staging}/corretto.repo", "/etc/yum.repos.d/corretto.repo"]},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "java-{java_major}-amazon-corretto-devel"]}
+           ]}
+        ],
+        "macos": [
+          {"id": "corretto-pkg", "label": "official", "admin": true, "scope": "system",
+           "source": "https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/macos-install.html",
+           "integrity": {"method": "sha256", "detail": "the SHA-256 Corretto publishes for the package (latest_sha256 link on the downloads page, same origin)"},
+           "steps": [
+             {"kind": "download", "url": "https://corretto.aws/downloads/latest/amazon-corretto-{java_major}-{arch_corretto}-macos-jdk.pkg", "to": "{staging}/corretto.pkg"},
+             {"kind": "download", "url": "https://corretto.aws/downloads/latest_sha256/amazon-corretto-{java_major}-{arch_corretto}-macos-jdk.pkg", "to": "{staging}/corretto.pkg.sha256"},
+             {"kind": "sha256", "file": "{staging}/corretto.pkg", "sums": "{staging}/corretto.pkg.sha256"},
+             {"kind": "manual", "admin": true, "argv": ["sudo", "installer", "-pkg", "{staging}/corretto.pkg", "-target", "/"], "why": "Corretto's macOS package needs administrator rights"}
+           ]}
+        ]
+      }
+    },
+    "maven": {
+      "purpose": "Apache Maven, when the project has no Maven wrapper",
+      "group": "java-build",
+      "needed_by": [
+        {"stack": "java", "skill": "implementing-java-from-spec", "level": "required", "when": "building and testing Maven projects that have no ./mvnw"},
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "if": "cdk-java", "when": "Java CDK apps build with Maven unless they ship a wrapper"}
+      ],
+      "project_local": ["mvnw"],
+      "detect": {"command": ["mvn", "-v"], "version_regex": "Apache Maven (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["mvn", "-v"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew", "java"],
+           "source": "https://maven.apache.org/install.html",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "maven"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "maven"]}]}
+        ],
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system", "requires": ["java"],
+           "source": "https://maven.apache.org/install.html",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "maven"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system", "requires": ["java"],
+           "source": "https://maven.apache.org/install.html",
+           "integrity": {"method": "package-manager", "detail": "dnf or yum checks the distribution's signed repository"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "{rpm_pm}", "install", "-y", "maven"]}]}
+        ]
+      }
+    },
+    "gradle": {
+      "purpose": "Gradle, when the project has no Gradle wrapper",
+      "group": "java-build",
+      "needed_by": [
+        {"stack": "java", "skill": "implementing-java-from-spec", "level": "required", "when": "building and testing Gradle projects that have no ./gradlew"},
+        {"stack": "cdk", "skill": "implementing-cdk-from-spec", "level": "required", "if": "cdk-java", "when": "Java CDK apps that build with Gradle and ship no wrapper"}
+      ],
+      "project_local": ["gradlew"],
+      "detect": {"command": ["gradle", "-v"], "version_regex": "Gradle (\\d+\\.\\d+(?:\\.\\d+)?)"},
+      "verify": ["gradle", "-v"],
+      "windows": "Use WSL2 and follow the Linux steps there",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew", "java"],
+           "source": "https://docs.gradle.org/current/userguide/installation.html",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "gradle"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "gradle"]}]}
+        ],
+        "linux": [
+          {"id": "binary-zip-manual", "label": "official", "admin": false, "scope": "user", "requires": ["java"],
+           "source": "https://docs.gradle.org/current/userguide/installation.html",
+           "integrity": {"method": "sha256", "detail": "the SHA-256 Gradle publishes per distribution at https://gradle.org/release-checksums/; the file name carries the version, so setup prints these steps instead of running them"},
+           "steps": [
+             {"kind": "note", "text": "Gradle publishes no apt or dnf package. Download gradle-<version>-bin.zip from https://gradle.org/releases/, compare its SHA-256 with https://gradle.org/release-checksums/, unzip it under ~/.local and put its bin/ directory on PATH"}
+           ]}
+        ]
+      }
+    },
+    "pipx": {
+      "purpose": "pipx, which installs Python CLIs into isolated environments",
+      "group": "python-cli-installer",
+      "needed_by": [
+        {"stack": "python", "skill": "implementing-python-from-spec", "level": "required", "when": "installing Python CLIs without touching the project's environment (pipx or uv)"}
+      ],
+      "detect": {"command": ["pipx", "--version"], "version_regex": "^(\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["pipx", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://pipx.pypa.io/stable/how-to/install-pipx.html",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [
+             {"kind": "run", "argv": ["brew", "install", "pipx"]},
+             {"kind": "note", "text": "pipx installs commands into ~/.local/bin; pipx ensurepath adds it to PATH by editing your shell profile, which setup leaves to you"}
+           ],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "pipx"]}]}
+        ],
+        "debian": [
+          {"id": "apt", "label": "community", "admin": true, "scope": "system",
+           "source": "https://pipx.pypa.io/stable/how-to/install-pipx.html",
+           "integrity": {"method": "package-manager", "detail": "apt checks the distribution's signed repository (Ubuntu 23.04 and later, Debian 12 and later)"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "apt-get", "install", "-y", "pipx"]}]}
+        ],
+        "rhel": [
+          {"id": "dnf", "label": "community", "admin": true, "scope": "system", "distros": ["fedora"],
+           "source": "https://pipx.pypa.io/stable/how-to/install-pipx.html",
+           "integrity": {"method": "package-manager", "detail": "dnf checks the distribution's signed repository. Fedora only: the pipx page documents dnf for Fedora, and RHEL and Amazon Linux carry no pipx package (EPEL is not a vendor channel)"},
+           "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "dnf", "install", "-y", "pipx"]}]}
+        ]
+      }
+    },
+    "uv": {
+      "purpose": "uv, which installs Python CLIs into isolated environments and fetches a suitable Python",
+      "group": "python-cli-installer",
+      "needed_by": [
+        {"stack": "python", "skill": "implementing-python-from-spec", "level": "required", "when": "installing Python CLIs without touching the project's environment (pipx or uv)"}
+      ],
+      "detect": {"command": ["uv", "--version"], "version_regex": "^uv (\\d+\\.\\d+\\.\\d+)"},
+      "verify": ["uv", "--version"],
+      "windows": "Use WSL2 and follow the Linux recipe there",
+      "recipes": {
+        "macos": [
+          {"id": "brew", "label": "community", "admin": false, "scope": "user", "requires": ["brew"],
+           "source": "https://docs.astral.sh/uv/getting-started/installation/",
+           "integrity": {"method": "package-manager", "detail": "Homebrew checks each download's sha256"},
+           "steps": [{"kind": "run", "argv": ["brew", "install", "uv"]}],
+           "uninstall": [{"kind": "run", "argv": ["brew", "uninstall", "uv"]}]}
+        ],
+        "any": [
+          {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
+           "source": "https://docs.astral.sh/uv/getting-started/installation/",
+           "integrity": {"method": "package-manager", "detail": "Astral's uv package from PyPI over HTTPS, installed by pipx; preferred over Astral's piped install script"},
+           "steps": [{"kind": "run", "argv": ["pipx", "install", "uv"]}],
+           "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "uv"]}]},
+          {"id": "install-script", "label": "official", "admin": false, "scope": "user", "requires": ["curl", "tar"],
+           "source": "https://docs.astral.sh/uv/getting-started/installation/",
+           "integrity": {"method": "vendor-script", "detail": "piped remote script, Astral's standalone installer; it carries the sha256 of every release archive and checks the download against it. Setup downloads it first, shows it with its sha256, and runs it only after your confirmation, with UV_NO_MODIFY_PATH=1 so it leaves shell profiles alone"},
+           "steps": [
+             {"kind": "script", "url": "https://astral.sh/uv/install.sh", "to": "{staging}/uv-install.sh", "interpreter": ["sh"], "env": {"UV_NO_MODIFY_PATH": "1"}}
+           ],
+           "owns": ["{user_bin}/uv", "{user_bin}/uvx", "{home}/.config/uv/uv-receipt.json"]}
+        ]
+      }
+    }
+  }
+}

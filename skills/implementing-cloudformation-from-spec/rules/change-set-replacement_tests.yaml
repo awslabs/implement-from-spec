@@ -1,0 +1,117 @@
+# Unit tests for change-set-replacement.guard. A rule whose filter selects no change evaluates SKIP:
+# nothing of that kind is in the change set. Inputs are trimmed describe-change-set documents shaped like
+# the User Guide's change-set samples (using-cfn-updating-stacks-changesets-samples.html).
+---
+- name: empty change set skips both rules
+  input:
+    Changes: []
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: SKIP
+      NO_REMOVAL_WITHOUT_RETENTION: SKIP
+
+- name: tag change in place passes
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Modify
+          LogicalResourceId: JobsTable
+          ResourceType: AWS::DynamoDB::Table
+          Replacement: "False"
+          Scope: [Tags]
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: PASS
+      NO_REMOVAL_WITHOUT_RETENTION: SKIP
+
+- name: renaming a table replaces it
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Modify
+          LogicalResourceId: JobsTable
+          ResourceType: AWS::DynamoDB::Table
+          Replacement: "True"
+          Scope: [Properties]
+          Details:
+            - ChangeSource: DirectModification
+              Evaluation: Static
+              Target:
+                Attribute: Properties
+                Name: TableName
+                RequiresRecreation: Always
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: FAIL
+      NO_REMOVAL_WITHOUT_RETENTION: SKIP
+
+- name: conditional replacement, API spelling
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Modify
+          LogicalResourceId: AppInstance
+          ResourceType: AWS::EC2::Instance
+          Replacement: Conditional
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: FAIL
+      NO_REMOVAL_WITHOUT_RETENTION: SKIP
+
+- name: conditional replacement, User Guide spelling
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Modify
+          LogicalResourceId: AppInstance
+          ResourceType: AWS::EC2::Instance
+          Replacement: Conditionally
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: FAIL
+      NO_REMOVAL_WITHOUT_RETENTION: SKIP
+
+- name: additions alone pass
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Add
+          LogicalResourceId: UploadsBucket
+          ResourceType: AWS::S3::Bucket
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: SKIP
+      NO_REMOVAL_WITHOUT_RETENTION: SKIP
+
+- name: removal that deletes fails
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Remove
+          LogicalResourceId: ArtifactsBucket
+          ResourceType: AWS::S3::Bucket
+          PolicyAction: Delete
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: SKIP
+      NO_REMOVAL_WITHOUT_RETENTION: FAIL
+
+- name: removal that retains passes
+  input:
+    Changes:
+      - Type: Resource
+        ResourceChange:
+          Action: Remove
+          LogicalResourceId: ArtifactsBucket
+          ResourceType: AWS::S3::Bucket
+          PolicyAction: Retain
+  expectations:
+    rules:
+      NO_REPLACEMENT_OF_EXISTING_RESOURCES: SKIP
+      NO_REMOVAL_WITHOUT_RETENTION: PASS
