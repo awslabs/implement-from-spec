@@ -405,7 +405,9 @@ def render_brief(rev: dict, stack: str, manifest: dict, directory: str, risk: di
         "message are better",
         "- The read-only commands: git diff, log, show, status, ls-files, blame, rev-parse, cat-file and "
         "merge-base (with `-C <dir>`, never `-c`); ls, cat, head, tail, wc, grep, rg, sort, uniq, cut, tr, diff, "
-        "stat, file; find without -exec, -execdir, -ok, -delete or -fprint; sed -n without -i or w; and "
+        "stat, file (grep and rg with their common read-only options only, each long option spelled in full: no "
+        "`grep -R`, `rg -L`, `rg -z` or `rg --pre`); find without -exec, -execdir, -ok, -delete or -fprint; sed -n "
+        "without -i or w; and "
         f"`python3 -I \"{PLUGIN_ROOT}/core/scripts/review-snapshot.py\" verify {directory}` (or delta or gates in "
         "place of verify), written exactly so: python3 with `-I` and the script's absolute path",
         "- Never run the tests, a linter, a type checker or any other program, and never python3 on anything "

@@ -83,7 +83,10 @@ the report only when the code or the template proves it: two reviewers agreeing 
   `review-snapshot.py`): never with Edit or Write, and never edited, rewritten, trimmed or deleted by a
   command or script of your own, not even to correct a wrong entry (step 3). `verify`, `gates` and
   `state` detect such a change (`<file> changed outside <writer>`, exit 3), and the review state then
-  says invalidated. A tool call that was denied is never retried through another tool (a shell redirect,
+  says invalidated. Nothing writes into the snapshot directory directly, outputs included (in the
+  implementing skill's gated session the approval gate denies every write there): a command whose output a
+  reviewer reads writes it to the review's scratch directory `<work>`, and `review-snapshot.py attach`
+  copies it in (step 1). A tool call that was denied is never retried through another tool (a shell redirect,
   a heredoc, an interpreter): report the denial and what it blocked
 
 ## Workflow
@@ -139,6 +142,21 @@ repository, the plugin and the snapshot directory. The `Risk:` and `Approval req
 state block (step 5). The tier only adds scrutiny: both Claude reviewers run on opus whatever the lens
 model, and nothing here changes an external-review setting.
 
+Make the review's scratch directory once, right after the preparation: `mktemp -d`, outside the
+repository; `<work>` below is the path it prints. Every command whose output a reviewer reads (the synthesised assembly, a
+gate command's output)
+writes it under `<work>`, and the plugin's script copies it into the snapshot, write-once:
+
+    python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" attach <DIR> --to <where> \
+        --from <work>/<file>
+
+`<where>` is `synth/<name>.out` (a directory), `gates/<name>.txt` or `input/<name>` (a file; `--from -`
+reads standard input, from a quoted heredoc for pasted text). Exit 3: the tree changed since the
+snapshot, and nothing was attached. Exit 1 on a name already attached (a reused snapshot, the same
+id, keeps what an earlier review of the same candidate attached): an attached output is never replaced;
+attach a new one under another name and say so in the report. Never write into `<DIR>` yourself, not
+even when attach fails: report what it printed.
+
 Print one line: "Reviewing N files, M lines changed in <stacks>, a <Python | Java> CDK app; snapshot
 <id12>; risk <standard | high> (<reasons>)." Over 500 lines or 10 files, say so and suggest splitting;
 over 1,000 lines, offer to review by stack or by commit. No change in the app, or no `cdk.json`: section
@@ -157,9 +175,12 @@ the line's `model` and exactly this prompt (contract section 9):
    are not there yet), the `reviewing-terraform-security` line when printed, and the runner on
    `External review: runner`
 2. **Synthesise** while wave 1 works, without waiting for its replies: `references/standalone-review.md` section 2 gives the command
-   (`cdk synth --quiet --lookups=false --output <DIR>/synth/change.out`), the lookup question, the
-   committed-range extraction and how the result is recorded as the gate `cdk-synth`. When the app is
-   not synthesised, write the reason to `<DIR>/gates/cdk-synth.txt`
+   (`cdk synth --quiet --lookups=false --output <work>/change.out > <work>/cdk-synth.txt 2>&1`, `<work>`
+   the review's scratch directory), the lookup question, the committed-range extraction and how the result
+   is recorded as the gate `cdk-synth`. Never write into `<DIR>` yourself (in the implementing skill's
+   gated session the approval gate denies it): `review-snapshot.py attach` copies the assembly to
+   `<DIR>/synth/change.out` and the output to `<DIR>/gates/cdk-synth.txt`. When the app is not
+   synthesised, the output, or the reason written to `<work>/cdk-synth.txt`, is attached the same way
 3. **Wave 2, as soon as synthesis ends**, in one message before the rest of the gate: the
    `iac-security-reviewer` line and any other `Dispatch:` line wave 1 did not name. Its brief names
    `<DIR>/synth/change.out` and `<DIR>/gates/cdk-synth.txt`. It runs whatever the synth result; a
@@ -209,8 +230,9 @@ itself, listed on stderr as "not sent"; `--dry-run` prints the exact payload.
 
 After wave 2, `references/standalone-review.md` section 3 gives the commands: the app's tests, cfn-lint, cfn-guard and
 cfn-validate on `<DIR>/synth/change.out`, the logical-ID comparison with the base, and the change-set
-diff only with the user's approval. Save each output to `<DIR>/gates/<name>.txt` and record the blocking
-checks (`cdk-synth`, `tests`) against the snapshot:
+diff only with the user's approval. Write each output to `<work>/<name>.txt` and attach it as
+`<DIR>/gates/<name>.txt` (section 3 of the reference), and record the blocking checks (`cdk-synth`,
+`tests`) against the snapshot:
 
     python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" record-gate <DIR> --name <check> \
         --status <pass | fail> --command "<the exact command run>"

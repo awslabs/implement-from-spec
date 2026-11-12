@@ -51,7 +51,10 @@ the session's state file):
     `>` or `<`, every other `$`, backticks,
     `;`, a single `&`, `(`, `)`, `{`, `}`, a comment, a newline or control character, an unterminated
     quote, a leading assignment, an unquoted `~` after `=` or `:`, a glob component starting with a dot.
-    Every word that can name a file is checked like a Read path (globs are expanded to check every match)
+    Every word that can name a file is checked like a Read path (globs are expanded to check every match).
+    grep and rg take only the read-only options SEARCH_SPECS lists, each matched by its full name: an
+    abbreviation, an unlisted option (`rg --hostname-bin`, `--pre`, `-z`, `-L`; `grep -R`, `--filter`) and
+    a value given to an option that takes none are denied (until 2026-11-12 they had a short denylist)
 
 Failure policy. Every decision is JSON on stdout with exit 0. On an internal error the hook denies when the
 caller is (or, from a state file it cannot parse, may be) a registered reviewer, and prints nothing for
@@ -778,10 +781,60 @@ SIMPLE = {
     "cut": {"short_values": {"d": "skip", "f": "skip", "c": "skip", "b": "skip"},
             "long_values": {"delimiter": "skip", "fields": "skip", "characters": "skip", "bytes": "skip"}},
 }
-GREP_SPEC = {"short_values": {"e": "skip", "f": "path"}, "long_values": {"regexp": "skip", "file": "path"}}
-RG_SPEC = {"short_values": {"e": "skip", "f": "path", "g": "skip"},
-           "long_values": {"regexp": "skip", "file": "path", "glob": "skip", "iglob": "skip"},
-           "forbid_long": {"pre", "pre-glob"}}
+# grep and rg take only the options listed here (PR 1 review, 2026-11-12: `rg --hostname-bin=<program>` runs that
+# program, and getopt takes an unambiguous prefix of a long option, so BSD grep read `--regex=` as `--regexp=`
+# while the hook took the next word for the pattern). An option is looked up by its exact name: an abbreviation,
+# an option that is not listed and a value given to an option that takes none are denied. `grep` in Claude
+# Code's Bash tool is ugrep (a shell function of the session snapshot runs the claude binary as ugrep), else BSD
+# or GNU grep; `rg` is Claude Code's embedded ripgrep 14 or an installed one. An option is listed only when it
+# is read-only, runs and loads nothing, follows no symbolic link out of the paths it is given, and takes a value
+# in every one of those implementations or in none (BSD -O is a flag but ugrep's -O takes a value, so a word
+# the hook skipped as a value could be read as a file: such options are left out). Kinds:
+#   FLAG              no value; `--name=value` is denied
+#   NUM               a count (digits; ugrep's -m also takes MIN,MAX), checked as one
+#   TEXT              a value that is never a path: a pattern, a glob, a file type name
+#   PATH              a file, checked like a Read path (`-` is standard input)
+#   ("enum", {...})   a required value from the set
+#   ("optenum", {...}) long only: no value, or `=value` from the set (grep's --color, whose value is optional)
+FLAG, NUM, TEXT, PATH = "flag", "num", "text", "path"
+COLOR_WHEN = ("optenum", frozenset({"never", "always", "auto"}))
+SEARCH_SPECS = {
+    "grep": {
+        "short": dict({c: FLAG for c in "abcEFGHhIiLlnoPqrsTvwx0123456789"},
+                      A=NUM, B=NUM, C=NUM, m=NUM, e=TEXT, f=PATH),
+        "long": dict({n: FLAG for n in (
+            "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "ignore-case", "no-ignore-case",
+            "invert-match", "word-regexp", "line-regexp", "count", "files-with-matches", "files-without-match",
+            "only-matching", "quiet", "silent", "no-messages", "byte-offset", "with-filename", "no-filename",
+            "line-number", "recursive", "initial-tab", "text", "line-buffered", "null")},
+            **{"after-context": NUM, "before-context": NUM, "context": NUM, "max-count": NUM, "regexp": TEXT,
+               "include": TEXT, "exclude": TEXT, "exclude-dir": TEXT, "file": PATH, "color": COLOR_WHEN,
+               "colour": COLOR_WHEN}),
+    },
+    "rg": {
+        "short": dict({c: FLAG for c in "isSFwxvcloNnHIbqUPau.0p"},
+                      A=NUM, B=NUM, C=NUM, m=NUM, M=NUM, j=NUM, d=NUM, e=TEXT, g=TEXT, t=TEXT, T=TEXT, f=PATH),
+        "long": dict({n: FLAG for n in (
+            "ignore-case", "case-sensitive", "smart-case", "fixed-strings", "word-regexp", "line-regexp",
+            "invert-match", "count", "count-matches", "files-with-matches", "files-without-match",
+            "only-matching", "line-number", "no-line-number", "with-filename", "no-filename", "byte-offset",
+            "quiet", "multiline", "multiline-dotall", "pcre2", "text", "column", "no-column", "heading",
+            "no-heading", "hidden", "no-hidden", "no-ignore", "no-ignore-vcs", "no-ignore-dot", "no-ignore-exclude",
+            "no-ignore-files", "no-ignore-global", "no-ignore-parent", "no-require-git", "unrestricted", "files",
+            "type-list", "trim", "vimgrep", "json", "stats", "no-messages", "no-ignore-messages", "no-config",
+            "null", "crlf", "glob-case-insensitive", "one-file-system", "passthru", "include-zero",
+            "line-buffered", "block-buffered", "no-unicode", "max-columns-preview", "pretty", "binary")},
+            **{"after-context": NUM, "before-context": NUM, "context": NUM, "max-count": NUM, "max-columns": NUM,
+               "max-depth": NUM, "threads": NUM, "regexp": TEXT, "glob": TEXT, "iglob": TEXT, "type": TEXT,
+               "type-not": TEXT, "file": PATH,
+               "color": ("enum", frozenset({"never", "auto", "always", "ansi"})),
+               "sort": ("enum", frozenset({"none", "path", "modified", "accessed", "created"})),
+               "sortr": ("enum", frozenset({"none", "path", "modified", "accessed", "created"}))}),
+    },
+}
+SEARCH_NUM_RE = re.compile(r"^[0-9]{1,9}(?:,[0-9]{0,9})?$")
+# The options that supply the pattern, so every operand is a path; rg's --files and --type-list take none.
+SEARCH_PATTERN_OPTIONS = {"e", "f", "regexp", "file", "files", "type-list"}
 FIND_FORBIDDEN = ("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fls")
 SED_ADDR = r"(?:\d+|\$|/(?:[^/\\]|\\.)*/)"
 SED_CMD_RE = re.compile(r"^%s(?:,%s)?!?(?:[p=lqd]|s/(?:[^/\\]|\\.)*/(?:[^/\\]|\\.)*/[gpiI0-9]*)$|^[p=lqd]$|"
@@ -851,6 +904,86 @@ def check_sed(ctx, args):
             raise Deny(f"the sed script {script!r} is not a plain print (no w, r, e or other commands)")
     for w in operands:
         ctx.path(w)
+
+
+def search_value(ctx, prog, label, kind, value):
+    """Checks the value of an allowlisted grep or rg option by its kind (SEARCH_SPECS)."""
+    if kind == NUM:
+        if not SEARCH_NUM_RE.match(value):
+            raise Deny(f"the {prog} option {label} takes a count, not {value!r}")
+    elif kind == PATH:
+        if value != "-":
+            check_path(value, ctx.cwd, ctx.roots, f"the value of {prog} {label}")
+    elif isinstance(kind, tuple):
+        if value not in kind[1]:
+            raise Deny(f"the {prog} option {label} takes one of {', '.join(sorted(kind[1]))}, not {value!r}")
+
+
+def parse_search_args(ctx, args, prog):
+    """grep's and rg's arguments against their allowlist (SEARCH_SPECS). Returns (operands, seen): the operand
+    Words and the names of the options used. Raises Deny for any option that is not listed by its exact name."""
+    spec = SEARCH_SPECS[prog]
+    operands, seen, i, opts_done = [], set(), 0, False
+
+    def take(label, kind, attached):
+        """The option's value: the attached text, else the next word, which is consumed."""
+        nonlocal i
+        if attached is not None:
+            return attached
+        if i + 1 >= len(args):
+            raise Deny(f"the {prog} option {label} has no value")
+        i += 1
+        word = args[i]
+        if word.glob:
+            ctx.globbed(word)
+        return word.value()
+
+    while i < len(args):
+        w = args[i]
+        text = w.value()
+        if w.glob:
+            ctx.globbed(w)
+        if opts_done or not text.startswith("-") or text == "-":
+            operands.append(w)
+            i += 1
+            continue
+        if text == "--":
+            opts_done = True
+            i += 1
+            continue
+        if text.startswith("--"):
+            name, eq, attached = text[2:].partition("=")
+            kind = spec["long"].get(name)
+            if kind is None:
+                raise Deny(f"the {prog} option --{name} is not on the reviewer's read-only allowlist (options are "
+                           "matched by their full name; an abbreviation is not accepted)")
+            seen.add(name)
+            label = f"--{name}"
+            if kind == FLAG:
+                if eq:
+                    raise Deny(f"the {prog} option {label} takes no value")
+            elif isinstance(kind, tuple) and kind[0] == "optenum":
+                if eq and attached not in kind[1]:
+                    raise Deny(f"the {prog} option {label} takes one of {', '.join(sorted(kind[1]))}")
+            else:
+                search_value(ctx, prog, label, kind, take(label, kind, attached if eq else None))
+            i += 1
+            continue
+        letters = text[1:]
+        j = 0
+        while j < len(letters):
+            letter = letters[j]
+            kind = spec["short"].get(letter)
+            if kind is None:
+                raise Deny(f"the {prog} option -{letter} is not on the reviewer's read-only allowlist")
+            seen.add(letter)
+            if kind != FLAG:
+                rest = letters[j + 1:]
+                search_value(ctx, prog, f"-{letter}", kind, take(f"-{letter}", kind, rest or None))
+                break
+            j += 1
+        i += 1
+    return operands, seen
 
 
 def check_find(ctx, args):
@@ -967,13 +1100,11 @@ def check_segment(ctx, words):
         parse_args(ctx, args, {})  # tr reads standard input only; its operands are character sets
         return
     if prog in ("grep", "rg"):
-        seen = set()
-        operands = parse_args(ctx, args, dict(GREP_SPEC if prog == "grep" else RG_SPEC, seen=seen))
+        operands, seen = parse_search_args(ctx, args, prog)
         # -e/--regexp or -f/--file supply the pattern; rg --files lists files and takes no pattern. Otherwise
-        # the first operand is the pattern. A misread only makes a pattern a checked path (denies more).
-        has_pattern = bool(seen & {"e", "f", "regexp", "file"})
-        if prog == "rg" and any(a.value() in ("--files", "--type-list") for a in args):
-            has_pattern = True
+        # the first operand is the pattern. Options are matched by their full name only (SEARCH_SPECS), so an
+        # abbreviation of --regexp can no longer turn a file into "the pattern".
+        has_pattern = bool(seen & SEARCH_PATTERN_OPTIONS)
         if operands and not has_pattern:
             operands = operands[1:]  # the pattern: not a path
         for w in operands:

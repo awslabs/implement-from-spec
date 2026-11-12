@@ -354,6 +354,14 @@ dispatch.
   `<file> changed outside <writer>` (exit 3), which `state` renders as an invalidated snapshot with
   verification incomplete; a record whose sidecar is missing counts as changed too, and a changed record
   also puts `human (<reason>)` under *Approval required*. A tool call that was denied is never retried through another tool: the denial is reported
+- **Outputs the reviewers read go in through `attach`.** Nothing writes into the snapshot directory
+  directly: in a gated session (an implementing skill's review step) the approval gate denies every
+  tool-call write under the snapshot roots, with or without approval. A command whose output a reviewer
+  reads (a synthesised cloud assembly, a gate command's output, a supplied change set or plan output)
+  writes it to a scratch directory outside the repository (`mktemp -d`), and
+  `python3 -I "<PLUGIN_ROOT>/core/scripts/review-snapshot.py" attach <snapshot DIR> --to <where> --from <file or ->`
+  copies it in, write-once, to `synth/<name>.out` (a directory), `gates/<name>.txt` or `input/<name>`,
+  and only there; it refuses a snapshot that no longer verifies (exit 3) and a name already attached
 - **Verify before reporting**: the state block comes only from `review-snapshot.py state` (review
   state, below), which recomputes the candidate first. Exit 0: the block says `valid`. Exit 3: it says
   `invalidated: <paths>`, verification is incomplete, and the change since is reviewed as a fix round
@@ -438,7 +446,8 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
   Skill call among them; Read, Grep and Glob outside the repository, the plugin root and the snapshot directory, or on a credential path; and
   every Bash line that is not wholly on its read-only allowlist (git reads, file viewers, `find` without
   actions, `sed -n`, `review-snapshot.py verify`, `delta` and `gates`, and the external-review script for
-  `running-external-review` only); `state` and `save-findings` are the main conversation's. Reviewers run
+  `running-external-review` only; `grep` and `rg` with their listed read-only options only, each by its
+  full name); `state`, `save-findings` and `attach` are the main conversation's. Reviewers run
   no tests and no builds; the orchestrator's quality gate does. Every brief states the tool rules that
   keep a reviewer clear of denials: files read with Read, searched with Grep and listed with Glob; one
   plain allowlisted command per Bash call, with no `;`, `echo`, `cd`, variable or redirection (only

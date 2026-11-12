@@ -27,8 +27,8 @@ specification input formats, a minor version adds a stack or a check, a patch fi
 
 ### Security
 
-Fixes from the triage of pull request 1 and from three independent reviews of those fixes, in the unreleased
-changes above (2026-11-12):
+Fixes from the triage of pull request 1, from three independent reviews of those fixes and from the pull
+request's code review, in the unreleased changes above (2026-11-12):
 
 - The PreToolUse dispatcher's failure policy is fail-closed for every tool, by decision: when `python3`
   cannot run, every tool call of a session with the plugin is blocked, reads included, until it is fixed
@@ -52,6 +52,28 @@ changes above (2026-11-12):
   traceback
 - Reviewer isolation is an allowlist: a registered reviewer may use Read, Grep, Glob, read-only Bash and a
   few bookkeeping tools; every other tool is denied, a new Claude Code tool included
+- A reviewer's `grep` and `rg` take only an allowlist of read-only options, each matched by its full name, with
+  `--opt=value` and `--opt value` both checked; an abbreviation, an unlisted option and a value given to an
+  option that takes none are denied. Until the code review, `rg` forbade only `--pre` and `--pre-glob`:
+  `rg --hostname-bin=<program>` ran a program (a script in the change under review, an instruction planted in
+  it could ask for), and its spaced form was taken for the pattern and never checked; and BSD grep took
+  `--regex=` for `--regexp=`, so the hook took the next word, a file outside the allowed roots, for the
+  pattern. Options that run or load something (`rg --pre`, `--hostname-bin`, `--hyperlink-format`, `-z`,
+  `--ignore-file`, `--type-add`; ugrep's `--filter`, `--pager`, `--view`, `--config`, `--exclude-from`), that
+  follow symbolic links out of the paths given (`grep -R`, `-S`, `rg -L`) or whose value kind differs between
+  BSD grep, GNU grep and ugrep (`-O`, `-J`, `-M`) are not on it (TM-55)
+- The CDK, CloudFormation and Terraform reviews no longer write into the review snapshot directory: in an
+  implementing skill's gated session the gate denies every tool-call write there, so `cdk synth --output
+  <DIR>/synth/change.out`, the gate outputs redirected to `<DIR>/gates/` and the change set or plan output
+  copied to `<DIR>/input/` were denied, and the IaC security reviewer of an implementing CDK review got no
+  synthesised template. The command now writes to a scratch directory, and the new
+  `review-snapshot.py attach` copies the result in: write-once, only to `synth/<name>.out`, `gates/<name>.txt`
+  or `input/<name>` (never `input/change.diff`) of a snapshot directly under the default snapshot roots that
+  still verifies, never through a symlink on either side, from no source that is or holds a credential path
+  (every entry of a directory checked), without CDK's `asset.<sha256>`
+  staging, within 256 MiB and 20,000 files. Reviewers cannot run it, and the gate still denies the direct
+  writes. A new eval case, `cloudformation-review-gated-session`, runs the review step of
+  `implementing-cloudformation-from-spec` in the session its command gates (TM-58)
 - In a gated session the gate also denies tool writes, deletions and renames of the other hooks' state: the
   reviewer registrations, the activation records, the review snapshots and the timing log; a shell command
   may not name the registrations or the records

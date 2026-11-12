@@ -36,8 +36,10 @@ them. Each command below changes nothing in the repository: a check that wrote t
 candidate, and `record-gate` would then refuse its result. Run them against the tree the change mode
 names; for a committed range whose tip differs from the working tree, extract the tip into a scratch
 directory (`scratch="$(mktemp -d)"; git -C <repo> archive <b> | tar -x -C "$scratch"`, which writes
-nothing in the repository) and run there. Save each output to `<DIR>/gates/<name>.txt`, where the
-reviewers of a fix round can read it, and record checks 2 to 5 with `record-gate` (SKILL.md step 3) under
+nothing in the repository) and run there. Write each output to `<work>/<name>.txt` (SKILL.md step 1, the
+review's scratch directory) and attach it as `<DIR>/gates/<name>.txt`, where the reviewers of a fix round
+can read it (never redirect into `<DIR>`: in the implementing skill's gated session the approval gate
+denies every write there), and record checks 2 to 5 with `record-gate` (SKILL.md step 3) under
 the names `validate-entry-point`, `cfn-lint`, `cfn-validate`, `cfn-guard-test:<rule>` and
 `cfn-guard-validate`: `pass` when the check is green as defined below, `fail` when it is red, and
 `not-run` with `--reason` when a required check could not run to a result (below), never `fail`. Checks 2
@@ -84,11 +86,13 @@ to 5 are the quality gate; check 6 is evidence for the triage, outside it.
      the registry (practices section 12)
 
 6. **The change-set rule**, only on a CloudFormation change set that already exists:
-   - The user supplies the JSON `aws cloudformation describe-change-set --output json` printed: copy it
-     to `<DIR>/input/`, outside the repository, so the reviewers can read it
+   - The user supplies the JSON `aws cloudformation describe-change-set --output json` printed: attach
+     it as `<DIR>/input/change-set.json` (from its file, or `--from -` with the pasted text in a quoted
+     heredoc), outside the repository, so the reviewers can read it
    - The user names an existing change set and allows the call: the read-only
      `aws cloudformation describe-change-set --stack-name <stack> --change-set-name <name> --output json`
-     under the AWS profile the project's CLAUDE.md prescribes, its output saved to `<DIR>/input/`. Ask
+     under the AWS profile the project's CLAUDE.md prescribes, its output written to
+     `<work>/change-set.json` and attached as `<DIR>/input/change-set.json`. Ask
      first, naming the command and the profile; never with another profile
    - Run:
 

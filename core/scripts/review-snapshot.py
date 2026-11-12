@@ -35,7 +35,20 @@ Subcommands:
     save-findings DIR
         Writes standard input, byte for byte, to DIR/findings.md (atomically, 0600): the orchestrator passes
         every finding in a quoted heredoc, so no file is written outside the project with an editor tool.
-The main conversation runs state and save-findings; the review-isolation hook allows a reviewer only
+    attach DIR --to synth/<name>.out|gates/<name>.txt|input/<name> --from PATH|-
+        Copies an output the reviewers read into the snapshot, write-once: a synthesised cloud assembly (a
+        directory: regular files and directories only, symlinks, special files and CDK's asset.<sha256>
+        staging skipped and counted), a gate command's output or an input from outside the repository (a file, or
+        standard input with `--from -`). The command that produces it writes to a scratch directory, because
+        in a gated session the approval gate denies every tool-call write under the snapshot roots (the
+        snapshot is written only by the plugin's scripts, which the gate does not see). Refused: a DIR that is
+        not a snapshot directly under one of the default snapshot roots (the only ones reviewers may read),
+        exit 64; a snapshot that no longer verifies, exit 3; a name already attached (never replaced),
+        input/change.diff (the preparation's), a symlink on either side, a source that is or holds a
+        credential path (checked on every entry of a directory), more than 256 MiB
+        or 20,000 files, exit 1 or 64. Nothing else in DIR can be written through it: manifest.json, policy/,
+        briefs/ and the records stay the other writers' alone.
+The main conversation runs state, save-findings and attach; the review-isolation hook allows a reviewer only
 verify, delta and gates.
 
 Record integrity. The records of a snapshot are written only by the plugin's scripts, and an edit by any
@@ -122,6 +135,11 @@ Usage:
     python3 -I <plugin-root>/core/scripts/review-snapshot.py save-findings <DIR> <<'IFS_FINDINGS'
     F1 [Major] src/app.py:12 - failure handling - ... Fix: ... (confirmed)
     IFS_FINDINGS
+    cdk synth --quiet --lookups=false --output <work>/change.out > <work>/cdk-synth.txt 2>&1
+    python3 -I <plugin-root>/core/scripts/review-snapshot.py attach <DIR> --to synth/change.out \\
+        --from <work>/change.out
+    python3 -I <plugin-root>/core/scripts/review-snapshot.py attach <DIR> --to gates/cdk-synth.txt \\
+        --from <work>/cdk-synth.txt
     python3 -I <plugin-root>/core/scripts/review-snapshot.py state <DIR> --recommendation "Changes requested" \\
         --verification complete --approval none --rollback "not applicable" --open-blocker 0 --open-major 1
     python3 -I <plugin-root>/core/scripts/review-snapshot.py state <NEW DIR> --fix-round 1 --previous <DIR> \\
@@ -129,7 +147,7 @@ Usage:
         --rollback "not applicable" --open-blocker 0 --open-major 0
 
 Exit status: 0 done, 1 error (state: no recorded risk classification), 3 snapshot changed or a record
-changed outside its writer (verify, gates, a refused record-gate, or state printing an invalidated block),
+changed outside its writer (verify, gates, a refused record-gate or attach, or state printing an invalidated block),
 64 usage.
 """
 from __future__ import annotations
@@ -1177,6 +1195,197 @@ def cmd_save_findings(args) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------- outputs the reviewers read (attach)
+# The orchestrator's tool outputs that reviewers read: a synthesised cloud assembly (synth/<name>.out), a gate
+# command's output (gates/<name>.txt) and an input from outside the repository (input/<name>: a supplied
+# change-set JSON, a pasted plan output). In a gated session the approval gate denies every tool-call write under
+# the snapshot roots, so the producing command writes to a scratch directory and attach copies the result in
+# (PR 1 code review, blocker 2). Write-once: an attached output is never replaced.
+ATTACH_RE = re.compile(r"^(synth|gates|input)/([A-Za-z0-9][A-Za-z0-9._:+-]{0,127})$")
+ATTACH_SUFFIX = {"synth": ".out", "gates": ".txt"}
+ATTACH_RESERVED = {"input/change.diff"}  # review-prepare.py's copy of a pasted diff
+MAX_ATTACH_BYTES = 256 * 1024 * 1024
+MAX_ATTACH_FILES = 20000
+MAX_ATTACH_DEPTH = 32
+CREDENTIAL_PATHS = ("~/.aws", "~/.ssh", "~/.config/gcloud", "~/.azure", "~/.docker/config.json", "~/.netrc")
+# CDK's asset staging in a cloud assembly: asset.<sha256 of the source>, a directory or a file with an extension
+# (asset.<hash>.zip). Only that exact form is skipped; a template or manifest whose name merely starts with
+# "asset." (a stack artifact may be named so; the manifest's templateFile names it) is copied.
+ASSET_STAGING_RE = re.compile(r"^asset\.[0-9a-f]{64}(?:\.[A-Za-z0-9]+)?$")
+
+
+def snapshot_roots() -> set:
+    """The directories review snapshots are created in by default (create without --out), as the isolation hook
+    and the gate compute them (core/gate/ifs_paths.py snapshot_roots and state_write_roots)."""
+    xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+    roots = {os.path.join(state_dir(), "review-snapshots"),
+             os.path.expanduser(os.path.join("~", ".local", "state", "implement-from-spec", "review-snapshots"))}
+    if xdg:
+        roots.add(os.path.join(os.path.expanduser(xdg), "implement-from-spec", "review-snapshots"))
+    return {os.path.realpath(r) for r in roots}
+
+
+def credential_roots() -> list:
+    return [os.path.realpath(os.path.expanduser(cred)) for cred in CREDENTIAL_PATHS]
+
+
+def holds_credentials(path: str) -> bool:
+    """Whether a source directory is an ancestor of a credential path (~/.config holds ~/.config/gcloud)."""
+    real = os.path.realpath(path)
+    return any(root.startswith(real.rstrip(os.sep) + os.sep) for root in credential_roots())
+
+
+def credential_source(path: str) -> bool:
+    for given in (os.path.abspath(path), os.path.realpath(path)):
+        if any(part == ".env" or part.startswith(".env.") for part in given.split(os.sep)):
+            return True
+        for root in credential_roots():
+            if given == root or given.startswith(root + os.sep):
+                return True
+    return False
+
+
+def read_source_file(path: str, budget: list) -> bytes:
+    """A regular file's bytes, opened without following a symlink and without blocking on a FIFO; budget is
+    [bytes left] and is charged."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise Failure(EXIT_ERROR, f"{path} is not a regular file")
+        data = fh.read(budget[0] + 1)
+    if len(data) > budget[0]:
+        raise Failure(EXIT_ERROR, f"the output is larger than {MAX_ATTACH_BYTES} bytes: {path}")
+    budget[0] -= len(data)
+    return data
+
+
+def copy_assembly(src: str, dst: str, counts: dict, budget: list, depth: int = 0) -> None:
+    """Copies a cloud assembly directory: regular files and directories only, never through a symlink (symlinks
+    and special files are skipped and counted), without CDK's asset staging (ASSET_STAGING_RE: the reviewers
+    read that code in the repository), every file written new (O_EXCL, 0600). Every entry is checked as a
+    credential path before it is read or entered, so an ancestor of one (~/.config) copies nothing."""
+    if depth > MAX_ATTACH_DEPTH:
+        raise Failure(EXIT_ERROR, f"{src} is nested more than {MAX_ATTACH_DEPTH} levels deep")
+    with os.scandir(src) as entries:
+        listed = sorted(entries, key=lambda e: e.name)
+    for entry in listed:
+        source, target = os.path.join(src, entry.name), os.path.join(dst, entry.name)
+        if entry.is_symlink():  # never followed, so never read: skipped before the credential check
+            counts["symlinks"] += 1
+            continue
+        if credential_source(source) or holds_credentials(source):
+            raise Failure(EXIT_ERROR, f"{source} is or holds a credential path; nothing was attached")
+        if ASSET_STAGING_RE.match(entry.name):
+            counts["assets"] += 1
+        elif entry.is_dir(follow_symlinks=False):
+            os.mkdir(target, 0o700)
+            copy_assembly(source, target, counts, budget, depth + 1)
+        elif entry.is_file(follow_symlinks=False):
+            counts["files"] += 1
+            if counts["files"] > MAX_ATTACH_FILES:
+                raise Failure(EXIT_ERROR, f"the output holds more than {MAX_ATTACH_FILES} files")
+            write_new(target, read_source_file(source, budget))
+        else:
+            counts["special"] += 1
+
+
+def cmd_attach(args) -> int:
+    """Copies one output the reviewers read into DIR/synth/, DIR/gates/ or DIR/input/, write-once."""
+    m = ATTACH_RE.match(args.to)
+    if not m or args.to in ATTACH_RESERVED or not m.group(2).endswith(ATTACH_SUFFIX.get(m.group(1), "")):
+        raise Failure(EXIT_USAGE, "--to takes synth/<name>.out, gates/<name>.txt or input/<name> (letters, digits, "
+                                  "`.`, `_`, `:`, `+` and `-`; input/change.diff is the preparation's)")
+    kind, name = m.group(1), m.group(2)
+    if args.source == "-" and kind == "synth":
+        raise Failure(EXIT_USAGE, "a synthesised assembly is a directory: --from <its directory>, not -")
+    directory, manifest = load_manifest(args.dir)
+    sid = manifest["id"]
+    real = os.path.realpath(directory)
+    if os.path.dirname(real) not in snapshot_roots():
+        raise Failure(EXIT_USAGE, f"{directory} is not a review snapshot in the default snapshot directory "
+                                  f"({', '.join(sorted(snapshot_roots()))}), the only one reviewers may read")
+    try:
+        changed = verify_manifest(manifest)
+    except Failure as exc:
+        changed = [f"(the snapshot cannot be recomputed: {exc.message})"]
+    if changed:
+        for rel in changed:
+            print(f"changed: {rel}")
+        print(f"Refused: snapshot {sid[:12]} no longer verifies, so an output cannot be attached to it; take a new "
+              "snapshot and run the command again", file=sys.stderr)
+        return EXIT_CHANGED
+    budget = [MAX_ATTACH_BYTES]
+    data = None
+    if args.source == "-":
+        stream = getattr(sys.stdin, "buffer", None)
+        data = stream.read(MAX_ATTACH_BYTES + 1) if stream is not None else b""
+        if len(data) > MAX_ATTACH_BYTES:
+            raise Failure(EXIT_USAGE, f"standard input is larger than {MAX_ATTACH_BYTES} bytes")
+        if not data.strip():
+            raise Failure(EXIT_USAGE, "nothing on standard input")
+    else:
+        source = os.path.abspath(os.path.expanduser(args.source))
+        if credential_source(source) or holds_credentials(source):
+            raise Failure(EXIT_USAGE, f"{args.source} is or holds a credential path; nothing was attached")
+        try:
+            st = os.lstat(source)
+        except OSError as exc:
+            raise Failure(EXIT_USAGE, f"cannot read {args.source}: {exc.strerror}")
+        wanted_dir = kind == "synth"
+        if stat.S_ISLNK(st.st_mode) or (stat.S_ISDIR(st.st_mode) != wanted_dir) or \
+                not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            raise Failure(EXIT_USAGE, f"{args.source} must be {'a directory' if wanted_dir else 'a regular file'}, "
+                                      "not a symlink")
+        if not wanted_dir:
+            data = read_source_file(source, budget)
+    kind_dir = os.path.join(real, kind)
+    target = os.path.join(kind_dir, name)
+    counts = {"files": 0, "symlinks": 0, "assets": 0, "special": 0}
+    lock_fd = os.open(os.path.join(real, ".attach.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                      0o600)
+    try:
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if os.path.lexists(kind_dir):
+            if os.path.islink(kind_dir) or not os.path.isdir(kind_dir):
+                raise Failure(EXIT_ERROR, f"{kind_dir} is a symlink or not a directory; nothing was attached")
+        else:
+            os.mkdir(kind_dir, 0o700)
+        if os.path.lexists(target):
+            raise Failure(EXIT_ERROR, f"{args.to} is already attached to snapshot {sid[:12]} and is never replaced: "
+                                      "attach the new output under another name and say so in the report")
+        if data is not None:
+            fd, tmp = tempfile.mkstemp(dir=kind_dir, prefix=".attach-")
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                os.chmod(tmp, 0o600)
+                os.link(tmp, target)  # fails if the name exists: write-once even against a racing writer
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+            counts["files"], size = 1, len(data)
+        else:
+            tmp = tempfile.mkdtemp(dir=kind_dir, prefix=".attach-")
+            try:
+                copy_assembly(source, tmp, counts, budget)
+                if os.path.lexists(target):
+                    raise Failure(EXIT_ERROR, f"{args.to} appeared while it was copied; nothing was attached")
+                os.rename(tmp, target)
+            except BaseException:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+            size = MAX_ATTACH_BYTES - budget[0]
+    finally:
+        os.close(lock_fd)
+    skipped = [f"{n} {what} not copied" for what, n in (("asset staging entries", counts["assets"]),
+                                                        ("symlinks", counts["symlinks"]),
+                                                        ("special files", counts["special"])) if n]
+    print(one_line(f"Attached: {target} ({counts['files']} files, {size} bytes"
+                   f"{'; ' + ', '.join(skipped) if skipped else ''}) for snapshot {sid[:12]}"))
+    return EXIT_OK
+
+
 class Parser(argparse.ArgumentParser):
     """argparse with the documented usage exit status, 64."""
 
@@ -1193,7 +1402,7 @@ def build_parser() -> Parser:
                     formatter_class=argparse.RawDescriptionHelpFormatter,
                     epilog="Candidate, by mode (" + __doc__.split("Candidate, by mode (", 1)[1])
     sub = parser.add_subparsers(dest="command_name",
-                                metavar="{create,verify,delta,record-gate,gates,state,save-findings}")
+                                metavar="{create,verify,delta,record-gate,gates,state,save-findings,attach}")
     sub.required = True
     create = sub.add_parser("create", help="write a new snapshot")
     create.add_argument("--repo", required=True, help="the project repository (any directory in its work tree)")
@@ -1240,13 +1449,21 @@ def build_parser() -> Parser:
     state.add_argument("--previous", metavar="OLD", help="with --fix-round: the snapshot reviewed before the fixes")
     findings = sub.add_parser("save-findings", help="write standard input to DIR/findings.md")
     findings.add_argument("dir", help="the snapshot directory of the review")
+    attach = sub.add_parser("attach", help="copy an output the reviewers read into DIR/synth/, gates/ or input/")
+    attach.add_argument("dir", help="the snapshot directory of the review (in the default snapshot directory)")
+    attach.add_argument("--to", required=True, metavar="WHERE",
+                        help="synth/<name>.out (a directory), gates/<name>.txt or input/<name> (a file)")
+    attach.add_argument("--from", required=True, dest="source", metavar="PATH",
+                        help="the file or directory the command wrote outside the snapshot; - for standard input "
+                             "(gates/ and input/ only)")
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     handler = {"create": cmd_create, "verify": cmd_verify, "delta": cmd_delta, "record-gate": cmd_record_gate,
-               "gates": cmd_gates, "state": cmd_state, "save-findings": cmd_save_findings}[args.command_name]
+               "gates": cmd_gates, "state": cmd_state, "save-findings": cmd_save_findings,
+               "attach": cmd_attach}[args.command_name]
     try:
         return handler(args)
     except Failure as exc:

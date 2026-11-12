@@ -33,7 +33,9 @@ the fix rounds are contract section 9 and SKILL.md steps 1, 5 and 6.
 Run from the main conversation while the stages work; the reviewers never run them. Each command below
 changes nothing in the repository; anything that would (an `init` in place, `fmt` without `-check`,
 `tflint --fix`) is not run, and a check that wrote there would change the candidate, so `record-gate`
-would refuse its result. Save each output to `<DIR>/gates/<name>.txt` and record checks 2 and 3 with
+would refuse its result. Write each output to `<work>/<name>.txt` (SKILL.md step 1, the review's scratch
+directory) and attach it as `<DIR>/gates/<name>.txt` (never redirect into `<DIR>`: in the implementing
+skill's gated session the approval gate denies every write there), and record checks 2 and 3 with
 `record-gate` (SKILL.md step 3) under the names `terraform-fmt` and `terraform-validate:<root>`: `pass`
 when green as defined below, `fail` when red, and `not-run` with `--reason` when the check could not run
 to a result (binary missing or too old, download declined, the sandbox blocking the provider plugin),

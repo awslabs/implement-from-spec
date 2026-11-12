@@ -366,6 +366,21 @@ reviewed. Standard library only, Python 3.9.
 - `record-gate DIR --name NAME --status pass|fail|not-run --command CMD [--reason TEXT]` (`not-run` needs `--reason`): appends to `DIR/gates.json` with the
   snapshot id; refused (exit 3) when `verify` fails, so a gate result never outlives its snapshot.
   `gates DIR` prints them
+- `attach DIR --to synth/<name>.out|gates/<name>.txt|input/<name> --from PATH|-`: copies an output the
+  reviewers read into the snapshot, write-once: a synthesised cloud assembly (regular files and
+  directories, no symlinks, no CDK `asset.<sha256>` staging), a gate command's output, or an input from outside
+  the repository (a change set, a pasted plan output; standard input with `-`). Added after the PR 1 code
+  review: the IaC reviewing skills synthesised and redirected straight into `DIR`, which the approval gate
+  denies in an implementing skill's gated session (the snapshot roots are among
+  `ifs_paths.state_write_roots`, denied with or without approval), so the security reviewer of an
+  implementing CDK review never got its templates. The producing command writes to a scratch directory
+  and the script, which the gate does not see, copies the result; this keeps the gate's protection whole
+  instead of opening subdirectories of the snapshot to tool calls. It writes nowhere else: only those three
+  subdirectories of a snapshot directly under a default snapshot root (the only ones reviewers may read)
+  that still verifies (exit 3 otherwise), never `input/change.diff` (the preparation's), never through a
+  symlink, never over a name already attached, from no source that is or holds a credential path (every
+  entry of a directory checked), within 256 MiB and 20,000 files.
+  Reviewers may not run it (the isolation hook allows `verify`, `delta` and `gates` only)
 - Exit status: 0 done, 1 error, 3 snapshot changed, 64 usage
 
 ### 2. Risk classification (`core/scripts/review-risk.py`)
@@ -420,7 +435,11 @@ rule the reviewer skills used to state only as an instruction:
   - `Bash` unless every command of the line (split on `|`, `&&` and `||`) is on the read-only allowlist:
     `git` with `diff`, `log`, `show`, `status`, `ls-files`, `blame`, `rev-parse`, `cat-file`,
     `merge-base` (never `-c`, `--output`, `--ext-diff`, `--exec`, `--upload-pack`); `ls`, `cat`, `head`,
-    `tail`, `wc`, `grep`, `rg`, `sort`, `uniq`, `cut`, `tr`, `diff`, `stat`, `file`; `find` without
+    `tail`, `wc`, `grep`, `rg`, `sort`, `uniq`, `cut`, `tr`, `diff`, `stat`, `file` (`grep` and `rg` with
+    an allowlist of read-only options, `SEARCH_SPECS`, each matched by its full name: since the PR 1 code
+    review, because `rg --hostname-bin` runs a program and getopt reads an abbreviation such as `--regex`
+    as `--regexp`; an option that runs or loads something, follows a symlink out of the paths given, or
+    takes a value in one of BSD grep, GNU grep and ugrep but not in another, is left out); `find` without
     `-exec`, `-execdir`, `-ok`, `-delete`, `-fprint*`; `sed -n` without `-i` or a `w` command;
     `python3 -I <PLUGIN_ROOT>/core/scripts/review-snapshot.py verify|delta|gates`; and, for the
     `running-external-review` role only, `python3 -I <PLUGIN_ROOT>/core/scripts/spec-external-review.py`.

@@ -48,7 +48,7 @@ agreeing is a signal, not proof.
   repository. `plan` reads live state and `test` can apply: when the user wants plan evidence, ask
   first, naming the exact command and the AWS profile the project's CLAUDE.md prescribes, and run it
   only after an explicit yes, as the implementing skill's gate rules do. A plan output the user pastes
-  is evidence; save it under `<DIR>/input/` once the snapshot exists
+  is evidence; attach it to `<DIR>/input/` once the snapshot exists (step 1)
 - Never open or quote the contents of a state file (`*.tfstate*`) or a real tfvars file (`*.tfvars`
   other than `*.tfvars.example`): a change that adds one is a finding by its path alone
 - One snapshot binds the review: findings, gate results, fix rounds and the review state name its id,
@@ -79,7 +79,10 @@ agreeing is a signal, not proof.
   `review-snapshot.py`): never with Edit or Write, and never edited, rewritten, trimmed or deleted by a
   command or script of your own, not even to correct a wrong entry (step 3). `verify`, `gates` and
   `state` detect such a change (`<file> changed outside <writer>`, exit 3), and the review state then
-  says invalidated. A tool call that was denied is never retried through another tool (a shell redirect,
+  says invalidated. Nothing writes into the snapshot directory directly, outputs included (in the
+  implementing skill's gated session the approval gate denies every write there): a command whose output a
+  reviewer reads writes it to the review's scratch directory `<work>`, and `review-snapshot.py attach`
+  copies it in (step 1). A tool call that was denied is never retried through another tool (a shell redirect,
   a heredoc, an interpreter): report the denial and what it blocked
 
 ## Workflow
@@ -130,15 +133,30 @@ review: runner`, a `Runner:` line with `model=`, `policy=<optional|required|unkn
 Exit 64: fix the arguments once. Exit 3 (`changed:` lines): the tree
 changed while it ran; run it once more. Exit 1 after the full output: the external stage failed, and its
 `External review:` line says why; dispatch the reviewers and record that line (step 4). Any other
-failure: stop and report the script's message; no review runs without a snapshot. Copy what the reviewers
-must read from outside the repository (a pasted plan output) into `<DIR>/input/` before the dispatch; the
-preparation has copied a pasted diff to `<DIR>/input/change.diff`. The isolation hook lets a reviewer
+failure: stop and report the script's message; no review runs without a snapshot. Attach what the
+reviewers must read from outside the repository (a pasted plan output) to `<DIR>/input/` before the
+dispatch (below); the preparation has copied a pasted diff to `<DIR>/input/change.diff`. The isolation hook lets a reviewer
 read only the repository, the plugin and the snapshot directory, and the briefs look for a plan output
 there.
 
 The `Risk:` and `Approval required:` lines fill the state block (step 5). The tier only adds scrutiny:
 both Claude reviewers run on opus whatever the lens model, and nothing here changes an external-review
 setting.
+
+Make the review's scratch directory once, right after the preparation: `mktemp -d`, outside the
+repository; `<work>` below is the path it prints. Every command whose output a reviewer reads (a gate command's
+output, a pasted plan output)
+writes it under `<work>`, and the plugin's script copies it into the snapshot, write-once:
+
+    python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" attach <DIR> --to <where> \
+        --from <work>/<file>
+
+`<where>` is `synth/<name>.out` (a directory), `gates/<name>.txt` or `input/<name>` (a file; `--from -`
+reads standard input, from a quoted heredoc for pasted text). Exit 3: the tree changed since the
+snapshot, and nothing was attached. Exit 1 on a name already attached (a reused snapshot, the same
+id, keeps what an earlier review of the same candidate attached): an attached output is never replaced;
+attach a new one under another name and say so in the report. Never write into `<DIR>` yourself, not
+even when attach fails: report what it printed.
 
 Print one line: "Reviewing N files, M lines changed in <roots and modules>; snapshot <id12>; risk
 <standard | high> (<reasons>)." Over 1,000 lines, offer to review by root module or by commit. No
@@ -205,8 +223,8 @@ search, whose `grep` exits 1 when nothing matches, which is not an error) and a 
 mirror holds the providers, since `init` installs every module whatever the mirror and a text search cannot
 rule out a download once a module exists; any module, any JSON configuration, any unreadable file, any
 doubt, or a provider download asks the user before `init`), and tflint and
-Checkov when installed. Save each output to `<DIR>/gates/<name>.txt` and record fmt and each root's validate
-against the snapshot:
+Checkov when installed. Write each output to `<work>/<name>.txt` and attach it as `<DIR>/gates/<name>.txt`
+(step 1), and record fmt and each root's validate against the snapshot:
 
     python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" record-gate <DIR> --name <check> \
         --status <pass | fail> --command "<the exact command run>"

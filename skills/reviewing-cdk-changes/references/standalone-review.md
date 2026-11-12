@@ -38,11 +38,22 @@ and 6.
 
 The IaC security reviewer reads the synthesised templates; the code reviewer, the Terraform hand-off and
 the runner do not. So the main conversation synthesises right after it has dispatched those three (SKILL.md
-step 2, wave 1), into the snapshot directory, where the isolation hook lets reviewers read, and dispatches
-the security reviewer (wave 2) as soon as the synthesis has ended and been recorded:
+step 2, wave 1), into the review's scratch directory `<work>` (SKILL.md step 1), copies the assembly and
+the output into the snapshot directory, where the isolation hook lets reviewers read, and dispatches the
+security reviewer (wave 2) as soon as the synthesis has ended and been recorded:
 
     <Python: the project's virtual environment first on PATH, and PYTHONDONTWRITEBYTECODE=1>
-    cdk synth --quiet --lookups=false --output <DIR>/synth/change.out
+    cdk synth --quiet --lookups=false --output <work>/change.out > <work>/cdk-synth.txt 2>&1
+    python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" attach <DIR> --to synth/change.out \
+        --from <work>/change.out
+    python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" attach <DIR> --to gates/cdk-synth.txt \
+        --from <work>/cdk-synth.txt
+
+The synthesis never writes into `<DIR>` itself: in the implementing skill's gated session the approval
+gate denies every write there (the snapshot is written only by the plugin's scripts), so a `--output`
+under `<DIR>` would leave the security reviewer without templates. `attach` copies the templates, the
+manifests and the tree, not CDK's `asset.<sha256>` staging (the reviewers read that code in the repository), and
+never replaces what it attached.
 
 - `--lookups` and `--output` are global CDK CLI options: "Synthesis will fail if this value is `false`
   and context lookups need to be performed", and `--output` names "the directory to output the
@@ -51,8 +62,8 @@ the security reviewer (wave 2) as soon as the synthesis has ended and been recor
   the lookup role and writes `cdk.context.json`, `cdk-practices.md` section 7); without a yes, review
   without the synthesised templates and say "synthesised template not reviewed"
 - Synthesis runs the registered validation plugins (the default CloudFormation validation plugin, and
-  cdk-nag when the app registers it). Save the whole output to `<DIR>/gates/cdk-synth.txt` for the
-  security reviewer and the triage, and record it as the gate `cdk-synth`. A synth that runs and fails, or a validation
+  cdk-nag when the app registers it). The whole output, attached as `<DIR>/gates/cdk-synth.txt`, is for
+  the security reviewer and the triage; record it as the gate `cdk-synth`. A synth that runs and fails, or a validation
   violation, is a red gate. A synth that cannot start because the CDK CLI or the app's dependencies are
   missing is "not run (<reason>)": never green, never fixed by installing anything, and verification is
   incomplete
@@ -67,7 +78,8 @@ the security reviewer (wave 2) as soon as the synthesis has ended and been recor
 ## 3. Read-only checks (the quality gate)
 
 Run from the main conversation while the stages work, from the app root on the tree section 2
-synthesised; the reviewers never run them. Save each output to `<DIR>/gates/<name>.txt`:
+synthesised; the reviewers never run them. Write each output to `<work>/<name>.txt` and attach it as
+`<DIR>/gates/<name>.txt`:
 
     <Python> python -m pytest            <Java> mvn compile && mvn test   (or the project's wrapper)
     cfn-lint <DIR>/synth/change.out/*.template.json                       when installed or the project uses it
@@ -88,7 +100,8 @@ synthesised; the reviewers never run them. Save each output to `<DIR>/gates/<nam
   Their findings go into the triage like a reviewer's, tagged *(tool)*; a missing optional tool is "not
   run: not installed", never "clean"
 - **Logical-ID comparison.** Extract the base (`git -C <repo> archive <base> | tar -x -C <tmp>/base`),
-  synthesise it into `<DIR>/synth/base.out` with the same command and environment, and compare, per
+  synthesise it into `<work>/base.out` with the same command and environment, attach it as
+  `<DIR>/synth/base.out`, and compare, per
   stack template, the `Resources` keys and their `Type`. A resource of a stateful type whose logical ID
   disappeared while one of the same type appeared is a changed construct ID or path: CloudFormation
   creates a new resource and deletes the old one (`cdk-practices.md` section 3). The comparison yields
