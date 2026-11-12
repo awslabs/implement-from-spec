@@ -40,8 +40,11 @@ To send us a pull request, please:
 2. Modify the source; please focus on the specific change you are contributing. If you also reformat all the code, it will be hard for us to focus on your change
 3. Ensure the local checks pass (see "Local checks" below)
 4. Commit to your fork using clear commit messages
-5. Send us a pull request, answering any default questions in the pull request interface, and say which checks you ran and with what result
-6. Stay involved in the conversation. This repository has no CI: a maintainer runs the full test suite before merging
+5. Rebase your branch onto the latest *main* (`git fetch upstream && git rebase upstream/main`), with no merge commits from *main*
+   in it, so that it merges as a fast-forward with no conflicts. Rebase again whenever *main* moves before your pull request is
+   merged. A pull request that does not merge cleanly is sent back to you; maintainers do not resolve conflicts or merge by hand
+6. Send us a pull request, answering any default questions in the pull request interface, and say which checks you ran and with what result
+7. Stay involved in the conversation. This repository has no CI: a maintainer runs the full test suite before merging
 
 GitHub provides additional document on [forking a repository](https://help.github.com/articles/fork-a-repo/) and
 [creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
