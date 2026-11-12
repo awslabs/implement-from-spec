@@ -6,8 +6,7 @@ rules, writes a code-free plan, and waits until you reply `approve`. A hook enfo
 builds the change test-first, runs the stack's own checks, has it reviewed by Claude and, if you enable
 it, by an external model, and reports. It never deploys on its own: every deploy or live change asks you first.
 
-Version 0.1.0, not yet published. In the commands below, `<org>` stands for the GitHub organisation the
-repository will be published under.
+Version 0.1.0.
 
 ## Disclaimer
 
@@ -134,14 +133,14 @@ Claude Code may run on a Claude subscription, an Anthropic API key or Amazon Bed
 From GitHub, inside Claude Code:
 
 ```
-/plugin marketplace add <org>/implement-from-spec
+/plugin marketplace add awslabs/implement-from-spec
 /plugin install implement-from-spec@implement-from-spec
 ```
 
 The same from the shell:
 
 ```
-claude plugin marketplace add <org>/implement-from-spec
+claude plugin marketplace add awslabs/implement-from-spec
 claude plugin install implement-from-spec@implement-from-spec
 ```
 
@@ -188,7 +187,7 @@ git clone <repository URL> ~/implement-from-spec
 You load it with `claude --plugin-dir ~/implement-from-spec` (step 3). The flag loads the plugin for that
 session only and writes nothing to your settings, so start each session of this walkthrough with it.
 Once the repository is published, install it instead with the two commands under "Install"
-(`/plugin marketplace add <org>/implement-from-spec`, then
+(`/plugin marketplace add awslabs/implement-from-spec`, then
 `/plugin install implement-from-spec@implement-from-spec`) and leave the flag off.
 
 **2. Create a tiny project.** A skill works in a git work tree with at least one commit:
