@@ -3,6 +3,35 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
+## Unreleased
+
+### Changed
+
+- Eval speed and review cost (2026-10-27, analysis in the maintainer's timing report): one PreToolUse
+  dispatcher hook instead of five registrations (hook CPU per call 48–96 ms instead of 162–520 ms);
+  Python review lenses on Opus (the critical lens 357 s to 129 s at the same cost); lane discipline
+  and a capped finding line, with findings written once in findings.md; CDK reviewers dispatched in
+  parallel with `cdk synth`; fix rounds re-dispatch only the lens that owns a finding; a local eval
+  runner with one longest-first queue
+- Review model (decided 2026-10-26, `docs/design-notes.md`): every review is bound to a snapshot of the
+  change (`core/scripts/review-snapshot.py`), classified by an escalation-only risk script
+  (`core/scripts/review-risk.py`) that adds Opus lenses, a human-approval requirement and a mandatory
+  security hand-off, and read under the review policy (`CLAUDE.md`, `AGENTS.md`, `REVIEW.md`) of the base
+  revision, never the change's own. Reviewer subagents are held read-only by a new hook,
+  `core/gate/review-isolation.py`. Findings carry an Evidence clause and a causal pre-existing
+  attribution; the report opens with a fail-closed state block (recommendation, verification, approval
+  required, risk, rollback) and a JSON state line the implementing skills read; fixes are re-reviewed on
+  the snapshot delta, at most two fix rounds. Ten new review eval cases, tagged `review-model`
+
+### Fixed
+
+- A plan approved in an earlier session: the approval message now opens by saying why that approval does
+  not unlock this session (approval is per session and bound to the plan's exact content), in all five
+  implementing skills
+- CDK: a request that renames or moves an existing resource gets an approval message that opens by
+  saying a plain `cdk deploy` would replace it (both logical IDs named), then offers the safe paths (keep
+  the construct ID, keep the logical ID, or a separate `cdk refactor` with its `--dry-run` mapping)
+
 ## 0.1.0 — 2026-11-25
 
 ### Added

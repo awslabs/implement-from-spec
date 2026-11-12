@@ -106,8 +106,9 @@ the report's status is "verification incomplete (<command> denied)" (contract se
 ## The report
 
 The run ends with the report of contract section 11: the items in scope and whether each was verified,
-what changed, every check with its result, the `spec-trace code` counts, the review outcome (change
-digest, findings fixed, rejected and open, and the external reviewer's `External review: <state>
+what changed, every check with its result, the `spec-trace code` counts, the review outcome (snapshot,
+change digest, review state, findings fixed, rejected, covered by gate and open, fix rounds,
+and the external reviewer's `External review: <state>
 (<reason>)` line verbatim), files withheld from the external reviewer, findings that need runtime
 verification, the rulings the skill made, amendments, deferred items, the status (`implementation
 complete` or `verification incomplete (<what is missing>)`), and the next steps for the operator. For the
@@ -125,7 +126,9 @@ The arguments are the repository and the change: the working tree, a git range, 
 or a diff file, optionally `--plan ai-planning/<slug>.plan`. The skill runs the same two stages, plus only
 read-only checks (`cdk synth`, the app's tests, cdk-nag, `cfn-lint`, `cfn-guard`), verifies every finding
 against the code and the synthesised templates, sets severity itself, and returns one Blocker, Major,
-Minor and Nit report with a fix per finding and a verdict. It compares the logical IDs of the base and
+Minor and Nit report with a fix per finding, opening with the review state block (snapshot,
+recommendation, verification, approval required, risk, rollback; see
+[external-review.md](external-review.md#the-review-around-it-snapshot-isolation-state-and-fix-rounds)). It compares the logical IDs of the base and
 the changed synthesised templates to find renamed constructs. The change-set diffs are offered with the
 account the project's rules name and run only after you approve; without them the report says
 "Replacement evidence: not run" and does not claim that nothing is replaced.

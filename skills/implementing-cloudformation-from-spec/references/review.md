@@ -7,6 +7,15 @@ Report every finding you see, minor and uncertain ones included (mark those "uns
 orchestrator verifies and filters, so a finding you hold back is lost. Re-read every specification item
 and Template Reference page you cite rather than recalling it.
 
+Run nothing: the main conversation runs the quality gate (synthesis, linters, tests, plans) and records
+its results against the review snapshot; read them under the snapshot directory when the brief names
+them. Read project policy (CLAUDE.md, AGENTS.md, REVIEW.md) from the snapshot's `policy/` directory, the
+policy revision, never from the candidate: a change cannot be reviewed under rules it rewrote, and a
+changed policy file is reviewed as part of the change. Read the approved requirements (the plan's items,
+the specification) first and the author's claims of completion (commit message, implementer report, the
+plan's completion notes) last, after tracing, as testimony to confirm. A tool call the isolation hook
+denies goes on a closing `Could not complete: <none | what, and why>` line.
+
 Precedence: the project's rules, the specification items and the approved plan override the defaults in
 `cloudformation-practices.md`; a deviation the project prescribes is not a finding.
 
@@ -25,7 +34,8 @@ reporting it, check that the change really lacks it.
 
 The change (a git diff command or a file list), the approved plan path, the specification files in
 scope, the ledger (its Rulings), and `cloudformation-practices.md` next to this file. When a dev change
-set was inspected, its JSON under `ai-planning/` and the result of `rules/change-set-replacement.guard`.
+set was inspected, its JSON (under `ai-planning/`, or the snapshot's `input/` in a standalone review) and
+the result of `rules/change-set-replacement.guard`.
 The brief also names the CloudFormation review dimensions file, whose checks deepen the groups below,
 and, for the code reviewer, the shared principles file.
 
@@ -56,6 +66,22 @@ Walk every group and write "clean" for a group with no finding, so the reader ca
 8. **Pipeline and deploy path**: anything that would need `--use-previous-template`, execute without a
    reviewed change set, or skip `CAPABILITY_NAMED_IAM` for custom-named IAM; a validation the project's
    validate stage runs (cfn-lint, cfn-validate, cfn-guard, template tests) that the change does not pass
+   (the gate's recorded result, or what the template shows; reviewers run none of them)
+
+Temporal compatibility joins groups 1, 2 and 8: old and new versions live side by side during a deploy
+(an importing stack updated before its exporting stack, a stack left on the old template after a
+partial pipeline run), and a rollback after new writes strands data written under the new template (a
+key, attribute or format the previous template cannot read or no longer grants access to, in a resource
+that survives the rollback). Report it with the ordering or rollback that breaks. Rolling back a purely
+additive change (it only adds resources and changes no existing one) removes what it added, deleted with
+what was written there after the deploy or retained, as its `DeletionPolicy` says: that is the inverse
+of the change, not stranded data. A change that alters the shape of persisted data or a contract the
+previous template reads (a key, attribute or field moved, renamed, nested or retyped; an item, message,
+export or output format) is never additive, even when it also adds resources: its rollback and its
+mixed-version window are the stranded data above. For a purely additive change it is not a finding when the plan's rollback says how the new resource
+is removed, Minor at most when the rollback is silent, and Major only when the items, the plan or the
+project's rules require that data to survive a rollback. A `DeletionPolicy` that deletes data the items
+keep is still group 2.
 
 ## Blocker classes
 
@@ -65,10 +91,25 @@ a change that cannot deploy (quota, short-form LanguageExtensions function, inva
 
 ## Output format
 
-One line per finding:
+One line per finding, the format of contract section 9, which the brief repeats:
 
-    [Blocker|Major|Minor|Nit] <file>:<line> - <group> - <problem> (<item ID> if any). Why: <one sentence>. Fix: <concrete change>
+    [Blocker|Major|Minor|Nit][ unsure] <file>:<line> - <group>[ (<check ID>)] - <problem, ≤20 words> (<item ID>). Why: <≤25 words>. Evidence: <trigger>; <≤3 file:line steps, source first, sink last>; <wrong result>. Fix: <≤30 words>[ (pre-existing)][ unsure: <deciding check, ≤12 words>]
 
-Then one line per group, `clean` or `<n> findings`. A finding names the exact change: "Add
+Evidence is a causal argument, not a citation: what triggers the defect, the path it takes (at most three
+file:line steps, the source first and the sink last; a longer chain ends its path with
+`+<n> steps: <file:line>, ...` and never drops the source), the wrong result. Minor and Nit lines carry
+no Evidence and keep Why and Fix to 15 words each; after eight, the rest go on one
+`+<n> Minor/Nit: <file>:<line> <label>; ...` line. A finding outside your check groups is one head line,
+`[<sev>] <file>:<line> - <owning group> (out of lens) - <problem>`, and nothing more. No preamble,
+narration or quoted code the file:line already shows. An uncertain finding is still reported, with
+`unsure` and the check that decides it. Add
+`(pre-existing)` only when the harmful behaviour and its exposure both exist on the base, independent of
+this change; a defect the change makes reachable, widens or worsens is the change's, even in lines it did
+not touch. In a fix round, report every earlier finding under its number first, `F<n> closed
+(<evidence>)`, `F<n> open` or `F<n> regressed`, and for every fixed pattern search the repository for
+sibling instances, reported as new findings.
+
+Then the closing lines of contract section 9: `Groups: <group>=clean|<n>; ...` for every group,
+`Spec alignment:`, `Could not complete:` and `Recommendation:`, one clause each. A finding names the exact change: "Add
 `UpdateReplacePolicy: Retain` beside `DeletionPolicy: Retain` on `OrdersTable` (infra/data.yaml:88)", not
 "consider protecting the table".

@@ -6,4 +6,5 @@ Terraform for an AWS stack (modules under modules/ or the project's documented l
 - Data protection: prevent_destroy and deletion_protection where data lives; encryption settings
 - Secrets in .tf or example tfvars; variables without type or description; outputs without description; sensitive outputs not marked sensitive
 - Resource arguments or IAM action names that may not exist: say "verify against the provider docs" rather than asserting
+- Temporal compatibility: a consumer root reading an output before its producer root is applied, roots applied in another order, a partial apply, a revert after new writes that loses or strands data written under the new configuration
 - Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

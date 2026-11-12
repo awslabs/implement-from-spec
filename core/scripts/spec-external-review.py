@@ -23,7 +23,9 @@ that would be sent is checked as well: a file or diff chunk holding text that lo
 access key ID or secret access key, a private key block, a quoted password, secret, token or API key
 assignment with a long value, a GitHub or Slack token, a JSON Web Token) is withheld whole and printed
 under "not sent" as "content looks like a secret", the kind named and the value never shown. Both checks
-are heuristics: a secret in a form neither recognises is still sent. The same filters
+are heuristics: a secret in a form neither recognises is still sent. Only regular files are read: a
+FIFO, socket, device or directory is never opened, and it and a file that cannot be read are listed under
+"not sent" with the reason. The same filters
 apply to a --diff-file, chunk by chunk; a plain unified diff is parsed hunk by hunk with its line
 counts, so a content line that looks like a file header stays with its file. git diff runs without
 external diff drivers and textconv filters, and file names are read NUL-delimited. A required file
@@ -75,6 +77,8 @@ A command from the user's or the managed settings file, or from a flag, is not r
 Change modes (pick one; the Claude stage must review the same one):
     (default)          working tree against HEAD: `git diff HEAD` plus untracked files
     --base REF         working tree against REF: `git diff REF` plus untracked files
+                       (untracked: what git could add, by review-snapshot.py's rule, so a FIFO, socket or
+                       device, such as a sandbox-masked dotfile, is not part of the change)
     --range A..B       committed changes only: `git diff A..B`
     --files F ...      exactly these files, in full
     --diff-file F      a unified diff, e.g. one the user pasted
@@ -90,8 +94,14 @@ Usage (from any directory; <plugin-root> is the installed plugin, ${CLAUDE_PLUGI
 --focus is a path from the current directory and must lie under the skills directory that holds this
 skill (the skill's own references/ in practice). --plan,
 --rules, --context and --files are relative to --repo and must lie inside it; none of them may go through
-a symlink. Without --rules the repo's CLAUDE.md and AGENTS.md are sent when they exist. A required input
-that cannot be sent in full (missing, sensitive, excluded, binary, a symlink, over 200 KB) stops the run,
+a symlink. Without --rules the repo's CLAUDE.md and AGENTS.md are sent when they exist.
+--policy-dir DIR reads the rules from DIR instead of the repository: the review policy at the snapshot's
+policy revision (core/scripts/review-snapshot.py writes it to <snapshot>/policy/), so a change cannot be
+reviewed under rules it rewrote itself. It is the only input allowed outside --repo; --rules paths are then
+relative to DIR and confined to it, nothing in it may be or go through a symlink (DIR included), and without
+--rules every CLAUDE.md, AGENTS.md and REVIEW.md under DIR is sent, the top level first. A required input
+that cannot be sent in full (missing, sensitive, excluded, binary, a symlink, not a regular file,
+unreadable, over 200 KB) stops the run,
 and so does a change of which nothing reviewable remains after filtering. Diff text that cannot be
 attributed to a path (an unparseable chunk, a preamble) is withheld. --range takes exactly two refs as
 A..B, resolved to commits.
@@ -105,12 +115,14 @@ can be shown to have seen the same change.
 Every outcome prints one status line on stdout, "External review: <state> (<reason>)":
     0   passed: the review is printed (whatever its verdict), or `off`: "External review: off (configuration)",
         nothing read or sent
-    1   failed: the reviewer call failed or its answer is not a valid review
+    1   failed: the reviewer call failed, its answer is not a valid review, or the script stopped on an
+        unexpected error: "External review: failed (<ExceptionType>: <message>)", the traceback on stderr
     64  usage error, nothing reviewable, a required input missing or not sendable, or the prompt over the cap
     69  not run, policy optional: reviewer CLI or credentials missing, access denied, model not enabled or
         not served in the Region, or the settings themselves invalid
     70  not run, policy required: the same causes, and the policy says the stage may not be skipped
-With policy required, the status line of a failure (1) or a not-run (70) ends "required by policy".
+With policy required, the status line of a failure (1) or a not-run (70) ends "required by policy"; an
+unexpected error before the settings are read counts as required.
 """
 from __future__ import annotations
 
@@ -118,19 +130,23 @@ import argparse
 import datetime
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 
 # This file lives in <plugin-root>/core/scripts/. --focus files must come from the plugin's skills/
 # directory; SPEC_REVIEW_FOCUS_ROOT replaces that root for the self-test only.
-PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+SCRIPTS_DIR = os.path.dirname(os.path.realpath(__file__))
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(SCRIPTS_DIR))
 SKILLS_ROOT = os.path.realpath(os.environ.get("SPEC_REVIEW_FOCUS_ROOT") or os.path.join(PLUGIN_ROOT, "skills"))
 # Run directories and --out files live here, outside every project, so a review never dirties a work tree:
 # the plugin's data directory when Claude Code provides it, else the XDG state directory.
@@ -249,6 +265,33 @@ def secret_kind(text: str) -> str | None:
             return kind
     return None
 
+
+SIBLINGS: dict = {}
+
+
+def load_sibling(filename: str, module_name: str):
+    """A script of this directory, loaded by its path once, on first use (importing this file for its
+    settings readers loads nothing else): hyphenated names cannot be imported, and under python3 -I this
+    directory is not on sys.path, so a planted module cannot stand in for it. review-prepare.py loads its
+    siblings the same way."""
+    if filename not in SIBLINGS:
+        path = os.path.join(SCRIPTS_DIR, filename)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        # No __pycache__ in the plugin's directory: an installed plugin is read-only content.
+        previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+        try:
+            spec.loader.exec_module(module)
+        except (OSError, SyntaxError) as exc:
+            raise ImportError(f"cannot load the sibling script {path}: {exc}") from exc
+        finally:
+            sys.dont_write_bytecode = previous
+        SIBLINGS[filename] = module
+    return SIBLINGS[filename]
+
+
 PROMPT = """You are an independent senior reviewer. The change below was written by another AI model in a
 repository whose binding rules are below, usually from an approved plan that implements specification
 items. Your job is to find what it got wrong. Do not praise, do not summarise the diff, and do not soften
@@ -336,12 +379,12 @@ def no_symlink_components(path: str, stop: str, label: str) -> None:
             fail(64, f"{label} goes through a symlink, which is never followed: {path}")
 
 
-def confine(root: str, given: str, label: str) -> str:
-    """Return the repo-relative path of a user-supplied path, refusing escapes and symlinks."""
+def confine(root: str, given: str, label: str, where: str = "the repository") -> str:
+    """Return the root-relative path of a user-supplied path, refusing escapes and symlinks."""
     joined = given if os.path.isabs(given) else os.path.join(root, given)
     rel = os.path.relpath(os.path.normpath(joined), root)
     if rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
-        fail(64, f"{label} path is outside the repository: {given}")
+        fail(64, f"{label} path is outside {where}: {given}")
     no_symlink_components(os.path.join(root, rel), root, f"{label} path")
     return rel
 
@@ -354,8 +397,26 @@ def skip_reason(rel: str) -> str | None:
     return None
 
 
+NON_REGULAR = ((stat.S_ISDIR, "a directory"), (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
+               (stat.S_ISCHR, "a character device"), (stat.S_ISBLK, "a block device"))
+
+
+def non_regular(mode: int) -> str:
+    """What a path that is not a regular file is, as the "not sent" line names it."""
+    kind = next((name for test, name in NON_REGULAR if test(mode)), "a special file")
+    return f"{kind}, not a regular file, never read"
+
+
+def unreadable(exc: OSError) -> str:
+    return f"cannot be read: {exc.strerror or type(exc).__name__}"
+
+
 def file_block(root: str, rel: str, required: bool) -> str:
-    """Inline one repo-relative file. A required file that cannot be inlined in full stops the run."""
+    """Inline one repo-relative file. A required file that cannot be inlined in full stops the run.
+
+    Only a regular file is opened: a FIFO, socket, device or directory is listed under "not sent" and never
+    opened (opening a FIFO waits for a writer), and so is a file that cannot be opened or read (a sandbox
+    that denies a dotfile, mode 000)."""
     path = os.path.join(root, rel)
 
     def skip(why: str) -> str:
@@ -367,17 +428,34 @@ def file_block(root: str, rel: str, required: bool) -> str:
     reason = skip_reason(rel)
     if reason:
         return skip(reason)
-    if os.path.islink(path):
-        return skip("symlink, not followed")
-    if not os.path.exists(path):
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
         if required:
             fail(64, f"file not found: {rel}")
         return f"--- {rel}: DELETED\n"
-    size = os.path.getsize(path)
+    except OSError as exc:
+        return skip(unreadable(exc))
+    if stat.S_ISLNK(st.st_mode):
+        return skip("symlink, not followed")
+    if not stat.S_ISREG(st.st_mode):
+        return skip(non_regular(st.st_mode))
+    if st.st_size > MAX_FILE_BYTES:
+        return skip(f"{st.st_size} bytes, over the {MAX_FILE_BYTES}-byte per-file limit")
+    try:
+        # Should the path be replaced after the lstat: O_NONBLOCK keeps the open of a FIFO from waiting for a
+        # writer (the fstat then refuses it), and O_NOFOLLOW refuses a symlink.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as fh:
+            mode = os.fstat(fh.fileno()).st_mode
+            data = fh.read(MAX_FILE_BYTES + 1) if stat.S_ISREG(mode) else None
+    except OSError as exc:
+        return skip(unreadable(exc))
+    if data is None:
+        return skip(non_regular(mode))
+    size = len(data)
     if size > MAX_FILE_BYTES:
-        return skip(f"{size} bytes, over the {MAX_FILE_BYTES}-byte per-file limit")
-    with open(path, "rb") as fh:
-        data = fh.read()
+        return skip(f"over the {MAX_FILE_BYTES}-byte per-file limit")
     if b"\0" in data:
         return skip(f"binary, {size} bytes")
     text = data.decode("utf-8", errors="replace")
@@ -572,14 +650,47 @@ def collect_change(root: str, args: argparse.Namespace) -> tuple[str, list[str]]
     changed = [n for n in names.split("\0") if n]  # -z: names unquoted, whatever characters they hold
     new_files: list[str] = []
     if not args.range:
+        # git lists an untracked FIFO, socket or device but can never add one, and Claude Code's sandbox masks
+        # dotfiles in the working directory with such entries: they are not part of the change, by the rule
+        # the review snapshot uses (review-snapshot.py's trackable), so both stages leave out the same paths.
+        trackable = load_sibling("review-snapshot.py", "ifs_review_snapshot").trackable
         _, untracked = git(root, "ls-files", "-z", "--others", "--exclude-standard")
-        new_files = [f for f in untracked.split("\0") if f and not f.startswith("ai-planning/")]
+        new_files = [f for f in (u.rstrip("/") for u in untracked.split("\0"))
+                     if f and not f.startswith("ai-planning/") and trackable(root, f)]
     label = f"{refs[0]}..{refs[1]} ({shas[0][:12]}..{shas[1][:12]})" if args.range else \
         f"working tree against {refs[0]} ({shas[0][:12]})"
     kept = filter_diff(diff) if diff.strip() else ""
     text = (f"git diff, {label}:\n{kept}\n" if kept else "") + \
         "".join(file_block(root, f, required=False) for f in new_files)
     return text, changed + new_files
+
+
+POLICY_NAMES = ("CLAUDE.md", "AGENTS.md", "REVIEW.md")
+
+
+def policy_root(given: str) -> str:
+    """The --policy-dir directory, refused when it is missing or a symlink."""
+    path = os.path.abspath(os.path.expanduser(given))
+    if os.path.islink(path):
+        fail(64, f"--policy-dir is a symlink, which is never followed: {given}")
+    if not os.path.isdir(path):
+        fail(64, f"--policy-dir is not a directory: {given}")
+    return os.path.realpath(path)
+
+
+def policy_files(root: str) -> list:
+    """Every CLAUDE.md, AGENTS.md and REVIEW.md under the policy directory, the top level first; a symlink
+    anywhere in it stops the run."""
+    found = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        for name in sorted(dirs + files):
+            if os.path.islink(os.path.join(current, name)):
+                fail(64, f"--policy-dir holds a symlink, which is never followed: "
+                         f"{os.path.relpath(os.path.join(current, name), root)}")
+        dirs.sort()
+        rel_dir = os.path.relpath(current, root)
+        found += [os.path.normpath(os.path.join(rel_dir, n)) for n in POLICY_NAMES if n in files]
+    return sorted(found, key=lambda rel: (rel.count(os.sep), rel))
 
 
 def new_run_dir(root: str) -> str:
@@ -950,7 +1061,32 @@ def call_command(prompt: str, cfg: Config) -> str:
     return proc.stdout
 
 
+def unexpected(exc: Exception, cfg: Config | None) -> int:
+    """The last resort: an error nothing else handles still ends in a status line, "External review: failed
+    (<type>: <message>)", exit 1 like every failure, with the policy's tail. When the settings were not read
+    yet, the policy is unknown and counts as required, so a required stage is never reported as optional."""
+    detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:400]
+    print("spec-external-review: unexpected error:", file=sys.stderr)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    if cfg is None:
+        print(f"External review: failed ({detail}; the policy was not read yet and counts as required); "
+              "required by policy")
+    else:
+        report("failed", detail, cfg)
+    return 1
+
+
 def main() -> int:
+    resolved: list = []
+    try:
+        return review(resolved)
+    except Exception as exc:  # every typed outcome is a SystemExit, which passes through
+        return unexpected(exc, resolved[0] if resolved else None)
+
+
+def review(resolved: list) -> int:
+    """One run: settings, inputs, the change, the reviewer call. The resolved settings go into `resolved`
+    as soon as they are known, for the status line of an unexpected error."""
     parser = argparse.ArgumentParser(
         description="Send a change in a project repository to an independent model (GPT-6 Astra on Amazon "
                     "Bedrock or a reviewer command; off by default), as the plugin's external_review settings say.",
@@ -959,6 +1095,8 @@ def main() -> int:
     parser.add_argument("--focus", help="the skill's review-focus file (under the skills root); required")
     parser.add_argument("--plan", help="the approved ai-planning/<slug>.plan, when the change has one")
     parser.add_argument("--rules", nargs="+", help="binding-rules files (default: CLAUDE.md, AGENTS.md)")
+    parser.add_argument("--policy-dir", help="read the rules from this directory (a review snapshot's policy/) "
+                                             "instead of the repository; --rules paths are then relative to it")
     parser.add_argument("--context", nargs="+", default=[], help="reference files: the specification "
                         "files in scope, an interface contract")
     source = parser.add_mutually_exclusive_group()
@@ -977,6 +1115,7 @@ def main() -> int:
     args = parser.parse_args()
 
     cfg = resolve_config(args)
+    resolved.append(cfg)
     if args.show_config:
         return show_config(cfg)
     if not args.repo or not args.focus:
@@ -1007,10 +1146,17 @@ def main() -> int:
         focus = fh.read()
     out = check_out(args.out) if args.out else None
     plan_rel = confine(root, args.plan, "--plan") if args.plan else None
-    rules_files = [confine(root, r, "--rules") for r in args.rules] if args.rules else \
-        [n for n in ("CLAUDE.md", "AGENTS.md") if os.path.isfile(os.path.join(root, n))]
-    rules = "".join(file_block(root, r, required=True) for r in rules_files) if rules_files else \
-        "(the repository has no CLAUDE.md or AGENTS.md: judge against the plan and the context)"
+    if args.policy_dir:
+        rules_root = policy_root(args.policy_dir)
+        rules_files = [confine(rules_root, r, "--rules", "the policy directory") for r in args.rules] \
+            if args.rules else policy_files(rules_root)
+        rules = "".join(file_block(rules_root, r, required=True) for r in rules_files) if rules_files else \
+            "(the policy directory has no CLAUDE.md, AGENTS.md or REVIEW.md: judge against the plan and the context)"
+    else:
+        rules_files = [confine(root, r, "--rules") for r in args.rules] if args.rules else \
+            [n for n in ("CLAUDE.md", "AGENTS.md") if os.path.isfile(os.path.join(root, n))]
+        rules = "".join(file_block(root, r, required=True) for r in rules_files) if rules_files else \
+            "(the repository has no CLAUDE.md or AGENTS.md: judge against the plan and the context)"
     context = "".join(file_block(root, confine(root, c, "--context"), required=True)
                       for c in args.context) or "(none)"
     plan = file_block(root, plan_rel, required=True) if plan_rel else \
@@ -1054,7 +1200,8 @@ def main() -> int:
     prompt_file = out[:-3] + ".prompt.md" if out.endswith(".md") else out + ".prompt.md"
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     write_new(prompt_file, prompt)
-    write_new(out, f"# External review via {cfg.label()}, {stamp}\n\nRepository: {root}\nPlan: "
+    policy_line = f"Policy: {policy_root(args.policy_dir)}\n" if args.policy_dir else ""
+    write_new(out, f"# External review via {cfg.label()}, {stamp}\n\nRepository: {root}\n{policy_line}Plan: "
                    f"{plan_rel or 'none'}\nChange digest: {digest}\nPrompt digest: {prompt_digest}\n"
                    f"Files: {', '.join(changed)}\nNot sent: {'; '.join(OMITTED) or 'none'}\n"
                    f"Valid: {'yes' if valid else 'no'}\n\n{answer}")

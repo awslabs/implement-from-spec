@@ -86,8 +86,8 @@ Terraform implementation:
 - [ ] 5 Ledger created; modules in waves; fmt and validate after each module
 - [ ] 6 Targeted plan: zero destroys, zero unplanned changes (stop on anything unexpected)
 - [ ] 7 Verification: each item exists/substantive/wired/proven; spec-trace code exits 0 (back to 5 on any failure)
-- [ ] 8 Review: Claude stage (references/review.md) and external stage in one message; triage done
-- [ ] 9 fmt, validate and targeted plan green after the fixes (back to 8 on any failure); docs and cost file synced
+- [ ] 8 Docs and cost file synced; review (reviewing-terraform-changes, external stage per contract section 9); state line read; fix rounds (cap 2)
+- [ ] 9 fmt, validate and targeted plan green on the last fixed tree; review snapshot still valid
 - [ ] 10 Report sent, nothing applied
 ```
 
@@ -197,7 +197,9 @@ with the plan name given as the plan's file name without `.plan`. Before sending
   `ai-planning/` until the user replies approve in this session
 - The plan comes from an earlier session (a resume, "I approved it yesterday"): an earlier approval does
   not carry over. Update the plan's `Drafted:` line with Edit, which makes it approvable in this
-  session, re-run step 3, then send the message
+  session, re-run step 3, then send the message, opening with one sentence that tells the user why:
+  the earlier approval does not unlock this session, because approval is per session and bound to the
+  plan's exact content, so the plan was re-checked and needs approve again before anything is written
 - The hook reports that nothing was approved (a reply with a question or a condition, a plan edited
   since): say which, and send the message again
 
@@ -241,48 +243,69 @@ a FAIL the code cannot fix is an amendment (contract section 5).
 
 ### 8. Review
 
-Both stages in one message, on the same change mode (contract section 9). Each reviewer is a generic
-subagent, `subagent_type: "general-purpose"`, whose prompt opens with "First load the skill
-`implement-from-spec:<skill>` with the Skill tool, then follow this brief:" and continues with its brief:
+Contract section 9. Sync first (contract section 10): new modules or patterns into the specification, new
+billable resources into the project's cost file, a new invariant into CLAUDE.md with the value that
+matters and what breaks if it changes. The reviewed snapshot then holds them; any edit after the review's
+snapshot invalidates it and its state. Then invoke the skill
+`implement-from-spec:reviewing-terraform-changes` with the change mode (`--base <the ledger's baseline
+commit>`), the plan path, the ledger path and the specification files in scope as context. One
+preparation call (`core/scripts/review-prepare.py`) creates the review snapshot, classifies its risk,
+writes every reviewer's brief and settles the external stage; the review then dispatches the Terraform
+code and security reviewers (this skill's `references/review.md`) and every security hand-off the risk
+names in one message, with short prompts that point at the briefs. The external stage runs on every
+review, with this skill's `references/review-focus.md`: by the preparation when the setting is off,
+otherwise through a generic subagent loading `implement-from-spec:running-external-review` in the same
+message. The script reads the plugin's settings and prints an `External review:` status line, which goes
+into the report unquoted, character for character; a user who asks to keep the change away from the
+external reviewer gets `--external-review off` on the preparation call, which then runs the script itself
+and records the line. The review runs and records fmt and validate against the snapshot, takes the
+destroy and replacement evidence from the targeted (and full) plans the ledger records, and returns one
+verified report whose state block ends in the `ifs-review-state:` JSON line. Read that line, not the
+prose:
 
-- **Claude stage**: two read-only subagents, one loading `implement-from-spec:reviewing-terraform-code`
-  and one loading `implement-from-spec:reviewing-terraform-security`, each with `model: "opus"` and told
-  to read and apply
-  `${CLAUDE_SKILL_DIR}/references/review.md` and its sibling `terraform-practices.md` (the code reviewer
-  owns check groups 1, 2, 5, 6 and 7, the security reviewer groups 3 and 4), and the checks
-  `${CLAUDE_PLUGIN_ROOT}/skills/reviewing-terraform-changes/references/review-dimensions.md` assigns to
-  those groups (its "How to apply" first); the code reviewer also applies
-  `${CLAUDE_PLUGIN_ROOT}/core/review/principles-and-architecture-smells.md` inside group 6
-- **External stage**, on every review: a subagent loading `implement-from-spec:running-external-review`,
-  with `model: "sonnet"`, running the contract's command with `--focus "${CLAUDE_SKILL_DIR}/references/review-focus.md"`. The script reads the
-  plugin's settings itself and prints one line `External review: <state> (<reason>)`, which the report
-  copies unquoted, character for character. A user who asks to keep the change away from the external
-  reviewer gets the runner too, with `--external-review off`; off is the script's answer, not a reason
-  to leave the runner out. Exit 0: the review is printed, or the reviewer is off by configuration (nothing to
-  triage). 69: not run, recorded, and the work continues. 70, or 1 with "required by policy": the
-  report's Status becomes "verification incomplete". 1 otherwise: the reviewer failed or answered
-  invalidly; record it and never write a review yourself. 64: a usage error; fix the arguments and retry
-  once
+- **Complete** (`"recommendation":"No blocking findings"`, `"verification":"complete"`,
+  `"approval_required":false`): go on to step 9
+- **Changes requested** or **Blocked**: fix the confirmed Blockers and Majors inside the plan's *Owns* (a
+  fix outside it is an amendment, contract section 5), repeat fmt, validate and the targeted plan, then
+  run a fix round: invoke `reviewing-terraform-changes` again with the earlier report and its snapshot
+  directory. It takes a new snapshot, reviews the delta and reports each F-numbered finding `closed`,
+  `open` or `regressed`. Record each round's snapshot id in the ledger's *Implementation notes*. At most
+  two fix rounds after the first review; with Blockers or Majors still open after the second, stop
+  fixing, list them and ask the user whether the approach itself should change. Reaching the cap is
+  never a clean result
+- **Deferrals**: a Major stays open only with the user's agreement, recorded in the ledger's
+  `## Deferred`. A security Blocker or Major (groups 3 and 4, or a hand-off reviewer's) is deferred only
+  by the user in the conversation, recorded there with the user's words and the date; never defer one
+  yourself. Any other Blocker is fixed, or the state stays Blocked
+- **Verification incomplete** or **Approval required**: the reasons go into the report's Review state and
+  Status lines as the review gave them; the change is not reported complete, and the skill never gives
+  the human approval itself
 
-Verify argument and IAM claims in the provider docs before acting on them.
+Verify argument and IAM claims in the provider docs before acting on a finding; a finding left unfixed
+gets a stated reason.
 
-### 9–10. Re-validate, sync, report
+### 9–10. Re-validate, report
 
-Repeat fmt, validate and the targeted plan after the fixes; a failure goes back to step 8, because the
-fix is a new change the reviewers have not seen. Sync documents (contract section 10): new modules or
-patterns into the specification, new billable resources into the project's cost file, a new invariant into
-CLAUDE.md with the value that matters and what breaks if it changes. Report (contract section 11) with the
-targeted (and, when run, full) plan's counts, the cost delta against the baseline, and the operator's apply
-command. Copy the runner's `External review: <state> (<reason>)` line into it character for character as
-plain text on its own line, for example External review: off (configuration); a paraphrase such as
-"External (GPT) review: off", or the line in bold, in quotation marks or in a code span, is not the line.
+The last fix round repeated fmt, validate and the targeted plan on the tree it reviewed. Before the
+report, run
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" verify <the last review's snapshot directory>`;
+on exit 3 (an edit after the review), run one more round on the delta (it counts towards the cap) or
+report "verification incomplete (review snapshot invalidated: <paths>)". Report (contract section 11)
+with the targeted (and, when run, full) plan's counts, the cost delta against the baseline, and the
+operator's apply command; the Review and Review state lines come from the JSON line, and Status is
+"implementation complete" only when the last review was complete and its snapshot is still valid. Copy
+the review's `External review: <state> (<reason>)` line (the runner's, or the preparation's when the
+setting is off) into it character for character as plain text on its own line, for example External
+review: off (configuration); a paraphrase such as "External (GPT) review: off", or the line in bold, in
+quotation marks or in a code span, is not the line.
 
 ## Bundled files
 
 - `references/plan-template.md`: the plan structure, read in phase 2
 - `references/terraform-practices.md`: the default module pattern and checklist, state safety, validation;
   read in phase 1 and in phase 3
-- `references/review.md`: the Claude stage's checklist and output format
+- `references/review.md`: the Claude stage's checklist and output format, read by the reviewers
+  `reviewing-terraform-changes` dispatches
 - `references/review-focus.md`: what the external stage looks hardest at
 - `gate_rules.json`: K22's command rules for this skill (plan, test, apply, destroy, import, state edits,
   state migration and mutating AWS calls ask)
@@ -290,7 +313,10 @@ plain text on its own line, for example External review: off (configuration); a 
 Plugin files this skill uses: `${CLAUDE_PLUGIN_ROOT}/core/contract.md` (the shared workflow, read section
 by section as each phase names it), `${CLAUDE_PLUGIN_ROOT}/core/scripts/spec-trace.py` (run, never read,
 for the analysis gate and the verification) and `${CLAUDE_PLUGIN_ROOT}/core/scripts/spec-external-review.py`
-(run by the `implement-from-spec:running-external-review` subagent for the external stage). The approval gate is registered
+(the external stage: run by the review's preparation when the setting is off, by the
+`implement-from-spec:running-external-review` subagent otherwise) and
+`${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py` (its `verify` before the report; the review
+skill's `core/scripts/review-prepare.py` creates the snapshots). The approval gate is registered
 by the plugin's hooks for every skill whose directory holds a `gate_rules.json`.
 
 ## Out of scope

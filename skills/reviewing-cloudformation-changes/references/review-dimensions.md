@@ -53,10 +53,11 @@ Reviewer split, matching `review.md` and `skills/reviewing-cloudformation-change
   CFN-CR-05 and the IAM half of CFN-OPS-07. Its own checklist (`skills/iac-security-reviewer/SKILL.md`)
   supplies the depth; the checks here name the CloudFormation constructs and the linter rule IDs that
   make a finding concrete
-- A check outside a reviewer's sections that it happens to see is reported in one line and left to the
-  owner, as `skills/code-reviewer/SKILL.md` says. Report each finding in review.md's output format with the
-  check ID in the problem text, for example `[Major] infra/app.yaml:42 - 6 Template mechanics -
-  CFN-TPL-01 hard-coded account in role ARN ...`
+- A check outside a reviewer's sections that it happens to see is one out-of-lens head line, left to the
+  owner, as `skills/code-reviewer/SKILL.md` says. Report each finding in the findings format of contract
+  section 9 (the brief repeats it; it replaces review.md's output format), with the check ID in brackets
+  after the group, for example `[Major] infra/app.yaml:42 - 6 Template mechanics (CFN-TPL-01) - hard-coded
+  account in role ARN ...`
 
 Severity classes. The main conversation sets the final severity from
 `skills/reviewing-cloudformation-changes/references/standalone-review.md` section 4; the defaults below are

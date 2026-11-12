@@ -12,16 +12,18 @@ described at all. The digest alone is not consent: the model could copy it from 
 sees the plan and approves the command in the prompt. Every other command gets no output, so the hook is
 inert in sessions that never run setup.
 
-Registered once in hooks/hooks.json, in isolated mode (-I: the script's directory, PYTHONPATH and the
-user's site-packages stay off sys.path, so nothing planted there runs in the hook; it imports only the
-standard library; when a command runs install.py --apply it loads its siblings depslib.py and install.py
-by path from its own resolved directory and adds nothing to sys.path):
-  {"matcher": "Bash", "hooks": [{"type": "command",
-   "command": "python3 -I \"$CLAUDE_PLUGIN_ROOT/core/deps/install-ask-hook.py\""}]}
+Run by the plugin's one PreToolUse hook, core/gate/ifs-pretool.py (registered once in hooks/hooks.json, in
+isolated mode: -I keeps the script's directory, PYTHONPATH and the user's site-packages off sys.path, so
+nothing planted there runs in the hook), which calls main() in-process for a Bash command that names
+install.py. It imports only the standard library (shlex where it is needed); when a command runs
+install.py --apply it loads its siblings depslib.py and install.py by path from its own resolved directory
+and adds nothing to sys.path. It still runs on its own the same way, for a check by hand:
+  python3 -I <plugin-root>/core/deps/install-ask-hook.py < payload.json
 
-Failure policy: a payload that cannot be parsed produces no output (the hook runs on every Bash call
-in every session and must never block unrelated work); a command that mentions install.py and --apply
-is asked about even when the plan cannot be found or the command cannot be tokenised.
+Failure policy: a payload that cannot be parsed produces no output (the hook must never block unrelated
+work); a command that mentions install.py and --apply is asked about even when the plan cannot be found or
+the command cannot be tokenised. A crash that escapes main() denies the command in the dispatcher (fail
+closed; it is loaded only for commands that name install.py).
 
 Python 3.9 compatible, standard library only.
 """
@@ -31,10 +33,12 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import sys
 from pathlib import Path
 from typing import List, Optional
+from time import monotonic as _monotonic  # the opt-in timing log (run_timed) counts from here
+
+_HOOK_T0 = _monotonic()
 
 APPLY_RE = re.compile(r"(?<![\w-])--apply(?![\w-])")
 INSTALL_RE = re.compile(r"install\.py\b")
@@ -86,6 +90,7 @@ def installer():
 
 
 def plan_summary(command: str, environ: dict) -> str:
+    import shlex
     try:
         tokens = shlex.split(command)
     except ValueError:
@@ -149,5 +154,53 @@ def main() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------------- opt-in timing log
+# Off unless IFS_HOOK_TIMING_LOG (or EVAL_IFS_HOOK_TIMING_LOG, the form `claude plugin eval` passes to its
+# sessions) names a file: then each call appends one line, <start, ISO 8601 UTC>\t<hook>\t<tool or ->\t<agent_id
+# or ->\t<duration ms>\t<session_id or ->, for the eval timeline tool. The duration runs from the
+# first statement of this file (interpreter start-up is not included) to the end of the decision. The line is
+# written with O_APPEND (one write), mode 0600, never through a symlink; a log that cannot be written is
+# skipped silently, and nothing is printed: timing never changes or fails a decision. Unset, the hook reads
+# one clock value and the two variables, nothing else.
+TIMING_ENV = ("IFS_HOOK_TIMING_LOG", "EVAL_IFS_HOOK_TIMING_LOG")
+
+
+def timing_log_path():
+    return next((os.environ[n] for n in TIMING_ENV if os.environ.get(n)), None)
+
+
+def run_timed(run, hook, log_path):
+    """run() with stdin buffered (so the payload's ids can be logged), then the timing line."""
+    import io
+    raw = sys.stdin.read()
+    sys.stdin = io.StringIO(raw)
+    try:
+        return run()
+    finally:
+        try:
+            import datetime
+            import time as clock
+            ms = (_monotonic() - _HOOK_T0) * 1000.0
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                payload = None
+            payload = payload if isinstance(payload, dict) else {}
+            start = datetime.datetime.fromtimestamp(clock.time() - ms / 1000.0, datetime.timezone.utc)
+            fields = [start.strftime("%Y-%m-%dT%H:%M:%S.") + f"{start.microsecond // 1000:03d}Z", hook]
+            fields += [str(payload.get(k) or "-") for k in ("tool_name", "agent_id")]
+            fields += [f"{ms:.1f}", str(payload.get("session_id") or "-")]
+            line = "\t".join(" ".join(f.split()) or "-" for f in fields) + "\n"
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            fd = os.open(log_path, flags, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8", "replace"))
+            finally:
+                os.close(fd)
+        except Exception:  # noqa: BLE001 - the timing log is best effort; the hook's decision stands
+            pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    _log = timing_log_path()
+    sys.exit(run_timed(main, "install-ask-hook", _log) if _log else main())

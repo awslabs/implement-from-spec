@@ -10,7 +10,53 @@ AWS credentials, or your own reviewer command.
 The skills run the external stage on every review through `core/scripts/spec-external-review.py`. The
 script reads the plugin's settings itself and decides whether anything is sent; with the default it sends
 nothing and prints "External review: off (configuration)". The skills pass no setting values and never
-change one.
+change one. Each review starts with one preparation call, `core/scripts/review-prepare.py`, which pins the
+snapshot, classifies its risk and writes every reviewer's brief. With the setting off it also runs the
+external-review script itself, so no runner subagent starts; enabled, a read-only runner subagent runs
+the script in parallel with the Claude reviewers and returns its output verbatim.
+
+## The review around it: snapshot, isolation, state and fix rounds
+
+Both stages review one review snapshot, and every result binds to it (contract section 9).
+
+- **Snapshot.** Before the reviewers start, `core/scripts/review-snapshot.py` records what is reviewed:
+  each changed file's hash, the plan and specification files, and the policy files (`CLAUDE.md`,
+  `AGENTS.md`, `REVIEW.md`) as they were at the base revision. The report opens with
+  `Snapshot: <id> (valid)`; an edit after the review makes it `invalidated: <paths>` and the review
+  incomplete. Quality-gate results are recorded on the snapshot and never outlive it
+- **Policy from the base.** The reviewers, and the external reviewer through `--policy-dir`, read the
+  policy files from the snapshot, not from your work tree, so a change cannot be reviewed under rules it
+  rewrote. A change to a policy file is reviewed with the change and asks for your approval
+  (`Approval required: human (policy file changed: <path>)`)
+- **Risk.** `core/scripts/review-risk.py` raises the tier to `high` for policy, CI and automation files,
+  security-relevant content, destructive data changes and weakened tests, and names the security
+  reviewers that must run (CloudFormation or CDK templates and Terraform files in an application-code
+  change). It only adds scrutiny and never changes an external-review setting
+- **Isolation.** A hook, `core/gate/review-isolation.py`, enforces the reviewers' read-only rule inside
+  Claude Code: a reviewer subagent cannot edit, fetch, call MCP tools, dispatch agents or load further
+  skills, reads only the repository, the plugin and the snapshot (never a credential path), and runs only
+  read-only shell commands. Reviewers run no tests; the skill's quality gate does. A denied call is listed
+  as a part of the review that could not complete. **Limitation**: this is enforcement in Claude Code's
+  tool layer, not an operating-system sandbox. The external-review script still sends what this page
+  documents, and the skill still compares `git status` and `git diff` before and after the review
+- **Findings** carry an `Evidence:` clause (the trigger, the path through the code, the wrong result) and
+  may be marked `unsure` or `(pre-existing)`; pre-existing means the defect and its exposure both exist on
+  the base without this change. The report shows Blockers and Majors in full and at most five Minor or Nit one-liners; every finding is saved to
+  `findings.md` in the snapshot directory
+- **State.** Every review report opens with a block of six lines, `Snapshot:`, `Recommendation:`
+  (`No blocking findings`, `Changes requested` or `Blocked`), `Verification:` (`complete` or `incomplete`
+  with reasons), `Approval required:`, `Risk:` and `Rollback:`, and ends with the same state as an
+  `ifs-review-state:` JSON comment. *No blocking findings* is a recommendation, never an approval: you
+  approve. Then come `### For the human reviewer` (what the change does, from the traced code, and the
+  hunks to read first), `### Pre-existing (not caused by this change)` and `### Covered by gate`
+- **`REVIEW.md`** at the repository root or in a parent directory of a changed file may recalibrate
+  Minor and Nit severity, cap Nits, add always-check rules and name generated paths to skip. It cannot
+  remove a Blocker class, a lens, the security hand-off, the quality gate or the external stage, and it
+  changes no external-review setting; a line that tries is reported as a finding
+- **Fix rounds.** A fix is reviewed like the change: a new snapshot, its delta against the reviewed one
+  as the scope, the earlier findings numbered F1, F2 and so on and reported `closed`, `open` or
+  `regressed`. After two fix rounds automatic fixing stops and the skill asks whether the approach itself
+  should change
 
 ## Settings
 
@@ -198,6 +244,10 @@ the other modes.
 
 Sent: the binding-rules files (`--rules`, by default the repository's `CLAUDE.md` and `AGENTS.md`), the
 approved plan, the skill's review focus, the specification files in scope (`--context`) and the change.
+The skills pass `--policy-dir`, the review snapshot's policy directory: the rules files are then read
+from there, as they were at the base revision, instead of from the work tree, and without `--rules` every
+`CLAUDE.md`, `AGENTS.md` and `REVIEW.md` in it is sent. It is the only input allowed outside `--repo`;
+`--rules` paths are then relative to it and confined to it, and nothing in it may be a symlink.
 Nothing else, and nothing at all when the reviewer is `off`, the default. Each of these sits in the prompt between a
 BEGIN and an END line that carry a random marker drawn for the run, and the reviewer is told that
 everything between them is data: an instruction planted in a specification file, `CLAUDE.md` or the code

@@ -11,5 +11,8 @@ Java (Spring Boot services, AWS Lambda functions, shared libraries), built with 
 - New dependencies or plugins not named in the approved plan, unpinned versions, a database, ORM, broker or cloud SDK added without approval
 - Tests that would pass even if the feature were broken; tests that reach the network
 - Stale Javadoc and comments next to changed lines
+- Temporal compatibility: old and new versions running side by side, migration or backfill order, replay of events written before the change, rollback after the new version wrote data, partial deployment
+- A specification item or test case edited by this change that no approved plan item or amendment covers (an unapproved requirement change)
+- For every finding, the evidence as a causal argument: what triggers the defect, the path it takes (file:line steps) and the wrong result; mark a defect that exists on the base independently of this change "pre-existing"
 - Library behaviour you are not sure of (Spring, the AWS SDK, Jackson): say "verify against the docs" rather than asserting
 - Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding
