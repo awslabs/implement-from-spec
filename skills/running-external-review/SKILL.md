@@ -41,7 +41,8 @@ answers "External review: off (configuration)" and sends nothing, that is the re
 options are not yours to choose or change, and the command in your brief carries no setting values; an
 `--external-review off` in it is the user's request, passed on by the orchestrator. Its
 `--policy-dir` names the review snapshot's policy directory, from which the script reads the rules
-files.
+files, and `--snapshot-id` that snapshot's full id, which binds the policy to the review round (a fix
+round's `--files` command is refused without it).
 
 1. Run the single command your brief gives you, exactly as written and with nothing appended, in one
    background Bash call (`run_in_background: true`, `timeout: 1900000`): the reviewer can take longer

@@ -352,8 +352,8 @@ dispatch.
   `prev` and `hash`) and it, `findings.md` and `risk.json` each have a `<name>.sha256` sidecar; `verify`,
   `gates` and `state` check them, and a change made outside the writer is
   `<file> changed outside <writer>` (exit 3), which `state` renders as an invalidated snapshot with
-  verification incomplete. Records from before hashing are reported unverifiable (verification
-  incomplete). A tool call that was denied is never retried through another tool: the denial is reported
+  verification incomplete; a record whose sidecar is missing counts as changed too, and a changed record
+  also puts `human (<reason>)` under *Approval required*. A tool call that was denied is never retried through another tool: the denial is reported
 - **Verify before reporting**: the state block comes only from `review-snapshot.py state` (review
   state, below), which recomputes the candidate first. Exit 0: the block says `valid`. Exit 3: it says
   `invalidated: <paths>`, verification is incomplete, and the change since is reviewed as a fix round
@@ -433,8 +433,9 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
 - **Isolation**: the plugin's `hooks/hooks.json` runs `<PLUGIN_ROOT>/core/gate/review-isolation.py`
   before every tool call. The Skill call that loads a reviewer skill inside a subagent registers that
   subagent as a reviewer; the main conversation and the implementing subagents are never affected. For a
-  registered reviewer the hook denies every edit, web, agent, MCP and further Skill call; Read, Grep and
-  Glob outside the repository, the plugin root and the snapshot directory, or on a credential path; and
+  registered reviewer the hook allows only Read, Grep, Glob, allowlisted Bash and bookkeeping tools (the task
+  list, ToolSearch, SubagentHandback) and denies every other tool, every edit, web, agent, MCP and further
+  Skill call among them; Read, Grep and Glob outside the repository, the plugin root and the snapshot directory, or on a credential path; and
   every Bash line that is not wholly on its read-only allowlist (git reads, file viewers, `find` without
   actions, `sed -n`, `review-snapshot.py verify`, `delta` and `gates`, and the external-review script for
   `running-external-review` only); `state` and `save-findings` are the main conversation's. Reviewers run
@@ -764,7 +765,9 @@ the ledger's *Implementation notes*.
   to close (the lens whose groups the finding belongs to; a lens that only head-lined it as out of lens
   does not count); the security hand-off reviewers when the delta touches their paths; the external stage on the
   delta's files (`--files`: the runner's command with `--files <the delta's paths>` in place of the change
-  arguments, given in its prompt; with the stage off, the preparation's line in `<new DIR>/external.txt`)
+  arguments, its `--policy-dir` and `--snapshot-id` kept (the new snapshot's; `--files` with a policy
+  directory needs its id), given in its prompt; with the stage off, the preparation's line in
+  `<new DIR>/external.txt`)
 - The prompt adds the round's delta and points at the earlier findings, numbered F1, F2 and so on, in
   `<old DIR>/findings.md`. Each is reported `closed`
   (evidence), `open` or `regressed`; an open finding keeps its number and is not notified again as new.

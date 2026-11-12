@@ -44,11 +44,13 @@ before it (for the first, the sha256 of the snapshot id), and `hash`, the sha256
 without `hash`; record-gate only appends. gates.json, findings.md (save-findings) and risk.json
 (review-prepare.py) each have a sidecar <name>.sha256 (schema ifs-review-record/1: file, snapshot, sha256 of
 the file's bytes), so a truncated or deleted file is caught too. verify, gates, record-gate and state check
-them: a broken chain or a sidecar that does not match is "<file> changed outside <writer>", exit 3, and state
-renders the snapshot invalidated and verification incomplete with that reason. A record without hashes (a
-snapshot from before record hashing) is unverifiable: state says so under Verification (incomplete), and
-record-gate refuses to extend an unchained gates.json. This detects edits made with other tools; it is not a
-defence against someone who recomputes the hashes.
+them: a broken chain, a sidecar that does not match, and a record whose sidecar is missing are "<file> changed
+outside <writer>", exit 3, and state renders the snapshot invalidated, verification incomplete and human
+approval required with that reason. A missing sidecar fails closed (2026-11-12): deleting risk.json.sha256 and
+editing risk.json used to leave the record "unverifiable", and state then rendered the edited classification
+with exit 0, so `approval_required` could be emptied. This detects edits made with other tools; it is not a
+defence against someone who recomputes the hashes, or who deletes a record together with its sidecar (an absent
+gates.json or findings.md reads as none recorded; a missing risk.json stops state).
 
 Candidate, by mode (the paths are repository-relative; planning artefacts, ai-planning/*.plan,
 *.ledger.md, *.approved.md and *.changeset-*.json, are never part of it: --plan records the plan):
@@ -709,9 +711,6 @@ def cmd_verify(args) -> int:
     changed += [reason for kind, reason in problems if kind == "tampered"]
     for rel in changed:
         print(f"changed: {rel}")
-    for kind, reason in problems:
-        if kind == "unverifiable":
-            print(f"unverifiable: {reason}")
     if changed:
         print(f"Snapshot {manifest['id'][:12]}: changed ({len(changed)} paths)", file=sys.stderr)
         return EXIT_CHANGED
@@ -746,11 +745,6 @@ def now_utc() -> str:
 
 def tampered_reason(name: str) -> str:
     return f"{name} changed outside {RECORD_WRITERS[name]}"
-
-
-def unverifiable_reason(name: str) -> str:
-    what = "a hash chain" if name == GATES_FILE else "a record hash"
-    return f"{name} unverifiable: written without {what} (a snapshot from before record hashing)"
 
 
 def entry_hash(entry: dict) -> str:
@@ -809,8 +803,9 @@ def write_record(directory: str, name: str, data: bytes, sid: str) -> None:
 
 def check_record(directory: str, name: str, sid: str):
     """(data, problem) of a record file with a sidecar: problem is None when it matches, ("tampered", reason)
-    when the file or its sidecar was changed, added or removed by other means, ("unverifiable", reason) when
-    the file has no sidecar at all. data is the file's bytes, None when absent or unreadable."""
+    when the file or its sidecar was changed, added or removed by other means, a file whose sidecar is missing
+    included (fail closed: the writers always write both). data is the file's bytes, None when absent or
+    unreadable."""
     path = os.path.join(directory, name)
     try:
         data = read_regular(path)
@@ -820,7 +815,7 @@ def check_record(directory: str, name: str, sid: str):
     if data is None and side is None:
         return None, None
     if side is None:
-        return data, ("unverifiable", unverifiable_reason(name))
+        return data, ("tampered", tampered_reason(name))
     try:
         record = json.loads(side.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -833,9 +828,8 @@ def check_record(directory: str, name: str, sid: str):
 
 
 class GateRecords:
-    """The gate entries of a snapshot and the state of their chain: problem is None (intact or no gates),
-    ("tampered", reason) or ("unverifiable", reason). entries holds what parses, for display only when a
-    problem is set."""
+    """The gate entries of a snapshot and the state of their chain: problem is None (intact or no gates) or
+    ("tampered", reason). entries holds what parses, for display only when a problem is set."""
 
     def __init__(self, sid: str, entries: list, problem) -> None:
         self.sid, self.entries, self.problem = sid, entries, problem
@@ -896,11 +890,8 @@ def load_gates(directory: str, sid: str) -> GateRecords:
             or not isinstance(body.get("gates"), list):
         return GateRecords(sid, [], tampered)
     entries = [g for g in body["gates"] if isinstance(g, dict)]
-    if problem and problem[0] == "tampered":
+    if problem:
         return GateRecords(sid, entries, problem)
-    chained = [isinstance(g, dict) and ("hash" in g or "prev" in g) for g in body["gates"]]
-    if problem:  # no sidecar: a gates.json from before chaining, unless an entry says otherwise
-        return GateRecords(sid, entries, tampered if any(chained) else problem)
     prev = chain_start(sid)
     for gate in body["gates"]:
         if not valid_entry_fields(gate) or gate.get("prev") != prev or gate.get("snapshot") != sid \
@@ -916,8 +907,7 @@ def check_gates(directory: str, sid: str) -> GateRecords:
 
 
 def integrity_problems(directory: str, sid: str, gates: GateRecords | None = None) -> list:
-    """Every ("tampered" | "unverifiable", reason) of the snapshot's records: gates.json, findings.md and
-    risk.json."""
+    """Every ("tampered", reason) of the snapshot's records: gates.json, findings.md and risk.json."""
     gates = gates or check_gates(directory, sid)
     problems = [gates.problem] if gates.problem else []
     for name in (FINDINGS_FILE, RISK_FILE):
@@ -1134,6 +1124,8 @@ def cmd_state(args) -> int:
             verification = (verification or []) + [reason]
     changed = changed + tampered
     reasons = list(risk["approval_required"]) + [r for r in (approval or []) if r not in risk["approval_required"]]
+    # A record changed outside its writer (risk.json included) is never evidence that no approval is needed.
+    reasons += [r for r in tampered if r not in reasons]
     if approval is None and reasons:
         print("review-snapshot: the risk classification requires human approval; Approval required carries its "
               "reasons", file=sys.stderr)
@@ -1160,9 +1152,6 @@ def cmd_state(args) -> int:
         print(f"review-snapshot: snapshot {sid12} no longer verifies ({len(changed) - len(tampered)} paths): the "
               "block says invalidated and verification incomplete; review the change since as a fix round",
               file=sys.stderr)
-    for kind, reason in problems:
-        if kind == "unverifiable":
-            print(f"review-snapshot: {reason}: verification is incomplete", file=sys.stderr)
     return EXIT_CHANGED if changed else EXIT_OK
 
 

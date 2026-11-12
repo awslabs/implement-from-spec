@@ -60,19 +60,58 @@ recorded, whose findings go into the triage.
    - Already initialised (the root has a `.terraform/` directory) and the change adds no module call,
      module source or provider: `terraform -chdir=<root> validate -no-color` in place
    - Otherwise `init` is needed, and `init` writes `.terraform/` and the dependency lock file, so it runs
-     in a scratch copy outside the repository. First try it with downloads impossible: when one of the
-     platform's implied local mirror directories exists (Linux: `/usr/local/share/terraform/plugins`,
-     `/usr/share/terraform/plugins`, `~/.local/share/terraform/plugins`, `~/.terraform.d/plugins`; macOS:
-     `~/.terraform.d/plugins`, `~/Library/Application Support/io.terraform/plugins`, `/Library/Application
-     Support/io.terraform/plugins`), write a CLI configuration with only a `filesystem_mirror` for it and
-     run `init` with `TF_CLI_CONFIG_FILE` pointing at it. The configuration has no `direct` method, which
-     is how a mirror is used exclusively: "you must either remove the `direct` installation method
-     altogether or use its `exclude` argument" (developer.hashicorp.com/terraform/cli/config/config-file,
-     `provider_installation`), so nothing is fetched from a registry and this needs no question. When it succeeds, validate as below. Only when no
-     mirror directory exists or `init` reports a provider missing from the mirror, ask the user once:
-     "validate needs a provider download into a scratch copy outside the repository; allow it? (yes /
-     no)", and on yes run `init` without that configuration. The scratch copy holds the working tree
-     without version-control data, state, real tfvars or `.terraform/`:
+     in a scratch copy outside the repository. It runs without a question only when both of these
+     hold, which together rule out a download:
+     - **No module at all.** `init` installs every module a `module` block names: "During init,
+       Terraform searches the configuration for `module` blocks, and retrieves the source code for
+       referenced modules from the locations given in their `source` arguments"
+       (developer.hashicorp.com/terraform/cli/commands/init, "Child Module Installation"), and neither
+       `-backend=false` nor a provider mirror stops that (tested with Terraform 1.16.6: `init -backend=false`
+       with only a `filesystem_mirror` tried to download a `git::https://` and a registry module source;
+       `-get=false` is no way around it, since `init` then fails on any module, a local one included). A
+       text search cannot tell reliably which sources download: Terraform also reads `.tf.json` files ("a
+       JSON-based variant of the language ... named with the `.tf.json` file extension",
+       developer.hashicorp.com/terraform/language/files), a block's `source` can sit any number of lines
+       below `module`, and a local module can call remote ones, live outside the copy or be a symlink. In
+       the JSON syntax no text search can rule a `module` block out at all: a key may be written with JSON
+       escapes (`"\u006dodule"` is the key `module`), which `grep -w module` does not match. So the
+       question below is skipped only when the root has no `module` block at all and no JSON configuration:
+       the root and the directories directly below it (`tests/` among them) hold no `.tf.json` or
+       `.tftest.json` file whatever its content, no symlink, and no `.tf` or `.tftest.hcl` file containing the
+       word `module` (in a comment or a string too):
+
+           find "$scratch/<root>" -maxdepth 2 \( -type l -o -iname '*.tf.json' -o -iname '*.tftest.json' \) -print
+           find "$scratch/<root>" -maxdepth 2 -type f \( -iname '*.tf' -o -iname '*.tftest.hcl' \) \
+               -exec grep -lw module {} +
+
+       (after the copy below), each with its error output shown, never discarded with `2>/dev/null`. Read
+       the two by their output first and their exit status second. The first prints nothing and exits 0 for
+       a root without JSON configuration or symlinks. The second runs `grep`, which exits 1 when it finds no
+       match, and `find` then exits 1 too, so a module-free root gives exit 1 with no output at all; an
+       unreadable file gives the same exit 1, told apart only by `grep`'s error message (observed on macOS,
+       BSD `find` and the `bfs` of Claude Code's shell alike: no `module` 1 and silent, a `module` 0 and the
+       path, an unreadable file 1 and `grep: <path>: Permission denied`, no `.tf` file at all 0 and silent).
+       So the second command means "no module" only when it printed nothing at all, neither a path nor an
+       error message, and exited 0 or 1. Any output of either command (a path is a module or a JSON file;
+       any error message means a file or directory that cannot be read, so what it holds is unknown), the
+       first command exiting non-zero, the second exiting anything but 0 or 1, or any other doubt, and the
+       user is asked before any `init`, a root whose only modules are local included
+     - **No provider from a registry.** One of the platform's implied local mirror directories exists (Linux:
+       `/usr/local/share/terraform/plugins`, `/usr/share/terraform/plugins`,
+       `~/.local/share/terraform/plugins`, `~/.terraform.d/plugins`; macOS: `~/.terraform.d/plugins`,
+       `~/Library/Application Support/io.terraform/plugins`, `/Library/Application Support/io.terraform/plugins`):
+       write a CLI configuration with only a `filesystem_mirror` for it and run `init` with
+       `TF_CLI_CONFIG_FILE` pointing at it. The configuration has no `direct` method, which is how a mirror
+       is used exclusively: "you must either remove the `direct` installation method altogether or use its
+       `exclude` argument" (developer.hashicorp.com/terraform/cli/config/config-file,
+       `provider_installation`), so no provider is fetched from a registry. That setting is for providers;
+       it did not stop the module downloads in the test above
+
+     When both hold, run `init` with that configuration and validate as below. Otherwise (any `module`
+     block, any `.tf.json` or `.tftest.json` file, any doubt about one, no mirror directory, or `init` reporting a provider missing from the
+     mirror) ask the user once, before any `init`: "validate needs a provider or module download into a scratch copy outside the repository; allow
+     it? (yes / no)", and on yes run `init` without that configuration. The scratch copy holds the working
+     tree without version-control data, state, real tfvars or `.terraform/`:
 
          scratch="$(mktemp -d "${TMPDIR:-/tmp}/tf-validate.XXXXXX")"
          rsync -a --exclude .git --exclude .claude --exclude .terraform --exclude '*.tfstate*' --exclude '*.tfvars' \
@@ -96,7 +135,7 @@ recorded, whose findings go into the triage.
      `-lockfile=readonly` when the copy has a `.terraform.lock.hcl`, so the check uses the locked
      provider versions ("suppress the lockfile changes, but verify checksums against the information
      already recorded", developer.hashicorp.com/terraform/cli/commands/init). `-backend=false` never
-     touches the remote state. On no: "not run: provider download declined"
+     touches the remote state. On no: "not run: provider or module download declined"
    - For the committed-range mode, validate the tree at `<b>`. When the working tree differs from it,
      build the scratch copy from the commit instead (`git -C <repo> archive <b> | tar -x -C "$scratch"`,
      which writes nothing in the repository; `git worktree add` would) and validate there
@@ -119,7 +158,7 @@ recorded, whose findings go into the triage.
 
 A check of the gate that could not run is recorded the same way, `--status not-run --command "<the
 command>" --reason "<the reason quoted above>"` ("terraform <v> is older than required_version <c>",
-"provider download declined"): `state` then reports verification incomplete with `<name> not run:
+"provider or module download declined"): `state` then reports verification incomplete with `<name> not run:
 <reason>`, never Blocked by itself. A result recorded by mistake stays in `gates.json`: record the right
 one after it (`state` reads each name's latest result), never edit, rewrite or delete the file. A missing
 optional tool is "not run: not installed", never "clean". When a check runs against a scratch copy, say

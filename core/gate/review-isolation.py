@@ -13,15 +13,26 @@ Registration. A Skill call made inside a subagent (the payload carries `agent_id
 reviewer skills (REVIEWER_SKILLS, as `implement-from-spec:<name>` or the bare `<name>`) records the agent
 and its role in <state>/review-isolation/<session_id>.json, written atomically under an exclusive lock on a
 sidecar lock file. <state> is $CLAUDE_PLUGIN_DATA when set, else $XDG_STATE_HOME/implement-from-spec, else
-~/.local/state/implement-from-spec. The registering call itself goes ahead (no output). When the state
-cannot be written, the Skill call is denied: a reviewer never runs unregistered. The main conversation (no
+~/.local/state/implement-from-spec. The agent and its role are first added to the session's activation
+record, ~/.local/state/implement-from-spec/active/review-<session_id>.json (core/gate/ifs_paths.py
+review_marker_file; HOME alone locates it): a reviewer the record names but the state file no longer does
+(the state was removed, damaged and reset, or moved with CLAUDE_PLUGIN_DATA or XDG_STATE_HOME) has every call
+denied, so the isolation is never lifted by losing the state. In a gated session the approval gate also
+protects both directories from tool calls (ifs_paths.state_write_roots). The registering call itself goes
+ahead (no output). When the record or the state cannot be written, the Skill call is denied: a reviewer never
+runs unregistered. The main conversation (no
 `agent_id`) and subagents that never loaded a reviewer skill (implementation waves) are never affected: the
 hook prints nothing and exits 0 for them.
 
-What a registered reviewer may not do (permissionDecision "deny", with a reason telling it to list the
-call under the parts it could not complete; each denial is appended to the session's state file):
-  - Write, Edit, MultiEdit, NotebookEdit, WebFetch, WebSearch, Agent, Task, any mcp__* tool, the other
-    shells and schedulers in DENIED_TOOLS, and any further Skill call
+What a registered reviewer may do is an allowlist; everything else is denied (permissionDecision "deny",
+with a reason telling it to list the call under the parts it could not complete; each denial is appended to
+the session's state file):
+  - Allowed: Read, Grep and Glob within the roots below, Bash within the allowlist below, and the bookkeeping
+    tools in REVIEWER_TOOLS that touch no file and start nothing (TodoWrite and its successors TaskCreate,
+    TaskGet, TaskList and TaskUpdate, ToolSearch, SubagentHandback). Any other tool is denied, including one
+    Claude Code adds later: Write, Edit, MultiEdit, NotebookEdit, WebFetch, WebSearch, Agent, Task, every
+    mcp__* tool, the other shells and schedulers, and any further Skill call. (Until 2026-11-12 this was a
+    denylist, so a tool it did not name was allowed.)
   - Read, Grep and Glob outside the allowed roots (the git top level of the payload's cwd, the plugin
     root, <state>/review-snapshots under both of review-snapshot.py's default roots, snapshot_roots) or on
     a credential path anywhere (CREDENTIAL_DIRS, CREDENTIAL_FILES,
@@ -102,11 +113,15 @@ PLUGIN_NAME = "implement-from-spec"
 REVIEWER_SKILLS = ("code-reviewer", "iac-security-reviewer", "reviewing-terraform-code",
                    "reviewing-terraform-security", "running-external-review")
 EXTERNAL_ROLE = "running-external-review"
-DENIED_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task",
-                # Not named in the design but equivalent to a shell or a writer.
-                "PowerShell", "Monitor", "CronCreate", "CronDelete", "EnterWorktree", "ExitWorktree",
-                "Workflow", "RemoteTrigger"}
 PATH_TOOLS = {"Read", "Grep", "Glob"}
+# The only tools a registered reviewer may call besides PATH_TOOLS and Bash (each checked below): bookkeeping
+# that writes no file and starts no process or agent. Tool names from code.claude.com/docs/en/tools-reference
+# ("The tool names are the exact strings you use in permission rules, subagent tool lists, and hook matchers",
+# read 2026-11-12): TodoWrite is "Disabled by default in favor of `TaskCreate`, `TaskGet`, `TaskList`, and
+# `TaskUpdate`"; ToolSearch loads a deferred tool's schema (calling the tool is then checked here);
+# SubagentHandback returns the subagent's report to its caller.
+REVIEWER_TOOLS = frozenset({"TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "ToolSearch",
+                            "SubagentHandback"})
 CREDENTIAL_DIRS = ("~/.aws", "~/.ssh", "~/.config/gcloud", "~/.azure")
 CREDENTIAL_FILES = ("~/.docker/config.json", "~/.netrc")
 # Names in a Glob pattern or a Grep glob filter that aim at credentials.
@@ -126,16 +141,38 @@ class Deny(Exception):
 
 # ------------------------------------------------------------------------------------------- state
 
+def load_paths():
+    """core/gate/ifs_paths.py, the state locations every check shares, loaded by path from the directory this
+    file runs from, compiled from source, once per process. Identical in ifs-pretool.py, spec-approval-gate.py
+    and review-isolation.py, so in-process the three share one module object."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ifs_paths.py")
+    mod = sys.modules.get("ifs_gate_paths")
+    if mod is not None and getattr(mod, "__file__", None) == path:
+        return mod
+    try:
+        import _frozen_importlib as bootstrap
+        import _frozen_importlib_external as external
+    except ImportError:
+        import importlib._bootstrap as bootstrap
+        import importlib._bootstrap_external as external
+
+    class SourceOnly(external.SourceFileLoader):
+        def get_code(self, fullname):
+            return self.source_to_code(self.get_data(self.path), self.path)
+
+    spec = bootstrap.spec_from_loader("ifs_gate_paths", SourceOnly("ifs_gate_paths", path))
+    mod = bootstrap.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["ifs_gate_paths"] = mod
+    return mod
+
+
 def state_root():
-    base = os.environ.get("CLAUDE_PLUGIN_DATA")
-    if not base:
-        base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                            "implement-from-spec")
-    return os.path.realpath(base)
+    return load_paths().plugin_state_root()
 
 
 def state_dir():
-    return os.path.join(state_root(), "review-isolation")
+    return load_paths().isolation_state_dir()
 
 
 def snapshot_root():
@@ -143,29 +180,32 @@ def snapshot_root():
 
 
 def snapshot_roots():
-    """Every location review-snapshot.py may have chosen by default. Claude Code exports CLAUDE_PLUGIN_DATA to
-    hook processes but not to the Bash tool's commands, so a snapshot the orchestrator creates from the shell
-    lands under $XDG_STATE_HOME/implement-from-spec (else ~/.local/state/implement-from-spec) while this hook
-    sees CLAUDE_PLUGIN_DATA: both are the plugin's own state, and both are allowed."""
-    fallback = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                            "implement-from-spec")
-    return {os.path.realpath(snapshot_root()), os.path.realpath(os.path.join(fallback, "review-snapshots"))}
+    """Every location review-snapshot.py may have chosen by default (ifs_paths.snapshot_roots). Claude Code
+    exports CLAUDE_PLUGIN_DATA to hook processes but not to the Bash tool's commands, so a snapshot the
+    orchestrator creates from the shell lands under $XDG_STATE_HOME/implement-from-spec (else
+    ~/.local/state/implement-from-spec) while this hook sees CLAUDE_PLUGIN_DATA: all are the plugin's own
+    state, and all are allowed."""
+    return set(load_paths().snapshot_roots())
 
 
 def session_key(session_id):
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(session_id or "no-session"))
+    return load_paths().session_key(session_id)
 
 
 def state_path(session_id):
-    return os.path.join(state_dir(), f"{session_key(session_id)}.json")
+    return load_paths().isolation_state_file(session_id)
 
 
 def read_state(session_id):
-    """The session's state, {} when it has none. A state file that exists but does not parse raises."""
+    """The session's state, {} when it has none. A state file that exists, or cannot be checked, but does not
+    open or parse raises (a dangling symlink in its place included: ifs_paths.may_exist)."""
+    path = state_path(session_id)
     try:
-        with open(state_path(session_id), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             state = json.load(fh)
     except FileNotFoundError:
+        if load_paths().may_exist(path):
+            raise
         return {}
     if not isinstance(state, dict):
         raise ValueError("review-isolation state is not a JSON object")
@@ -200,13 +240,65 @@ def state_txn(session_id):
         os.replace(tmp, path)
 
 
-def registered_from_raw(session_id, agent_id):
-    """When the state cannot be parsed: whether the agent id appears in it at all (fail closed)."""
+def marker_path(session_id):
+    return load_paths().review_marker_file(session_id)
+
+
+def marker_role(session_id, agent_id):
+    """The role the session's activation record gives the agent, or None. The record (ifs_paths.
+    review_marker_file) lives where only HOME moves it, so a registration that has gone from the state file,
+    or a state that moved with CLAUDE_PLUGIN_DATA or XDG_STATE_HOME, is still known. Raises OSError or
+    ValueError when the record exists but cannot be read."""
+    path = marker_path(session_id)
     try:
-        with open(state_path(session_id), encoding="utf-8", errors="replace") as fh:
-            return json.dumps(str(agent_id)) in fh.read()
-    except OSError:
-        return False
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except FileNotFoundError:
+        if load_paths().may_exist(path):
+            raise
+        return None
+    agents = record.get("agents") if isinstance(record, dict) else None
+    if not isinstance(agents, dict):
+        raise ValueError("review-isolation activation record is not of the hook's shape")
+    role = agents.get(str(agent_id))
+    return str(role) if role is not None else None
+
+
+def record_marker(session_id, agent_id, role):
+    """Adds the agent to the session's activation record, atomically; called under the state lock."""
+    import tempfile
+    path = marker_path(session_id)
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except FileNotFoundError:
+        record = {}
+    if not isinstance(record, dict) or not isinstance(record.get("agents", {}), dict):
+        raise ValueError("review-isolation activation record is not of the hook's shape")
+    record.setdefault("agents", {})[str(agent_id)] = role
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".review-")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=1)
+    os.replace(tmp, path)
+
+
+def registered_from_raw(session_id, agent_id):
+    """When the state cannot be parsed: whether the agent id appears in the state file or the activation record
+    at all (fail closed). A file that exists, or cannot be checked (ifs_paths.may_exist: EACCES on it or on a
+    directory above it, ELOOP, a dangling symlink), but cannot be read counts as naming the agent: whether it
+    does cannot be known, and "unregistered" would lift the isolation of a registered reviewer whose records
+    were both made unreadable (PR 1 fix round 3). Only a file lstat finds absent is skipped."""
+    for path in (state_path(session_id), marker_path(session_id)):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if json.dumps(str(agent_id)) in fh.read():
+                    return True
+        except OSError:
+            if load_paths().may_exist(path):
+                return True
+    return False
 
 
 def record_denial(session_id, agent_id, tool, reason):
@@ -932,6 +1024,17 @@ def decide(data):
         state = None
     entry = (state or {}).get("agents", {}).get(str(agent_id)) if state is not None else None
     if entry is None:
+        try:
+            recorded = marker_role(session_id, agent_id)
+        except (OSError, ValueError):
+            if registered_from_raw(session_id, agent_id):
+                raise
+            recorded = None
+        if recorded is not None:
+            # Registered (the activation record says so) but gone from the state: never lift the isolation.
+            return deny_reason(recorded, f"this reviewer's registration is missing from {state_path(session_id)} "
+                                         "although its activation record names it (the state was removed or "
+                                         "moved), so every call is denied"), recorded
         if tool == "Skill":
             role = skill_name(tool_input)
             if not role:
@@ -940,13 +1043,17 @@ def decide(data):
                 with state_txn(session_id) as st:
                     entry = st["agents"].get(str(agent_id))
                     if entry is None:
+                        record_marker(session_id, agent_id, role)  # first: a lost state still denies
                         st["agents"][str(agent_id)] = {
                             "role": role, "agent_type": data.get("agent_type"),
                             "registered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             except Exception as exc:  # noqa: BLE001 - a reviewer never runs unregistered
-                return (f"review-isolation could not register this reviewer ({type(exc).__name__}: {exc}), so "
-                        f"the {role} skill does not load. Tell the user; the state directory is {state_dir()}.",
-                        role)
+                try:  # best-effort detail: the denial never depends on it (PR 1 fix round 4, defect 3)
+                    where = f"the state directory is {state_dir()}"
+                except Exception:  # noqa: BLE001
+                    where = "its state directory cannot be named"
+                return (f"review-isolation could not register this reviewer ({type(exc).__name__}: "
+                        f"{describe(exc)}), so the {role} skill does not load. Tell the user; {where}.", role)
             if entry is None:
                 return None, None
             # Registered meanwhile by a concurrent call of the same agent: a further Skill call, denied below.
@@ -957,12 +1064,15 @@ def decide(data):
     try:
         if tool == "Skill":
             raise Deny("a further Skill call (a reviewer loads one skill only)")
-        if tool in DENIED_TOOLS or tool.startswith("mcp__"):
-            raise Deny(f"the {tool} tool is not available to reviewers")
+        if tool in REVIEWER_TOOLS:
+            return None, role
+        if tool not in PATH_TOOLS and tool != "Bash":
+            raise Deny(f"the {clean(tool)[:200]} tool is not available to reviewers (reviewers may use only "
+                       "Read, Grep, Glob and read-only Bash)")
         roots = allowed_roots(cwd)
         if tool in PATH_TOOLS:
             check_path_tool(tool, tool_input, cwd, roots, role, session_id)
-        elif tool == "Bash":
+        else:
             check_bash(tool_input.get("command"), os.path.realpath(cwd), roots, role)
     except Deny as exc:
         return deny_reason(role, str(exc)), role
@@ -988,35 +1098,64 @@ def main():
             data = {"session_id": found_s and found_s.group(1), "agent_id": found_a and found_a.group(1)}
         agent_id, session_id = data.get("agent_id"), data.get("session_id")
         if agent_id and is_registered_failsafe(session_id, agent_id):
-            emit_deny(f"review-isolation hook error ({type(exc).__name__}: {exc}). This subagent is a registered "
-                      "reviewer; the call is denied because it could not be checked. List it under the parts "
-                      "of the review you could not complete.")
+            where = ""
+            try:
+                where = (f" If the session's isolation records cannot be read ({state_path(session_id)}, "
+                         f"{marker_path(session_id)}), restore this user's access to them or start a new session.")
+            except Exception:  # noqa: BLE001 - the denial stands without the locations
+                pass
+            emit_deny(f"review-isolation hook error ({type(exc).__name__}: {describe(exc)}). This subagent is, "
+                      "or may be (its session's records cannot all be read), a registered reviewer; the call is denied "
+                      "because it could not be checked. List it under the parts of the review you could not "
+                      "complete." + where)
             return 0
-        print(f"review-isolation: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"review-isolation: {type(exc).__name__}: {describe(exc)}", file=sys.stderr)
         return 0
 
 
+def describe(exc):
+    """str(exc), or its type's name when even that raises: an error message never stops a denial."""
+    try:
+        return str(exc)
+    except Exception:  # noqa: BLE001
+        return type(exc).__name__
+
+
 def is_registered_failsafe(session_id, agent_id):
+    """Whether the agent is, or may be, a registered reviewer; never raises. When neither the parsed records
+    nor their raw text can be checked (ifs_paths does not load, a path cannot be built), it may be: True, so
+    main's handler denies (PR 1 fix round 4, defect 3: the handler must reach its denial)."""
     try:
         state = read_state(session_id)
-        return str(agent_id) in (state.get("agents") or {})
-    except Exception:  # noqa: BLE001 - unreadable state: whether the id appears in it at all
-        return registered_from_raw(session_id, agent_id)
+        return str(agent_id) in (state.get("agents") or {}) or marker_role(session_id, agent_id) is not None
+    except Exception:  # noqa: BLE001 - unreadable state or record: whether the id appears in them at all
+        try:
+            return registered_from_raw(session_id, agent_id)
+        except Exception:  # noqa: BLE001 - cannot be checked at all: may be registered
+            return True
 
 
 # --------------------------------------------------------------------------------- opt-in timing log
 # Off unless IFS_HOOK_TIMING_LOG (or EVAL_IFS_HOOK_TIMING_LOG, the form `claude plugin eval` passes to its
-# sessions) names a file: then each call appends one line, <start, ISO 8601 UTC>\t<hook>\t<tool or ->\t<agent_id
-# or ->\t<duration ms>\t<session_id or ->, for the eval timeline tool. The duration runs from the
+# sessions) names a log in ~/.local/state/implement-from-spec/hook-timing/ (ifs_paths.timing_log_path; any
+# other value is refused, so no hook appends to a file elsewhere, the project included): then each call appends
+# one line, <start, ISO 8601 UTC>\t<hook>\t<tool or ->\t<agent_id or ->\t<duration ms>\t<session_id or ->,
+# for the eval timeline tool. The duration runs from the
 # first statement of this file (interpreter start-up is not included) to the end of the decision. The line is
-# written with O_APPEND (one write), mode 0600, never through a symlink; a log that cannot be written is
-# skipped silently, and nothing is printed: timing never changes or fails a decision. Unset, the hook reads
-# one clock value and the two variables, nothing else.
+# written by ifs_paths.write_timing: one O_APPEND write, the directory reached from HOME with no symlink
+# followed, only to a private (0600) regular file of this user with one link, opened non-blocking; a log that
+# cannot be written so is skipped silently, and nothing is printed: timing never changes or fails a decision.
+# Unset, the hook reads one clock value and the two variables, nothing else.
 TIMING_ENV = ("IFS_HOOK_TIMING_LOG", "EVAL_IFS_HOOK_TIMING_LOG")
 
 
 def timing_log_path():
-    return next((os.environ[n] for n in TIMING_ENV if os.environ.get(n)), None)
+    if not any(os.environ.get(n) for n in TIMING_ENV):
+        return None
+    try:
+        return load_paths().timing_log_path()
+    except Exception:  # noqa: BLE001 - timing never changes a decision
+        return None
 
 
 def run_timed(run, hook, log_path):
@@ -1041,12 +1180,7 @@ def run_timed(run, hook, log_path):
             fields += [str(payload.get(k) or "-") for k in ("tool_name", "agent_id")]
             fields += [f"{ms:.1f}", str(payload.get("session_id") or "-")]
             line = "\t".join(" ".join(f.split()) or "-" for f in fields) + "\n"
-            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-            fd = os.open(log_path, flags, 0o600)
-            try:
-                os.write(fd, line.encode("utf-8", "replace"))
-            finally:
-                os.close(fd)
+            load_paths().write_timing(log_path, line)
         except Exception:  # noqa: BLE001 - the timing log is best effort; the hook's decision stands
             pass
 

@@ -126,6 +126,22 @@ CLOSING_LINES = ("Groups: <group>=clean|<n>; ...", "Spec alignment: <one clause>
                  "Could not complete: <none | what, and why>",
                  "Recommendation: <No blocking findings | Changes requested | Blocked> - <one clause>")
 EXIT_OK, EXIT_ERROR, EXIT_CHANGED, EXIT_USAGE = 0, 1, 3, 64
+# Characters that would let a repository-derived name (a changed path, a risk reason) start a new output line,
+# rewrite the terminal or reorder the text: C0 and C1 controls, DEL, the bidi controls and the line and
+# paragraph separators. shown() prints each as an escape instead.
+UNSAFE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
+
+
+def shown(text) -> str:
+    """text for the human-readable output: every UNSAFE_RE character as \\n, \\t, \\xNN or \\uNNNN, and a
+    backslash doubled first, so an escape in a file name cannot pass for one shown() made. (--json output is
+    escaped by json.dumps.)"""
+    named = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+    def esc(m):
+        ch = m.group(0)
+        return named.get(ch) or ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
+    return UNSAFE_RE.sub(esc, str(text).replace("\\", "\\\\"))
 
 
 class Stop(Exception):
@@ -350,6 +366,14 @@ def approval_text(risk: dict) -> str:
     return f"human ({'; '.join(risk['approval_required'])})" if risk["approval_required"] else "none"
 
 
+def risk_line(risk: dict) -> str:
+    return f"Risk: {risk['tier']} ({shown(reason_text(risk))})"
+
+
+def approval_line(risk: dict) -> str:
+    return f"Approval required: {shown(approval_text(risk))}"
+
+
 def render_brief(rev: dict, stack: str, manifest: dict, directory: str, risk: dict) -> str:
     repo = manifest["repo"]
     values = {"plugin": PLUGIN_ROOT, "dir": directory, "repo": repo}
@@ -524,9 +548,12 @@ def copy_diff(snap, manifest: dict, directory: str) -> str:
 
 # ---------------------------------------------------------------- the external stage
 def external_args(manifest: dict, runner: dict, directory: str, diff_copy) -> list:
-    """The review's arguments for spec-external-review.py: the same change, plan, context and policy."""
+    """The review's arguments for spec-external-review.py: the same change, plan, context and policy, the
+    policy bound to this snapshot by its full id (--snapshot-id), which a fix round keeps when it puts
+    --files <the delta's paths> in place of the change argument (PR 1 fix round 4)."""
     mode, source = manifest["mode"], manifest["source"]
-    args = ["--repo", manifest["repo"], "--focus", runner["focus"], "--policy-dir", os.path.join(directory, "policy")]
+    args = ["--repo", manifest["repo"], "--focus", runner["focus"], "--policy-dir", os.path.join(directory, "policy"),
+            "--snapshot-id", manifest["id"]]
     if mode == "range":
         args += ["--range", f"{manifest['base']}..{source['to_commit']}"]
     elif mode == "files":
@@ -693,14 +720,14 @@ def prepare(args, snap, risk_mod, ext) -> dict:
 
 def text_lines(result: dict) -> list:
     risk, ext = result["risk"], result["external"]
-    lines = [result["summary"], f"Snapshot directory: {result['directory']}",
-             f"Risk: {risk['tier']} ({reason_text(risk)})", f"Approval required: {approval_text(risk)}"]
-    lines += [f"Dispatch: {d['reviewer']} skill={d['skill']} model={d['model']} brief={d['brief']}"
+    lines = [shown(result["summary"]), f"Snapshot directory: {shown(result['directory'])}",
+             risk_line(risk), approval_line(risk)]
+    lines += [f"Dispatch: {d['reviewer']} skill={d['skill']} model={d['model']} brief={shown(d['brief'])}"
               for d in result["dispatch"]]
-    lines.append(ext["status"])
+    lines.append(shown(ext["status"]))
     if ext["runner"]:
         lines.append(f"Runner: skill={ext['runner']['skill']} model={ext['runner']['model']} "
-                     f"policy={ext['runner']['policy']} brief={ext['runner']['brief']}")
+                     f"policy={ext['runner']['policy']} brief={shown(ext['runner']['brief'])}")
     return lines
 
 
@@ -748,20 +775,20 @@ def main(argv=None) -> int:
     try:
         result = prepare(args, snap, risk_mod, ext)
     except Stop as exc:
-        print(f"review-prepare: {exc.message}", file=sys.stderr)
+        print(f"review-prepare: {shown(exc.message)}", file=sys.stderr)
         return exc.code
     except snap.Failure as exc:
-        print(f"review-prepare: {exc.message}", file=sys.stderr)
+        print(f"review-prepare: {shown(exc.message)}", file=sys.stderr)
         return exc.code
     except OSError as exc:
-        print(f"review-prepare: {exc}", file=sys.stderr)
+        print(f"review-prepare: {shown(exc)}", file=sys.stderr)
         return EXIT_ERROR
     if "changed" in result:
         if args.json:
             print(json.dumps({k: result[k] for k in ("schema", "snapshot", "directory", "changed")}, indent=2))
         else:
             for rel in result["changed"]:
-                print(f"changed: {rel}")
+                print(f"changed: {shown(rel)}")
         print(f"review-prepare: snapshot {result['snapshot']} changed during preparation "
               f"({len(result['changed'])} paths); prepare the review again", file=sys.stderr)
         return EXIT_CHANGED

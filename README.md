@@ -341,9 +341,10 @@ implementing and reviewing skills on its own when a request matches ("implement 
 
 The plugin ships no agents. Each review step dispatches one generic subagent per reviewer, all in one
 message so they run in parallel, and each subagent first loads its reviewer skill with the Skill tool.
-The reviewer skills are read-only, and the review-isolation hook enforces it: a subagent that loaded a
-reviewer skill cannot edit, fetch, start agents or run anything but read-only shell commands, and reads
-only the repository, the plugin and the review snapshot. The approval gate sees every subagent's tool
+The reviewer skills are read-only, and the review-isolation hook enforces it with an allowlist: a subagent
+that loaded a reviewer skill may use Read, Grep, Glob, read-only shell commands and a few bookkeeping tools
+(the task list, tool search, its hand-back), and every other tool is denied, so it cannot edit, fetch, start
+agents or run anything else, and it reads only the repository, the plugin and the review snapshot. The approval gate sees every subagent's tool
 calls, and the orchestrator compares the work tree before and after the review. Each review is bound to
 a snapshot of the change and opens with a state block (recommendation, verification, approval required,
 risk, rollback); see `docs/user-guide/external-review.md`, "The review around it".

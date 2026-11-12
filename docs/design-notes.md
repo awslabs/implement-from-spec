@@ -76,6 +76,44 @@ the separate hooks it replaced; the gate's other registrations and the two setup
 (`core/deps/install-ask-hook.py`, `core/deps/session-notice.py`) start as before. `session-notice.py`
 loads its sibling `depslib.py` by file path and adds nothing to `sys.path`.
 
+Security changes of 2026-11-12, after the PR 1 triage and an independent review of its fixes (the threat
+model's TM-47, TM-55, TM-57 to TM-62):
+
+- **Fail closed for every tool, deliberately.** The dispatcher stays one registration on matcher `*` with
+  `onFailure: block`, so a `python3` that cannot run blocks every tool call of every session with the
+  plugin, reads included, until it is fixed or the plugin is turned off in `enabledPlugins`. The
+  maintainer chose this over availability for reads on 2026-11-12: the reviewer isolation is an
+  allowlist and needs every tool hooked, and a non-blocking registration for reads would let a
+  registered reviewer use any tool unchecked whenever the hook cannot start
+- **One definition of the state locations.** `core/gate/ifs_paths.py` locates the gate's and the
+  isolation hook's state for the dispatcher, the gate and the isolation hook alike, loaded by path through
+  one identical `load_paths` function. The dispatcher used to mirror those locations, and a mirror that
+  drifted would have skipped the guards of a gated session; a paths module that cannot load makes the
+  dispatcher run the full selection
+- **No variable a repository can set moves the state, and losing it fails closed.** `SPEC_GATE_STATE_DIR`
+  is gone (a repository's settings `env` block could set it and so move the gate's state between two calls,
+  which made the session read as ungated); the state follows only `CLAUDE_PLUGIN_DATA`, `XDG_STATE_HOME` and
+  `HOME`, which project and local settings cannot set, and the tests move it through the environment they
+  start the hooks with. Starting a gated skill, and registering a reviewer, also writes an activation record
+  in `~/.local/state/implement-from-spec/active/`, located from `HOME` alone: while it exists, a state that is
+  missing, unreadable or elsewhere denies every write and shell command of the session (the reviewer: every
+  call), instead of reading as never activated. A lost session is not repaired; the user starts a new one.
+  In a gated session the gate protects these records, the reviewer registrations, the review snapshots and
+  the timing log like its own state
+- **No bytecode cache.** The dispatcher's checks and `ifs_paths.py` are compiled from source on every call
+  that loads them and no `.pyc` is read or written for those modules; the former cache under the plugin data
+  directory let a planted `.pyc` run inside every hook call in a session the gate did not protect. The
+  modules a check loads itself (`depslib.py`, `install.py`) and the standard library keep Python's normal
+  loader. The price is the compile time of the checks on the calls that load them; calls no check can
+  decide still load nothing
+- **The timing log stays in the hooks, hardened.** The eval runner's per-check timeline needs each check's
+  duration from inside the dispatcher, which an external runner cannot measure, so the log was kept rather
+  than removed. It is confined to `~/.local/state/implement-from-spec/hook-timing/` (a bare `<name>.tsv` or an
+  absolute path in it), reached from `HOME` through directory descriptors with no symlink followed, and
+  written only to a private regular file of the user with one link, under 64 MiB, opened non-blocking.
+  `HOME` is one of the variables Claude Code does not take from project or local settings
+  (https://code.claude.com/docs/en/settings-reference, "Variables Claude Code ignores in `env`")
+
 Why: the gate runs on every Write, Edit, Bash and Skill call of every session, so any code Python loads
 before the gate's own runs inside every hook call. In isolated mode "`sys.path` contains neither the
 script's directory nor the user's site-packages directory. All `PYTHON*` environment variables are
@@ -368,10 +406,14 @@ rule the reviewer skills used to state only as an instruction:
   `agent_id` and its role in `<state>/review-isolation/<session_id>.json` (same `<state>` as above,
   written atomically under a lock). The main conversation and unregistered subagents (implementation
   waves) are never affected
-- **For a registered reviewer**, deny with `permissionDecision: "deny"` and a reason that tells the
-  reviewer to list the denied call under the parts it could not complete:
-  - `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Agent`, `Task`, any
-    `mcp__*` tool, and any further `Skill` call
+- **For a registered reviewer**, an allowlist (changed from a denylist on 2026-11-12, after the PR 1
+  triage: a tool the denylist did not name, a new Claude Code tool included, was allowed): `Read`, `Grep`,
+  `Glob` and `Bash` as limited below, plus bookkeeping that writes no file and starts nothing (`TodoWrite`,
+  `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `ToolSearch`, `SubagentHandback`). Everything else is
+  denied with `permissionDecision: "deny"` and a reason that tells the reviewer to list the denied call
+  under the parts it could not complete:
+  - Every other tool: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Agent`,
+    `Task`, any `mcp__*` tool, and any further `Skill` call among them
   - `Read`, `Grep` and `Glob` outside the allowed roots (the git top level of the hook input's `cwd`,
     `$CLAUDE_PLUGIN_ROOT`, the review-snapshot directory) or on a credential path anywhere (`~/.aws`,
     `~/.ssh`, `~/.config/gcloud`, `~/.azure`, `~/.docker/config.json`, `~/.netrc`, `.env` and `.env.*`)
@@ -399,7 +441,12 @@ not by itself a Major. Specifications are read from the candidate, because the d
 (section 10) amends them legitimately; the specification-fidelity lens checks every changed
 specification item against the approved plan, and a change no approved item or amendment covers is a
 Major finding "unapproved requirement change". `spec-external-review.py` gains `--policy-dir DIR`: rules
-are read from that directory (the only input allowed outside `--repo`, confined to it, no symlinks).
+are read from that directory (the only input allowed outside `--repo`, confined to it, no symlinks; since
+2026-11-12 only the `policy/` directory of a snapshot of the reviewed repository, its files checked against
+the snapshot's manifest, and since the third fix round of that day a snapshot of the change under review:
+policy at its base, the change's mode and commits, every applicable policy file recorded; since the fourth,
+a `--files` review, which has no base argument, names the snapshot by its full id with `--snapshot-id`,
+and the snapshot's base must be an ancestor of `HEAD`).
 
 `REVIEW.md` may recalibrate Minor and Nit severity, cap Nits, add always-check rules and name generated
 paths to skip. It cannot remove a Blocker class, a lens, the security hand-off, the quality gate or the
@@ -468,7 +515,7 @@ the reviewed one; that delta is the round's scope, with the whole repository rea
 
 - Lenses: every lens whose domain the delta touches, plus every lens with a finding the fix claims to
   close; the security hand-off reviewers when the delta touches their paths; the external stage on the
-  delta's files (`--files`)
+  delta's files (`--files`, with the new snapshot's `--policy-dir` and `--snapshot-id`)
 - The brief carries the earlier findings, numbered F1, F2 and so on. Each is reported `closed`
   (evidence), `open` or `regressed`; an open finding keeps its number and is not notified again as new.
   For every fixed pattern the reviewer searches the repository for sibling instances

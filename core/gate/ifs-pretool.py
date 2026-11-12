@@ -26,11 +26,18 @@ them all):
     every key is spelled literally) and "tool_name" occurs once with a plain string value. Then
       review-isolation   runs for a payload carrying "agent_id" when the tool is Skill (registration), when
                          the ids are not plain [A-Za-z0-9_.-] strings, or when the session's isolation state
-                         file names the agent (or cannot be read); otherwise the subagent is not a registered
-                         reviewer and the check prints nothing. Without "agent_id" (the main conversation) it
+                         file or its activation record (ifs_paths.review_marker_file) names the agent (or
+                         cannot be read or checked); otherwise the subagent is not a registered reviewer and the check
+                         prints nothing. Without "agent_id" (the main conversation) it
                          never decides.
       guard-edit/-bash   run for Write|Edit|MultiEdit|NotebookEdit / Bash when the session's gate state file
-                         exists or the session id is not plain: an ungated session is never gated.
+                         or its activation record (ifs_paths.gate_marker_file) exists, or cannot be checked
+                         (ifs_paths.may_exist: EACCES on a directory above it counts as existing), or the
+                         session id is not plain: an ungated session is never gated, and an activated one
+                         whose state has gone or cannot be reached is still guarded (the guards then deny).
+    Both state files are located by core/gate/ifs_paths.py, the module the gate and the isolation hook locate
+    them with (load_paths), so the dispatcher can never look in a different place than the check it skips. When
+    that module cannot load or raises, the selection falls back to the full one below: it fails closed.
       activate           runs for Skill when skills/<name>/gate_rules.json exists for the skill's name (or the
                          name is unusual); no other skill can start the gate.
       install-ask-hook   runs for Bash when the payload contains "install.py": it asks only for install.py
@@ -58,26 +65,41 @@ otherwise run ungated), while activate's own documented non-blocking error (exit
 decision) still lets the call go ahead. The dispatcher itself never exits non-zero; its own registration
 blocks the call when python3 cannot run it (onFailure "block", Claude Code 2.1.295 or later).
 
-Bytecode cache. Before a check is loaded, sys.pycache_prefix points at <data>/pycache, <data> being
-$CLAUDE_PLUGIN_DATA, else the gate's state directory (spec-approval-gate.py STATE_DIR), and bytecode writing is
-switched on there, so the standard-library modules and the checks are compiled once, not on every call. The
-directory is created 0700 and used only when it is a real directory owned by the user and closed to others
-(it is made 0700 when it is not); otherwise nothing is cached and nothing is written. The gate protects it
-like its own state: no tool call of a gated session may write there or name it in a shell command, and a
-reviewer may not write anywhere. In a session that never started a gated skill it is as writable as the
-plugin's own files. IFS_HOOK_PYCACHE=0 switches the cache off (for measurements). The interpreter runs with
--I (no script directory, PYTHON* variables or user site-packages) and -S (no site module: no site-packages
-and no .pth file runs inside the hook); the checks import only the standard library.
+Why every tool blocks on a failure (maintainer's decision, 2026-11-12). The registration matches "*" with
+onFailure "block", so when the dispatcher cannot start (python3 missing, broken or below 3.9, a file of the
+plugin unreadable) every tool call of every session with the plugin enabled is blocked, Read included, until
+python3 is fixed or the plugin is turned off in `enabledPlugins` of the user's settings
+(code.claude.com/docs/en/settings-reference), which takes no tool call: "With `"block"` set, a failure does
+what exit code 2 does on that event" and "a `PreToolUse` failure blocks the tool call"
+(code.claude.com/docs/en/hooks, "Block the action when a hook fails"). Availability was weighed against
+fail-closed: the reviewer isolation is an allowlist, so it needs every tool hooked, and a non-blocking
+registration for reads would let a registered reviewer use any tool unchecked whenever the hook cannot start;
+writes, Bash and Skill would block either way. A failure inside a running dispatcher is narrower: when the fast
+selection fails (ifs_paths.py missing or broken included) the full selection runs, and for a call no check can
+decide (a Read of the main conversation) its checks print nothing, while a check that cannot load denies.
+
+No bytecode cache. The checks are compiled from their source on every call that runs them
+(ifs_paths.load_source): no bytecode is read or written for them, and sys.dont_write_bytecode is set, so the
+dispatcher writes no .pyc file anywhere, and the standard library loads from the Python installation as in any
+other python3 -I process. (A cache under the plugin data directory, used until 2026-11-12, let a .pyc planted
+there, in a session that never started a gated skill, run inside every hook call.) The interpreter runs with -I
+(no script directory, PYTHON* variables or user site-packages) and -S (no site module: no site-packages and no
+.pth file runs inside the hook); the checks import only the standard library.
 
 Opt-in timing log. Off unless IFS_HOOK_TIMING_LOG (or EVAL_IFS_HOOK_TIMING_LOG, the form `claude plugin eval`
-passes to its sessions) names a file. Then each call appends, in one write, one line per check that ran,
+passes to its sessions) names a log in the fixed directory ~/.local/state/implement-from-spec/hook-timing/
+(ifs_paths.timing_log_path: a bare <name>.tsv, or an absolute path in that directory; any other value is
+refused and nothing is written, so the variable, which a repository's settings env block can set, never makes
+a hook append to a file anywhere else). Then each call appends, in one write, one line per check that ran,
 <start, ISO 8601 UTC>\\t<check>\\t<tool or ->\\t<agent_id or ->\\t<duration ms>\\t<session_id or ->\\tifs-pretool,
 the check named as its separate hook was (review-isolation, spec-approval-gate guard-bash, ...) and its
 duration covering loading and running it, then the dispatcher's own line, the same six fields without the
 seventh, with check "ifs-pretool" and the duration from its first statement to its decision (interpreter
 start-up is not included), so the eval timeline tool attributes each call and each check. The line is written
-with O_APPEND, mode 0600, never through a symlink; a log that cannot be written is skipped silently and timing
-never changes a decision.
+by ifs_paths.write_timing: one O_APPEND write, the directory reached from HOME through directory descriptors
+with no symlink followed, and only to a private (0600) regular file of this user with one link and under 64 MiB,
+opened non-blocking (a FIFO cannot hang the hook); a log that cannot be written so is skipped silently and
+timing never changes a decision.
 
 Usage (what Claude Code does on a Write):
   echo '{"session_id":"s1","cwd":"/repo","tool_name":"Write","tool_input":{"file_path":"/repo/a.py"}}' \\
@@ -100,8 +122,6 @@ HOOK_FILE = os.path.realpath(__file__)
 GATE_DIR = os.path.dirname(HOOK_FILE)
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(GATE_DIR))
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-PLAIN_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-TIMING_ENV = ("IFS_HOOK_TIMING_LOG", "EVAL_IFS_HOOK_TIMING_LOG")
 RANK = {"deny": 3, "defer": 2, "ask": 1, "allow": 0}
 # check key -> (the name its separate hook logged under, its file, the gate event or None)
 CHECKS = {
@@ -117,35 +137,31 @@ MODULE_NAMES = {"review-isolation.py": "ifs_review_isolation", "spec-approval-ga
 
 
 # ------------------------------------------------------------------------------------------- locations
-# Mirrors of the checks' own state locations (review-isolation.py state_path, spec-approval-gate.py STATE_DIR
-# and session_key), computed without importing them; the development tests check that they agree.
 
-def _xdg_state():
-    return os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+def load_paths():
+    """core/gate/ifs_paths.py, the state locations every check shares, loaded by path from the directory this
+    file runs from, compiled from source, once per process. Identical in ifs-pretool.py, spec-approval-gate.py
+    and review-isolation.py, so in-process the three share one module object."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ifs_paths.py")
+    mod = sys.modules.get("ifs_gate_paths")
+    if mod is not None and getattr(mod, "__file__", None) == path:
+        return mod
+    try:
+        import _frozen_importlib as bootstrap
+        import _frozen_importlib_external as external
+    except ImportError:
+        import importlib._bootstrap as bootstrap
+        import importlib._bootstrap_external as external
 
+    class SourceOnly(external.SourceFileLoader):
+        def get_code(self, fullname):
+            return self.source_to_code(self.get_data(self.path), self.path)
 
-def session_key(session_id):
-    return "".join(ch if ch in PLAIN_ID_CHARS else "_" for ch in str(session_id or "no-session"))
-
-
-def isolation_state_file(session_id):
-    base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(_xdg_state(), "implement-from-spec")
-    return os.path.join(os.path.realpath(base), "review-isolation", session_key(session_id) + ".json")
-
-
-def gate_state_dir():
-    return os.path.realpath(os.environ.get("SPEC_GATE_STATE_DIR") or os.path.join(
-        os.environ.get("CLAUDE_PLUGIN_DATA") or _xdg_state(), "spec-approval-gate"))
-
-
-def gate_state_file(session_id):
-    return os.path.join(gate_state_dir(), session_key(session_id) + ".json")
-
-
-def pycache_dir():
-    """<data>/pycache: $CLAUDE_PLUGIN_DATA, else the gate's state directory (spec-approval-gate.py PYCACHE_DIR)."""
-    data = os.environ.get("CLAUDE_PLUGIN_DATA")
-    return os.path.join(os.path.realpath(data) if data else gate_state_dir(), "pycache")
+    spec = bootstrap.spec_from_loader("ifs_gate_paths", SourceOnly("ifs_gate_paths", path))
+    mod = bootstrap.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["ifs_gate_paths"] = mod
+    return mod
 
 
 # ------------------------------------------------------------------------------------------- selection
@@ -175,7 +191,7 @@ def top_string(raw, key):
 
 
 def plain_id(value):
-    return value if value and all(ch in PLAIN_ID_CHARS for ch in value) else None
+    return value if value and all(ch in load_paths().PLAIN_ID_CHARS for ch in value) else None
 
 
 def isolation_may_decide(raw, tool):
@@ -186,13 +202,20 @@ def isolation_may_decide(raw, tool):
     agent, session = plain_id(top_string(raw, "agent_id")), plain_id(top_string(raw, "session_id"))
     if tool == "Skill" or agent is None or session is None:
         return True
-    try:
-        with open(isolation_state_file(session), encoding="utf-8", errors="replace") as fh:
-            return '"%s"' % agent in fh.read()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
+    paths = load_paths()
+    for path in (paths.isolation_state_file(session), paths.review_marker_file(session)):
+        # The state file, then the activation record (in a location only HOME moves): a reviewer whose
+        # registration has gone from the state but not from the record still reaches the check, which denies.
+        # A record that cannot be read (EACCES, a dangling symlink in its place) runs the check, which fails
+        # closed on it; only a record lstat finds absent (ifs_paths.may_exist) is skipped.
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if '"%s"' % agent in fh.read():
+                    return True
+        except OSError:
+            if paths.may_exist(path):
+                return True
+    return False
 
 
 def activate_may_decide(raw):
@@ -205,13 +228,19 @@ def activate_may_decide(raw):
         return False
     if "/" in name or name in (".", "..") or "\0" in name:
         return True
-    return os.path.lexists(os.path.join(SKILLS_DIR, name, "gate_rules.json"))
+    return load_paths().may_exist(os.path.join(SKILLS_DIR, name, "gate_rules.json"))
 
 
 def gate_may_decide(raw):
-    """guard-edit and guard-bash decide only in a session whose gate state file exists (plugin mode)."""
+    """guard-edit and guard-bash decide only in a session whose gate state file or activation record exists
+    (plugin mode): a session whose state has gone, or moved with the environment, is still guarded, and the
+    guards deny. A file that cannot be checked (a directory above it the hook may not search) counts as
+    existing (ifs_paths.may_exist): os.path.lexists said "absent" then, and the session ran ungated."""
     session = plain_id(top_string(raw, "session_id"))
-    return session is None or os.path.exists(gate_state_file(session))
+    if session is None:
+        return True
+    paths = load_paths()
+    return paths.may_exist(paths.gate_state_file(session)) or paths.may_exist(paths.gate_marker_file(session))
 
 
 def fast_plan(raw):
@@ -256,63 +285,26 @@ def full_plan(raw):
 
 
 def plan(raw):
-    """The checks to run; the bytecode cache is switched on first whenever anything will be imported."""
+    """The checks to run: the fast selection, or the full one when the fast one cannot be trusted."""
     try:
         steps = fast_plan(raw)
-    except Exception:  # noqa: BLE001 - an unexpected payload or file system state: run the full selection
-        steps = None
-    if steps is None or steps:
-        enable_bytecode_cache()
+    except Exception:  # noqa: BLE001 - an unexpected payload, file system state or an ifs_paths.py that does
+        steps = None  # not load: run the full selection (fail closed)
     return full_plan(raw) if steps is None else steps
 
 
 # ------------------------------------------------------------------------------------------- running
 
-def enable_bytecode_cache():
-    """Point sys.pycache_prefix at pycache_dir() and allow writing bytecode there; False when it is not a
-    directory owned by this user and closed to others (nothing is cached then)."""
-    if os.environ.get("IFS_HOOK_PYCACHE") == "0":
-        return False
-    path = pycache_dir()
-    try:
-        os.makedirs(path, mode=0o700, exist_ok=True)
-        st = os.lstat(path)
-        if (st.st_mode & 0o170000) != 0o040000 or st.st_uid != os.getuid():
-            return False
-        if st.st_mode & 0o077:
-            os.chmod(path, 0o700)
-            if os.lstat(path).st_mode & 0o077:
-                return False
-    except OSError:
-        return False
-    sys.pycache_prefix = path
-    sys.dont_write_bytecode = False
-    return True
-
-
 _MODULES = {}
 
 
 def load(path):
-    """The check's module, loaded by path (its bytecode cached under the prefix); nothing is added to sys.path."""
+    """The check's module, loaded by path and compiled from its source (no bytecode is read or written);
+    nothing is added to sys.path."""
     name = MODULE_NAMES[os.path.basename(path)]
     mod = _MODULES.get(name)
     if mod is None:
-        try:
-            import _frozen_importlib as bootstrap
-            import _frozen_importlib_external as external
-            spec = external.spec_from_file_location(name, path)
-            mod = bootstrap.module_from_spec(spec)
-        except (ImportError, AttributeError):
-            import importlib.util as bootstrap
-            spec = bootstrap.spec_from_file_location(name, path)
-            mod = bootstrap.module_from_spec(spec)
-        sys.modules[name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except BaseException:
-            sys.modules.pop(name, None)
-            raise
+        mod = load_paths().load_source(name, path)
         _MODULES[name] = mod
     return mod
 
@@ -332,7 +324,13 @@ def run_check(key, raw):
 
 
 def printable(text):
-    return "".join(ch if ch.isprintable() else " " for ch in str(text))
+    """The text with control characters blanked; never raises (an exception whose str() raises is shown by its
+    type's name), so a denial's reason never stops the denial (PR 1 fix round 4, defect 3)."""
+    try:
+        text = str(text)
+    except Exception:  # noqa: BLE001
+        text = type(text).__name__
+    return "".join(ch if ch.isprintable() else " " for ch in text)
 
 
 def failed(key, what):
@@ -345,7 +343,7 @@ def failed(key, what):
 def judge(key, rc, out, exc):
     """The check's (decision, reason), or None for no decision."""
     if exc is not None:
-        return failed(key, f"failed ({type(exc).__name__}: {exc})")
+        return failed(key, f"failed ({type(exc).__name__}: {printable(exc)})")
     if rc not in (0, None):
         if key == "activate":
             return None  # the gate's documented non-blocking error: exit 1, a note on stderr, no decision
@@ -380,10 +378,6 @@ def merge(decisions):
 
 # ------------------------------------------------------------------------------------------- timing
 
-def timing_log_path():
-    return next((os.environ[n] for n in TIMING_ENV if os.environ.get(n)), None)
-
-
 def write_timing(log_path, raw, spans, end):
     """spans: [(check key, start, end)] in monotonic seconds; the dispatcher's own line comes last."""
     try:
@@ -409,12 +403,7 @@ def write_timing(log_path, raw, spans, end):
 
         text = "".join(line(CHECKS[k][0], a, b, HOOK_NAME) for k, a, b in spans)
         text += line(HOOK_NAME, _HOOK_T0, end, None)
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-        fd = os.open(log_path, flags, 0o600)
-        try:
-            os.write(fd, text.encode("utf-8", "replace"))
-        finally:
-            os.close(fd)
+        load_paths().write_timing(log_path, text)
     except Exception:  # noqa: BLE001 - the timing log is best effort; the decision stands
         pass
 
@@ -449,7 +438,16 @@ def dispatch(raw):
     return merge(decisions), spans
 
 
+def timing_log_path():
+    """The confined timing log (ifs_paths.timing_log_path), or None; never raises."""
+    try:
+        return load_paths().timing_log_path()
+    except Exception:  # noqa: BLE001 - timing never changes a decision
+        return None
+
+
 def main():
+    sys.dont_write_bytecode = True  # no .pyc is written for the standard library either
     log_path = timing_log_path()
     raw = ""
     try:

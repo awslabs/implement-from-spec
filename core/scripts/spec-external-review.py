@@ -97,10 +97,23 @@ skill (the skill's own references/ in practice). --plan,
 a symlink. Without --rules the repo's CLAUDE.md and AGENTS.md are sent when they exist.
 --policy-dir DIR reads the rules from DIR instead of the repository: the review policy at the snapshot's
 policy revision (core/scripts/review-snapshot.py writes it to <snapshot>/policy/), so a change cannot be
-reviewed under rules it rewrote itself. It is the only input allowed outside --repo; --rules paths are then
-relative to DIR and confined to it, nothing in it may be or go through a symlink (DIR included), and without
---rules every CLAUDE.md, AGENTS.md and REVIEW.md under DIR is sent, the top level first. A required input
-that cannot be sent in full (missing, sensitive, excluded, binary, a symlink, not a regular file,
+reviewed under rules it rewrote itself. It is the only input allowed outside --repo, and only as a
+snapshot's own policy/: DIR must be <home>/<id12>/policy, <home> being a review-snapshot directory
+(<state>/review-snapshots, <state> being $CLAUDE_PLUGIN_DATA, $XDG_STATE_HOME/implement-from-spec or
+~/.local/state/implement-from-spec), <id12> twelve lowercase hex characters, and <home>/<id12>/manifest.json
+must name --repo and a 64-character id starting with <id12>; anything else, a directory in the repository
+included, is a usage error (exit 64). No component from <state>'s base down may be a symlink: each is opened
+through the one above it with O_NOFOLLOW, and the policy files are read through those descriptors. The
+snapshot must be one of the change under review: its policy at its base, and the same mode and commits as
+the change arguments (--range A..B: a range snapshot of A and B; --base REV: a working-tree snapshot of REV;
+--diff-file: a diff-file snapshot of the same bytes; --files, a fix round's delta, any mode, named by
+--snapshot-id ID, the snapshot's full id, and with its base an ancestor of HEAD), and it must record every
+CLAUDE.md, AGENTS.md and REVIEW.md that applies to a changed path and exists at its policy revision.
+--snapshot-id, when given, must be that id in any mode. --rules paths are then relative to DIR and
+confined to it, nothing in it may be or go through a symlink, each file is read once and the bytes sent
+must have the sha256 the manifest recorded for it, and without --rules every CLAUDE.md, AGENTS.md and
+REVIEW.md under DIR is sent, the top level first, and every file the manifest records must be there.
+A required input that cannot be sent in full (missing, sensitive, excluded, binary, a symlink, not a regular file,
 unreadable, over 200 KB) stops the run,
 and so does a change of which nothing reviewable remains after filtering. Diff text that cannot be
 attributed to a path (an unparseable chunk, a preamble) is withheld. --range takes exactly two refs as
@@ -351,6 +364,9 @@ def section_nonce(*parts: str) -> str:
             return nonce
 
 OMITTED: list[str] = []
+# What collect_change reviewed, for check_binding: the resolved commits (--base or --range) or the sha256 of the
+# --diff-file bytes it read.
+CHANGE: dict = {}
 # Counts of what the change actually sends: a review whose change part is all markers reviews nothing.
 SENT = {"chunks": 0, "files": 0}
 RANGE_RE = re.compile(r"^([^\s.][^\s]*?)\.\.([^\s.][^\s]*)$")
@@ -453,6 +469,12 @@ def file_block(root: str, rel: str, required: bool) -> str:
         return skip(unreadable(exc))
     if data is None:
         return skip(non_regular(mode))
+    return content_block(rel, data, skip)
+
+
+def content_block(rel: str, data: bytes, skip) -> str:
+    """The prompt block of a file whose bytes were read (file_block, policy_rules): exactly these bytes, or
+    skip(<why>) when they may not be sent (over the limit, binary, a secret)."""
     size = len(data)
     if size > MAX_FILE_BYTES:
         return skip(f"over the {MAX_FILE_BYTES}-byte per-file limit")
@@ -608,12 +630,15 @@ def filter_diff(text: str) -> str:
 def collect_change(root: str, args: argparse.Namespace) -> tuple[str, list[str]]:
     if args.diff_file:
         try:
-            if os.path.getsize(args.diff_file) > MAX_DIFF_BYTES:
-                fail(64, f"diff file over {MAX_DIFF_BYTES} bytes; split it")
-            with open(args.diff_file, encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
+            with open(args.diff_file, "rb") as fh:
+                data = fh.read(MAX_DIFF_BYTES + 1)
         except FileNotFoundError:
             fail(64, f"diff file not found: {args.diff_file}")
+        if len(data) > MAX_DIFF_BYTES:
+            fail(64, f"diff file over {MAX_DIFF_BYTES} bytes; split it")
+        CHANGE["diff_sha256"] = hashlib.sha256(data).hexdigest()  # of the bytes reviewed (check_binding)
+        # Decoded as the text-mode read did: invalid UTF-8 replaced, \r\n and a lone \r read as \n.
+        text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         text = filter_diff(text)
         names = sorted({p for chunk, _parsed in diff_chunks(text) for p in chunk_paths(chunk)})
         return f"unified diff from {args.diff_file}:\n{text}\n", names
@@ -638,6 +663,7 @@ def collect_change(root: str, args: argparse.Namespace) -> tuple[str, list[str]]
             fail(64, f"no commit '{ref}' (a repo with no commits has no baseline). Pass --files, or a valid "
                      "--base or --range.")
         shas.append(sha.strip())
+    CHANGE["commits"] = list(shas)
     pathspec = ["--", ".", ":(exclude)ai-planning/*.plan", ":(exclude)ai-planning/*.ledger.md"]
     # --no-textconv: a textconv driver in the repository's git config would run a program and could put
     # text from outside the repository into the diff.
@@ -668,29 +694,288 @@ def collect_change(root: str, args: argparse.Namespace) -> tuple[str, list[str]]
 POLICY_NAMES = ("CLAUDE.md", "AGENTS.md", "REVIEW.md")
 
 
-def policy_root(given: str) -> str:
-    """The --policy-dir directory, refused when it is missing or a symlink."""
+def snapshot_bases() -> list:
+    """[(base, parts)]: where review-snapshot.py writes snapshots by default, <state>/review-snapshots, <state>
+    being $CLAUDE_PLUGIN_DATA (set for hooks, not for Bash commands), $XDG_STATE_HOME/implement-from-spec or
+    ~/.local/state/implement-from-spec. base is the directory the environment names (HOME, XDG_STATE_HOME or
+    CLAUDE_PLUGIN_DATA, none of which a repository's settings can set) as spelled, parts the components below
+    it, every one of which must be a real directory (no symlink)."""
+    bases = [(os.path.expanduser("~"), [".local", "state", "implement-from-spec", "review-snapshots"])]
+    if os.environ.get("XDG_STATE_HOME", "").strip():
+        bases.append((os.path.expanduser(os.environ["XDG_STATE_HOME"].strip()),
+                      ["implement-from-spec", "review-snapshots"]))
+    if os.environ.get("CLAUDE_PLUGIN_DATA", "").strip():
+        bases.append((os.path.expanduser(os.environ["CLAUDE_PLUGIN_DATA"].strip()), ["review-snapshots"]))
+    return [(os.path.abspath(base), parts) for base, parts in bases]
+
+
+SNAPSHOT_DIR_RE = re.compile(r"^[0-9a-f]{12}$")  # <id12>, as review-snapshot.py names a snapshot directory
+SNAPSHOT_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")  # a resolved commit (SHA-1 or SHA-256 object id)
+DIR_OPEN = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+FILE_OPEN = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+class PolicySnapshot:
+    """The --policy-dir snapshot: path (absolute, as spelled), shown (its real path), fd (a descriptor of its
+    policy/ directory, reached from the snapshot home's base with no symlink followed), manifest, and files
+    ({policy path: sha256 or None}, what review-snapshot.py recorded)."""
+
+    def __init__(self, path: str, shown: str, fd: int, manifest: dict, files: dict) -> None:
+        self.path, self.shown, self.fd, self.manifest, self.files = path, shown, fd, manifest, files
+
+
+def why_refused(parent_fd: int, name: str, shown: str, label: str) -> str:
+    """Why `name` under parent_fd cannot be opened as a component of --policy-dir, naming the component."""
+    try:
+        st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except (FileNotFoundError, NotADirectoryError):
+        return f"{label} is not a directory: {shown} does not exist"
+    except OSError as exc:
+        return f"{label}: {shown} cannot be checked ({exc.strerror or type(exc).__name__})"
+    if stat.S_ISLNK(st.st_mode):
+        return f"{label} is or goes through a symlink, which is never followed: {shown}"
+    if not stat.S_ISDIR(st.st_mode):
+        return f"{label} is not a directory: {shown} is not one"
+    return f"{label}: {shown} cannot be opened"
+
+
+def open_dir_at(parent_fd: int, name: str, shown: str, label: str = "--policy-dir") -> int:
+    """A descriptor of the directory `name` under parent_fd, opened with O_NOFOLLOW: a symlink in its place,
+    now or swapped in after an earlier check, is refused, never followed."""
+    try:
+        fd = os.open(name, DIR_OPEN | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+    except OSError:
+        fail(64, why_refused(parent_fd, name, shown, label))
+    if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        os.close(fd)
+        fail(64, f"{label} is not a directory: {shown} is not one")
+    return fd
+
+
+def read_at(dir_fd: int, name: str) -> bytes:
+    """The bytes of the regular file `name` under dir_fd, read once through one descriptor: no symlink
+    (O_NOFOLLOW), no FIFO wait (O_NONBLOCK, then fstat), at most MAX_FILE_BYTES + 1 bytes. Raises OSError or
+    ValueError with the reason."""
+    try:
+        fd = os.open(name, FILE_OPEN, dir_fd=dir_fd)
+    except OSError as exc:
+        try:
+            if stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+                raise ValueError("symlink, not followed") from exc
+        except OSError:
+            pass
+        raise
+    with os.fdopen(fd, "rb") as fh:
+        mode = os.fstat(fh.fileno()).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError(non_regular(mode))
+        return fh.read(MAX_FILE_BYTES + 1)
+
+
+def policy_root(given: str, repo_root: str) -> PolicySnapshot:
+    """The --policy-dir snapshot. --policy-dir must be exactly <home>/<id12>/policy for one of the snapshot
+    homes (snapshot_bases) as spelled, <id12> twelve lowercase hex characters (the form review-snapshot.py names
+    its directories), and <home>/<id12>/manifest.json a regular file naming this repository (--repo) and a
+    64-character id starting with <id12>. Every component from the base down (the home's own components, <id12>,
+    policy, manifest.json) is opened through the descriptor of the one above it with O_NOFOLLOW, so a symlink, at
+    check time or swapped in later, stops the run, and the policy files are later read through the policy/
+    descriptor kept here (read_policy_file). Any other directory is refused, the repository's own included (a
+    repository-policy mode no longer exists: without --policy-dir the repository's CLAUDE.md and AGENTS.md are
+    sent, as documented). It is the one input read outside --repo, and without --rules every CLAUDE.md,
+    AGENTS.md and REVIEW.md under it is sent, so an unconfined directory would send those files from anywhere on
+    the machine (TM-15). That the snapshot is the one of the change under review is checked once the change is
+    collected (check_binding)."""
     path = os.path.abspath(os.path.expanduser(given))
-    if os.path.islink(path):
-        fail(64, f"--policy-dir is a symlink, which is never followed: {given}")
-    if not os.path.isdir(path):
-        fail(64, f"--policy-dir is not a directory: {given}")
-    return os.path.realpath(path)
+    for base, parts in snapshot_bases():
+        home = os.path.join(base, *parts)
+        if os.path.basename(path) == "policy" and os.path.dirname(os.path.dirname(path)) == home:
+            break
+    else:
+        fail(64, f"--policy-dir must be the policy/ directory of a review snapshot (<snapshot>/policy, the snapshot "
+                 f"directly under a review-snapshot directory): {given}")
+    snapshot = os.path.dirname(path)
+    sid12 = os.path.basename(snapshot)
+    if not SNAPSHOT_DIR_RE.match(sid12):
+        fail(64, f"--policy-dir: the snapshot directory {sid12!r} is not named by a snapshot id (12 lowercase "
+                 f"hexadecimal characters): {given}")
+    try:
+        fd = os.open(base, DIR_OPEN)
+    except OSError:
+        fail(64, f"--policy-dir is not a directory: {base} cannot be opened")
+    probe = base
+    try:
+        for part in parts + [sid12]:
+            probe = os.path.join(probe, part)
+            child = open_dir_at(fd, part, probe)
+            os.close(fd)
+            fd = child
+        policy_fd = open_dir_at(fd, "policy", os.path.join(probe, "policy"))
+        manifest_path = os.path.join(probe, "manifest.json")
+        try:
+            data = read_at(fd, "manifest.json")
+            if len(data) > MAX_FILE_BYTES:
+                raise ValueError("over the per-file limit")
+            manifest = json.loads(data.decode("utf-8"))
+            files = {str(f["path"]): (None if f["sha256"] is None else str(f["sha256"]))
+                     for f in manifest["policy"]["files"]}
+            repo, ident = os.path.realpath(str(manifest["repo"])), str(manifest["id"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            os.close(policy_fd)
+            fail(64, f"--policy-dir: the snapshot's manifest.json cannot be read ({type(exc).__name__}: {exc}): "
+                     f"{manifest_path}")
+    finally:
+        os.close(fd)
+    if repo != repo_root or not SNAPSHOT_ID_RE.match(ident) or not ident.startswith(sid12):
+        os.close(policy_fd)
+        fail(64, f"--policy-dir belongs to a snapshot of another repository or another id ({repo}, id "
+                 f"{ident[:80]!r}): {given}")
+    return PolicySnapshot(path, os.path.realpath(path), policy_fd, manifest, files)
 
 
-def policy_files(root: str) -> list:
-    """Every CLAUDE.md, AGENTS.md and REVIEW.md under the policy directory, the top level first; a symlink
-    anywhere in it stops the run."""
+def policy_files(snap: PolicySnapshot) -> list:
+    """Every CLAUDE.md, AGENTS.md and REVIEW.md under the policy directory, the top level first, listed through
+    its descriptor (os.fwalk, no symlink followed); a symlink anywhere in it, or a directory that cannot be
+    listed, stops the run."""
+    def unlistable(exc: OSError) -> None:
+        fail(64, f"--policy-dir cannot be listed in full ({exc.strerror or type(exc).__name__}: "
+                 f"{exc.filename or snap.shown})")
+
     found = []
-    for current, dirs, files in os.walk(root, followlinks=False):
+    for current, dirs, files, dir_fd in os.fwalk(".", dir_fd=snap.fd, follow_symlinks=False, onerror=unlistable):
         for name in sorted(dirs + files):
-            if os.path.islink(os.path.join(current, name)):
+            if stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
                 fail(64, f"--policy-dir holds a symlink, which is never followed: "
-                         f"{os.path.relpath(os.path.join(current, name), root)}")
+                         f"{os.path.normpath(os.path.join(current, name))}")
         dirs.sort()
-        rel_dir = os.path.relpath(current, root)
-        found += [os.path.normpath(os.path.join(rel_dir, n)) for n in POLICY_NAMES if n in files]
+        found += [os.path.normpath(os.path.join(current, n)) for n in POLICY_NAMES if n in files]
     return sorted(found, key=lambda rel: (rel.count(os.sep), rel))
+
+
+def read_policy_file(snap: PolicySnapshot, rel: str) -> bytes:
+    """The bytes of one policy file, read once: every directory from policy/ down opened with O_NOFOLLOW
+    through the descriptor of the one above it, the file itself through read_at. The same bytes are hashed
+    and sent (policy_rules), so nothing can be swapped in between the check and the prompt. Stops the run
+    (exit 64) when the file cannot be read in full."""
+    parts = rel.split(os.sep)
+    fd, opened = snap.fd, []
+    try:
+        for i, part in enumerate(parts[:-1]):
+            fd = open_dir_at(fd, part, os.path.join(snap.shown, *parts[:i + 1]), f"--policy-dir: {rel}")
+            opened.append(fd)
+        try:
+            data = read_at(fd, parts[-1])
+        except (FileNotFoundError, NotADirectoryError):
+            fail(64, f"--policy-dir: {rel} is required but cannot be sent (missing: removed from the policy "
+                     "directory after the snapshot was made)")
+        except OSError as exc:
+            fail(64, f"--policy-dir: {rel} is required but cannot be sent ({unreadable(exc)})")
+        except ValueError as exc:
+            fail(64, f"--policy-dir: {rel} is required but cannot be sent ({exc})")
+    finally:
+        for opened_fd in opened:
+            os.close(opened_fd)
+    return data
+
+
+def policy_rules(snap: PolicySnapshot, rules_files: list, default_selection: bool) -> str:
+    """The rules section from --policy-dir. Each file sent is read once (read_policy_file), and those bytes must
+    have the sha256 the snapshot's manifest recorded for that path, so a file added to or edited in policy/
+    after the snapshot was made stops the run, and the prompt holds exactly the bytes that were checked. With
+    the default selection (no --rules) every file the manifest records with a digest must also be there: a
+    recorded policy file deleted from policy/ stops the run instead of silently dropping out of the review.
+    (The manifest lies beside the copies, so this detects a change, it does not authenticate one: TM-58.)"""
+    if default_selection:
+        missing = sorted(p for p, digest in snap.files.items() if digest is not None and p not in rules_files)
+        if missing:
+            fail(64, f"--policy-dir: {', '.join(missing)} recorded by the snapshot "
+                     f"{'is' if len(missing) == 1 else 'are'} missing from the policy directory (removed or "
+                     "made unreadable after the snapshot was made)")
+    blocks = []
+    for rel in rules_files:
+        data = read_policy_file(snap, rel)
+        if snap.files.get(rel) is None or snap.files[rel] != hashlib.sha256(data).hexdigest():
+            fail(64, f"--policy-dir: {rel} is not the policy file the snapshot recorded (added or changed since)")
+
+        def skip(why: str, rel: str = rel) -> str:
+            fail(64, f"{rel} is required but cannot be sent ({why}); review without it is not a review")
+            return ""
+
+        reason = skip_reason(rel)
+        blocks.append(skip(reason) if reason else content_block(rel, data, skip))
+    return "".join(blocks) if blocks else \
+        "(the policy directory has no CLAUDE.md, AGENTS.md or REVIEW.md: judge against the plan and the context)"
+
+
+def check_binding(snap: PolicySnapshot, root: str, args: argparse.Namespace, changed: list) -> None:
+    """That the --policy-dir snapshot is one of the change this run reviews, so an older snapshot of the same
+    repository, with the policy of another base or of fewer directories, is refused (PR 1 fix round 3):
+      - its policy is at its base (policy.revision = base: review-prepare.py never passes --policy-rev);
+      - --range A..B: a range snapshot of the same two commits; the default --base REV: a working-tree snapshot
+        with that base commit; --diff-file F: a diff-file snapshot whose diff has the sha256 of the bytes read
+        from F. --files (a fix round reviews its delta paths with the round's snapshot, of any mode): the base
+        is not an argument of this mode, so the snapshot is bound by --snapshot-id instead, which is required
+        here and must be the manifest's id, and its base must be an ancestor of HEAD (git merge-base
+        --is-ancestor), so the fix sits on the reviewed base (fix round 4);
+      - --snapshot-id, in any mode where it is given, equals the manifest's id;
+      - in every mode, each CLAUDE.md, AGENTS.md and REVIEW.md that applies to a changed path (at the root and in
+        every parent directory, review-snapshot.py's policy_paths) and exists at the policy revision is one the
+        manifest records (git ls-tree, read-only, for the paths it does not record).
+    A caller who chooses every argument can still name a snapshot consistent with the arguments it chose; the
+    review file records the snapshot id, so the report can be compared with the review's own snapshot."""
+    manifest = snap.manifest
+    if args.snapshot_id is not None and args.snapshot_id != manifest.get("id"):
+        fail(64, f"--policy-dir: snapshot {str(manifest.get('id'))[:12]} is not the snapshot --snapshot-id names "
+                 f"({args.snapshot_id[:12]}): pass the policy/ directory and the id of the same review round")
+    base, mode = manifest.get("base"), manifest.get("mode")
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    revision = (manifest.get("policy") or {}).get("revision")
+    if not isinstance(base, str) or not COMMIT_ID_RE.match(base):
+        fail(64, f"--policy-dir: the snapshot's base {str(base)[:80]!r} is not a commit id")
+    if revision != base:
+        fail(64, f"--policy-dir: the snapshot's policy is at {str(revision)[:12]}, not at its base "
+                 f"{str(base)[:12]}; the external stage takes the policy at the base of the change it reviews")
+    commits = CHANGE.get("commits") or ["?"]
+    if args.range:
+        ok = mode == "range" and commits == [base, source.get("to_commit")]
+        what = f"--range {commits[0][:12]}..{commits[-1][:12]}"
+    elif args.diff_file:
+        ok = mode == "diff-file" and source.get("sha256") == CHANGE.get("diff_sha256")
+        what = f"--diff-file with sha256 {str(CHANGE.get('diff_sha256'))[:12]}"
+    elif args.files:
+        # A fix round's delta: the base is not an argument of this mode, so the snapshot is bound by its id
+        # (--snapshot-id, the round's own, which review-prepare.py writes into the runner's command) and must
+        # sit under the change: its base an ancestor of HEAD (PR 1 fix round 4, defect 1).
+        if not args.snapshot_id:
+            fail(64, "--policy-dir with --files needs --snapshot-id, the full id of the review round's snapshot "
+                     "(the --snapshot-id of the command in that snapshot's briefs/external-review.md)")
+        code, _out = git(root, "merge-base", "--is-ancestor", base, "HEAD")
+        if code == 1:
+            fail(64, f"--policy-dir: snapshot {str(manifest.get('id'))[:12]} has the base {base[:12]}, which is not "
+                     "an ancestor of the repository's HEAD: it is a snapshot of another line of work")
+        if code != 0:
+            fail(64, f"--policy-dir: whether the snapshot's base {base[:12]} is an ancestor of HEAD cannot be "
+                     f"checked (git merge-base --is-ancestor exited {code})")
+        ok, what = True, "--files"
+    else:
+        ok = mode == "worktree" and commits == [base]
+        what = f"the working tree against {commits[0][:12]}"
+    if not ok:
+        fail(64, f"--policy-dir: snapshot {str(manifest.get('id'))[:12]} ({mode}, base {base[:12]}) is not the "
+                 f"snapshot of the change under review ({what}); pass the policy/ directory of that change's "
+                 "snapshot, as review-prepare.py's command does")
+    required = load_sibling("review-snapshot.py", "ifs_review_snapshot").policy_paths(changed)
+    missing = sorted(p for p in required if p not in snap.files)
+    if missing:
+        code, out = git(root, "--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", revision, "--", *missing)
+        if code != 0:
+            fail(64, f"--policy-dir: whether the snapshot's policy covers the change cannot be checked "
+                     f"(git ls-tree {revision[:12]} failed)")
+        present = sorted(p for p in out.split("\0") if p)
+        if present:
+            fail(64, f"--policy-dir: snapshot {str(manifest.get('id'))[:12]} does not record "
+                     f"{', '.join(present)}, which applies to the change under review: it is a snapshot of "
+                     "another change")
 
 
 def new_run_dir(root: str) -> str:
@@ -1097,6 +1382,8 @@ def review(resolved: list) -> int:
     parser.add_argument("--rules", nargs="+", help="binding-rules files (default: CLAUDE.md, AGENTS.md)")
     parser.add_argument("--policy-dir", help="read the rules from this directory (a review snapshot's policy/) "
                                              "instead of the repository; --rules paths are then relative to it")
+    parser.add_argument("--snapshot-id", help="the full (64-hex) id of the --policy-dir snapshot, which must "
+                                              "be its manifest's id; required with --policy-dir and --files")
     parser.add_argument("--context", nargs="+", default=[], help="reference files: the specification "
                         "files in scope, an interface contract")
     source = parser.add_mutually_exclusive_group()
@@ -1146,12 +1433,15 @@ def review(resolved: list) -> int:
         focus = fh.read()
     out = check_out(args.out) if args.out else None
     plan_rel = confine(root, args.plan, "--plan") if args.plan else None
+    snap = None
+    if args.snapshot_id is not None and (not args.policy_dir or not SNAPSHOT_ID_RE.match(args.snapshot_id)):
+        fail(64, "--snapshot-id takes the 64-character lowercase hexadecimal id of the --policy-dir snapshot, "
+                 f"and only with --policy-dir: {args.snapshot_id[:80]!r}")
     if args.policy_dir:
-        rules_root = policy_root(args.policy_dir)
-        rules_files = [confine(rules_root, r, "--rules", "the policy directory") for r in args.rules] \
-            if args.rules else policy_files(rules_root)
-        rules = "".join(file_block(rules_root, r, required=True) for r in rules_files) if rules_files else \
-            "(the policy directory has no CLAUDE.md, AGENTS.md or REVIEW.md: judge against the plan and the context)"
+        snap = policy_root(args.policy_dir, root)
+        rules_files = [confine(snap.shown, r, "--rules", "the policy directory") for r in args.rules] \
+            if args.rules else policy_files(snap)
+        rules = policy_rules(snap, rules_files, default_selection=not args.rules)
     else:
         rules_files = [confine(root, r, "--rules") for r in args.rules] if args.rules else \
             [n for n in ("CLAUDE.md", "AGENTS.md") if os.path.isfile(os.path.join(root, n))]
@@ -1163,6 +1453,8 @@ def review(resolved: list) -> int:
         "(none supplied: judge the change against the repository rules and its own evident intent)"
     before = dict(SENT)
     change, changed = collect_change(root, args)
+    if snap is not None:
+        check_binding(snap, root, args, changed)
     sent_change = (SENT["chunks"] - before["chunks"]) + (SENT["files"] - before["files"])
     if OMITTED:
         print("[spec-external-review] not sent: " + "; ".join(OMITTED), file=sys.stderr)
@@ -1200,7 +1492,7 @@ def review(resolved: list) -> int:
     prompt_file = out[:-3] + ".prompt.md" if out.endswith(".md") else out + ".prompt.md"
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     write_new(prompt_file, prompt)
-    policy_line = f"Policy: {policy_root(args.policy_dir)}\n" if args.policy_dir else ""
+    policy_line = f"Policy: {snap.shown} (snapshot {snap.manifest['id']})\n" if snap is not None else ""
     write_new(out, f"# External review via {cfg.label()}, {stamp}\n\nRepository: {root}\n{policy_line}Plan: "
                    f"{plan_rel or 'none'}\nChange digest: {digest}\nPrompt digest: {prompt_digest}\n"
                    f"Files: {', '.join(changed)}\nNot sent: {'; '.join(OMITTED) or 'none'}\n"

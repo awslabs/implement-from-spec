@@ -393,8 +393,9 @@ raised, a test they asked for) is round k+1's fix, reviewed the same way; after 
    `External review: runner`: the runner's prompt is "First load the skill
    `implement-from-spec:running-external-review` with the Skill tool, then run this command:" and the
    command of the `Runner:` line's brief with `--files <the delta's paths>` in place of its change
-   argument (`--base`, `--range` or `--diff-file`), on one line; on any other line,
-   `<NEW>/external.txt` is the round's result
+   argument (`--base`, `--range` or `--diff-file`), keeping its `--policy-dir` and `--snapshot-id`
+   (`<NEW>`'s full id: with `--files` the script refuses a policy directory without its id), on one line;
+   on any other line, `<NEW>/external.txt` is the round's result
 3. The prompt points each reviewer at the earlier findings and their F-numbers. Each is reported
    `closed` (evidence), `open` or `regressed`; an open finding keeps its number and is not reported
    again as new. For every fixed pattern the reviewer searches the repository for sibling instances.

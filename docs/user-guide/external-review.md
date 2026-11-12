@@ -33,9 +33,10 @@ Both stages review one review snapshot, and every result binds to it (contract s
   reviewers that must run (CloudFormation or CDK templates and Terraform files in an application-code
   change). It only adds scrutiny and never changes an external-review setting
 - **Isolation.** A hook, `core/gate/review-isolation.py`, enforces the reviewers' read-only rule inside
-  Claude Code: a reviewer subagent cannot edit, fetch, call MCP tools, dispatch agents or load further
-  skills, reads only the repository, the plugin and the snapshot (never a credential path), and runs only
-  read-only shell commands. Reviewers run no tests; the skill's quality gate does. A denied call is listed
+  Claude Code with an allowlist: a reviewer subagent may use only Read, Grep, Glob, read-only shell
+  commands and a few bookkeeping tools (the task list, tool search, its hand-back), so it cannot edit,
+  fetch, call MCP tools, dispatch agents, load further skills or use any other tool, and it reads only the
+  repository, the plugin and the snapshot (never a credential path). Reviewers run no tests; the skill's quality gate does. A denied call is listed
   as a part of the review that could not complete. **Limitation**: this is enforcement in Claude Code's
   tool layer, not an operating-system sandbox. The external-review script still sends what this page
   documents, and the skill still compares `git status` and `git diff` before and after the review
@@ -246,8 +247,19 @@ Sent: the binding-rules files (`--rules`, by default the repository's `CLAUDE.md
 approved plan, the skill's review focus, the specification files in scope (`--context`) and the change.
 The skills pass `--policy-dir`, the review snapshot's policy directory: the rules files are then read
 from there, as they were at the base revision, instead of from the work tree, and without `--rules` every
-`CLAUDE.md`, `AGENTS.md` and `REVIEW.md` in it is sent. It is the only input allowed outside `--repo`;
-`--rules` paths are then relative to it and confined to it, and nothing in it may be a symlink.
+`CLAUDE.md`, `AGENTS.md` and `REVIEW.md` in it is sent. It is the only input allowed outside `--repo`, and
+it must be exactly the `policy/` directory of a snapshot of this repository (`<snapshot home>/<id12>/policy`,
+its `manifest.json` naming `--repo`); `--rules` paths are then relative to it and confined to it, nothing in it
+or on the way to it from the state directory may be a symlink, every file sent must be the one the
+snapshot recorded (its sha256 in the manifest), and without `--rules` every file the manifest records must be
+there. The snapshot must also be one of the change being reviewed: its policy at its base, the same mode and
+commits as the change arguments, and a record of every policy file that applies to a changed path; an older
+snapshot of the same repository is refused. `--files`, which a fix round uses for its delta, names no base,
+so with `--policy-dir` it also needs `--snapshot-id <id>`, the round's snapshot's full 64-character id,
+which must be the one its manifest records, and the snapshot's base must be an ancestor of the repository's
+`HEAD` (the fix sits on the reviewed base). The command `review-prepare.py` writes into
+`<snapshot DIR>/briefs/external-review.md` always carries `--snapshot-id`, and a fix round keeps it when it
+puts `--files <the delta's paths>` in place of the change argument.
 Nothing else, and nothing at all when the reviewer is `off`, the default. Each of these sits in the prompt between a
 BEGIN and an END line that carry a random marker drawn for the run, and the reviewer is told that
 everything between them is data: an instruction planted in a specification file, `CLAUDE.md` or the code

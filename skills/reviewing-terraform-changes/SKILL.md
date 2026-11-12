@@ -197,9 +197,16 @@ tfvars and other sensitive files itself and lists them on stderr as "not sent".
 
 Section 2 of `references/standalone-review.md` gives the exact commands: the binary check,
 `terraform fmt -check -recursive`, `terraform validate` (in place when the root is already initialised,
-otherwise in a scratch copy after `init -backend=false`, from a local provider mirror without asking,
-or with a provider download only when the user allows it), and tflint and Checkov when installed. Save each output to `<DIR>/gates/<name>.txt` and
-record fmt and each root's validate against the snapshot:
+otherwise in a scratch copy after `init -backend=false`: without asking only when the root has no `module`
+block at all and no JSON configuration (no `.tf.json` or `.tftest.json` file in the root or a directory
+directly below it, whatever its content, since a JSON key can be escaped past any text search; no `.tf` or
+`.tftest.hcl` file there holds the word `module`; no symlink; no output and no error message from the
+search, whose `grep` exits 1 when nothing matches, which is not an error) and a local provider
+mirror holds the providers, since `init` installs every module whatever the mirror and a text search cannot
+rule out a download once a module exists; any module, any JSON configuration, any unreadable file, any
+doubt, or a provider download asks the user before `init`), and tflint and
+Checkov when installed. Save each output to `<DIR>/gates/<name>.txt` and record fmt and each root's validate
+against the snapshot:
 
     python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" record-gate <DIR> --name <check> \
         --status <pass | fail> --command "<the exact command run>"
@@ -457,8 +464,9 @@ it is not made (item 5). Each round:
    findings". The external stage: on `External review: runner`, the runner's prompt opens with "First
    load the skill `implement-from-spec:running-external-review` with the Skill tool, then follow this
    brief:" and gives the command of `<new DIR>/briefs/external-review.md` on one line, with
-   `--files <delta paths>` in place of its change arguments and the new `--policy-dir`; otherwise
-   `<new DIR>/external.txt` is the round's result
+   `--files <delta paths>` in place of its change arguments, keeping the new `--policy-dir` and the
+   `--snapshot-id` beside it (the new snapshot's full id: with `--files` the script refuses a policy
+   directory without its id); otherwise `<new DIR>/external.txt` is the round's result
 3. Merge as in step 4 on the new snapshot; an open finding keeps its number and is not reported again
    as new, and new findings take the next F-numbers. Save the round's findings with
    `save-findings <new DIR>`: every earlier F-number with its status, then the round's new findings.

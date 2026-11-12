@@ -458,8 +458,9 @@ it is not made (item 5). Each round:
    findings". The external stage: on `External review: runner`, the runner's prompt opens with "First
    load the skill `implement-from-spec:running-external-review` with the Skill tool, then follow this
    brief:" and gives the command of `<new DIR>/briefs/external-review.md` on one line, with
-   `--files <delta paths>` in place of its change arguments and the new `--policy-dir`; otherwise
-   `<new DIR>/external.txt` is the round's result
+   `--files <delta paths>` in place of its change arguments, keeping the new `--policy-dir` and the
+   `--snapshot-id` beside it (the new snapshot's full id: with `--files` the script refuses a policy
+   directory without its id); otherwise `<new DIR>/external.txt` is the round's result
 3. Merge as in step 4 on the new snapshot; an open finding keeps its number and is not reported again
    as new, and new findings take the next F-numbers. Save the round's findings with
    `save-findings <new DIR>`: every earlier F-number with its status, then the round's new findings.

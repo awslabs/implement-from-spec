@@ -156,17 +156,46 @@ def main() -> int:
 
 # --------------------------------------------------------------------------------- opt-in timing log
 # Off unless IFS_HOOK_TIMING_LOG (or EVAL_IFS_HOOK_TIMING_LOG, the form `claude plugin eval` passes to its
-# sessions) names a file: then each call appends one line, <start, ISO 8601 UTC>\t<hook>\t<tool or ->\t<agent_id
-# or ->\t<duration ms>\t<session_id or ->, for the eval timeline tool. The duration runs from the
+# sessions) names a log in ~/.local/state/implement-from-spec/hook-timing/ (timing_log_path in
+# core/gate/ifs_paths.py, loaded by path from the plugin tree; any other value is refused, so no hook appends to
+# a file elsewhere, the project included): then each call appends one line,
+# <start, ISO 8601 UTC>\t<hook>\t<tool or ->\t<agent_id or ->\t<duration ms>\t<session_id or ->, for the eval
+# timeline tool. The duration runs from the
 # first statement of this file (interpreter start-up is not included) to the end of the decision. The line is
-# written with O_APPEND (one write), mode 0600, never through a symlink; a log that cannot be written is
-# skipped silently, and nothing is printed: timing never changes or fails a decision. Unset, the hook reads
-# one clock value and the two variables, nothing else.
+# written by ifs_paths.write_timing: one O_APPEND write, the directory reached from HOME with no symlink
+# followed, only to a private (0600) regular file of this user with one link, opened non-blocking; a log that
+# cannot be written so is skipped silently, and nothing is printed: timing never changes or fails a decision.
+# Unset, the hook reads one clock value and the two variables, nothing else.
 TIMING_ENV = ("IFS_HOOK_TIMING_LOG", "EVAL_IFS_HOOK_TIMING_LOG")
 
 
+def _gate_paths():
+    """core/gate/ifs_paths.py, by path from this file's plugin tree, compiled from source (no bytecode read or
+    written); the same module the PreToolUse checks locate their state and the timing log with."""
+    path = str(Path(__file__).resolve().parent.parent / "gate" / "ifs_paths.py")
+    mod = sys.modules.get("ifs_gate_paths")
+    if mod is not None and getattr(mod, "__file__", None) == path:
+        return mod
+    import importlib.machinery
+
+    class SourceOnly(importlib.machinery.SourceFileLoader):
+        def get_code(self, fullname):
+            return self.source_to_code(self.get_data(self.path), self.path)
+
+    spec = importlib.util.spec_from_loader("ifs_gate_paths", SourceOnly("ifs_gate_paths", path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["ifs_gate_paths"] = mod
+    return mod
+
+
 def timing_log_path():
-    return next((os.environ[n] for n in TIMING_ENV if os.environ.get(n)), None)
+    if not any(os.environ.get(n) for n in TIMING_ENV):
+        return None
+    try:
+        return _gate_paths().timing_log_path()
+    except Exception:  # noqa: BLE001 - timing never changes a decision
+        return None
 
 
 def run_timed(run, hook, log_path):
@@ -191,12 +220,7 @@ def run_timed(run, hook, log_path):
             fields += [str(payload.get(k) or "-") for k in ("tool_name", "agent_id")]
             fields += [f"{ms:.1f}", str(payload.get("session_id") or "-")]
             line = "\t".join(" ".join(f.split()) or "-" for f in fields) + "\n"
-            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-            fd = os.open(log_path, flags, 0o600)
-            try:
-                os.write(fd, line.encode("utf-8", "replace"))
-            finally:
-                os.close(fd)
+            _gate_paths().write_timing(log_path, line)
         except Exception:  # noqa: BLE001 - the timing log is best effort; the hook's decision stands
             pass
 
