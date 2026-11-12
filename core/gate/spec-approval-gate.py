@@ -742,16 +742,36 @@ def guard_ask(abspath, state):
 
 # -------------------------------------------------------------------------------------- subcommands
 
+def skill_parts(invoked):
+    """(namespace, name) of a Skill call's `skill` input, read by ifs_paths.skill_parts, the reading the dispatcher
+    and the isolation hook share (whitespace and leading "/" dropped). When ifs_paths.py itself cannot load, a
+    reading at least as wide (every Python whitespace character, U+FEFF and "/" stripped from both ends until
+    none is left, then the parts) keeps an ungated skill from being refused for a module only the gated path
+    needs, and still names a gated skill as gated."""
+    try:
+        return load_paths().skill_parts(invoked)
+    except Exception:  # noqa: BLE001 - ifs_paths.py may be what failed
+        text = invoked if isinstance(invoked, str) else ""
+        while True:
+            stripped = text.strip().strip("\ufeff/")
+            if stripped == text:
+                break
+            text = stripped
+        namespace, _, name = text.rpartition(":")
+        return namespace.strip().strip("\ufeff"), name.strip().strip("\ufeff")
+
+
 def cmd_activate(data, rules):
     """Plugin mode, PreToolUse on the Skill tool: starting a gated skill registers the repository."""
-    skill = (data.get("tool_input") or {}).get("skill") or ""
-    activate(data, skill)
+    tool_input = data.get("tool_input")
+    activate(data, tool_input.get("skill") if isinstance(tool_input, dict) else None)
 
 
 def activate(data, invoked):
     """Register the session's current repository when `invoked` names one of the plugin's gated skills
-    (`<plugin>:<skill>`, or the bare skill name). Returns the repository, or None."""
-    namespace, _, name = invoked.rpartition(":")
+    (`<plugin>:<skill>`, or the bare skill name; read by ifs_paths.skill_parts, as the dispatcher and the
+    isolation hook read it, so `/<skill>` and a padded name activate too). Returns the repository, or None."""
+    namespace, name = skill_parts(invoked)
     if name not in PLUGIN_MODE["skills"] or (namespace and namespace != PLUGIN_MODE["name"]):
         return None
     repo = git_tree(resolve(data.get("cwd") or os.getcwd(), os.getcwd()))
@@ -2274,7 +2294,7 @@ def starting_gated_skill(event, data):
         invoked = slash.group(1) if slash else ""
     else:
         return ""
-    namespace, _, name = str(invoked or "").rpartition(":")
+    namespace, name = skill_parts(invoked)
     if not name or (namespace and namespace != plugin_name()):
         return ""
     # may_exist: an unreadable rules file still names a gated skill, which then does not start ungated.
@@ -2295,7 +2315,7 @@ def gated_skill_named(event, data):
         else:
             slash = re.match(r"/([\w.:-]+)", str(data.get("prompt") or "").strip())
             invoked = slash.group(1) if slash else ""
-        namespace, _, name = str(invoked or "").rpartition(":")
+        namespace, name = skill_parts(invoked)
         if not name or (namespace and namespace != plugin_name()):
             return ""
         try:

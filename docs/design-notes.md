@@ -435,12 +435,17 @@ rule the reviewer skills used to state only as an instruction:
   - `Bash` unless every command of the line (split on `|`, `&&` and `||`) is on the read-only allowlist:
     `git` with `diff`, `log`, `show`, `status`, `ls-files`, `blame`, `rev-parse`, `cat-file`,
     `merge-base` (never `-c`, `--output`, `--ext-diff`, `--exec`, `--upload-pack`); `ls`, `cat`, `head`,
-    `tail`, `wc`, `grep`, `rg`, `sort`, `uniq`, `cut`, `tr`, `diff`, `stat`, `file` (`grep` and `rg` with
-    an allowlist of read-only options, `SEARCH_SPECS`, each matched by its full name: since the PR 1 code
-    review, because `rg --hostname-bin` runs a program and getopt reads an abbreviation such as `--regex`
-    as `--regexp`; an option that runs or loads something, follows a symlink out of the paths given, or
-    takes a value in one of BSD grep, GNU grep and ugrep but not in another, is left out); `find` without
-    `-exec`, `-execdir`, `-ok`, `-delete`, `-fprint*`; `sed -n` without `-i` or a `w` command;
+    `tail`, `wc`, `grep`, `rg`, `sort`, `uniq`, `cut`, `tr`, `diff`, `stat`, `file` (`grep`, `rg`, `sort`,
+    `wc`, `file` and `diff` with an allowlist of read-only options, `OPTION_SPECS`, each matched by its full
+    name: since the PR 1 code review, because `rg --hostname-bin` runs a program, getopt reads an
+    abbreviation such as `--regex` as `--regexp`, and `sort --files0-from`, `wc --files0-from` and `file -f`
+    read every file a list in the change names; an option that runs or loads something, reads a list of
+    names, follows a symlink out of the paths given, or takes a value in one implementation but not in
+    another, is left out; `diff` compares two directories (or a directory and an absent path) only with `--no-dereference`, since it otherwise
+    follows a committed symlink inside them, and for a directory and a file the file it reads in the
+    directory is checked; `ls` without `-L`); `find` with an allowlist of tests and actions, `FIND_SPEC`
+    (no `-exec`, `-ok`, `-delete`, bfs `-rm`, `-fprint*`, `-fls`, `-files0-from`, `-L`, `-H` or
+    `-follow`); `sed -n` without `-i` or a `w` command;
     `python3 -I <PLUGIN_ROOT>/core/scripts/review-snapshot.py verify|delta|gates`; and, for the
     `running-external-review` role only, `python3 -I <PLUGIN_ROOT>/core/scripts/spec-external-review.py`.
     Any `>`, `>>`, `<(`, `$(`, backtick, `;`, `&` (background), leading variable assignment, `env`,

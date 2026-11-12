@@ -52,9 +52,13 @@ the session's state file):
     `;`, a single `&`, `(`, `)`, `{`, `}`, a comment, a newline or control character, an unterminated
     quote, a leading assignment, an unquoted `~` after `=` or `:`, a glob component starting with a dot.
     Every word that can name a file is checked like a Read path (globs are expanded to check every match).
-    grep and rg take only the read-only options SEARCH_SPECS lists, each matched by its full name: an
-    abbreviation, an unlisted option (`rg --hostname-bin`, `--pre`, `-z`, `-L`; `grep -R`, `--filter`) and
-    a value given to an option that takes none are denied (until 2026-11-12 they had a short denylist)
+    grep, rg, sort, wc, file and diff take only the read-only options OPTION_SPECS lists, and find only the
+    primaries FIND_SPEC lists, each matched by its full name: an abbreviation, an unlisted option (`rg
+    --hostname-bin`, `--pre`, `-z`, `-L`; `grep -R`, `--filter`; `sort` and `wc --files0-from`, `file -f`;
+    `find -files0-from`, `-L`, `-H`, `-follow`, `-rm`) and a value given to an option that takes none are
+    denied (until 2026-11-12 grep and rg had a short denylist, and sort, wc, file, diff and find until the
+    seventh round of the PR 1 security work). diff compares two directories only with --no-dereference, and
+    for a directory and a file checks the file it reads in the directory (check_diff); ls takes no -L
 
 Failure policy. Every decision is JSON on stdout with exit 0. On an internal error the hook denies when the
 caller is (or, from a state file it cannot parse, may be) a registered reviewer, and prints nothing for
@@ -771,34 +775,40 @@ GIT_SPEC = {"forbid_long": {"output", "ext-diff", "exec", "upload-pack"},
             "long_values": {"grep": "skip", "author": "skip", "committer": "skip", "format": "skip",
                             "pretty": "skip", "since": "skip", "until": "skip", "after": "skip",
                             "before": "skip", "date": "skip", "contents": "path"}}
+# ls -L (--dereference) with -R lists the names under a committed symbolic link to a directory outside the roots
+# (PR 1 code review, item 5); without -L, -R never follows one, and every operand is checked after resolving.
 SIMPLE = {
-    "ls": {}, "cat": {}, "head": {}, "tail": {}, "wc": {}, "diff": {}, "stat": {},
-    "file": {"forbid_short": {"C"}, "forbid_long": {"compile"}},
-    "sort": {"forbid_short": {"o", "T"},
-             "forbid_long": {"output", "temporary-directory", "compress-program"},
-             "short_values": {"t": "skip", "k": "skip", "S": "skip"}},
+    "ls": {"forbid_short": {"L"}, "forbid_long": {"dereference"}}, "cat": {}, "head": {}, "tail": {}, "stat": {},
     "uniq": {},
     "cut": {"short_values": {"d": "skip", "f": "skip", "c": "skip", "b": "skip"},
             "long_values": {"delimiter": "skip", "fields": "skip", "characters": "skip", "bytes": "skip"}},
 }
-# grep and rg take only the options listed here (PR 1 review, 2026-11-12: `rg --hostname-bin=<program>` runs that
-# program, and getopt takes an unambiguous prefix of a long option, so BSD grep read `--regex=` as `--regexp=`
-# while the hook took the next word for the pattern). An option is looked up by its exact name: an abbreviation,
+# grep, rg, sort, wc, file and diff take only the options listed here (PR 1 review, 2026-11-12: `rg
+# --hostname-bin=<program>` runs that program, and getopt takes an unambiguous prefix of a long option, so BSD
+# grep read `--regex=` as `--regexp=` while the hook took the next word for the pattern; in the seventh round
+# `sort --files0-from=<list>`, `wc --files0-from` and `file -f <list>` read every file a committed list names,
+# where only the list was checked, and `diff` of two directories follows the symbolic links inside them).
+# find takes the primaries FIND_SPEC lists. An option is looked up by its exact name: an abbreviation,
 # an option that is not listed and a value given to an option that takes none are denied. `grep` in Claude
 # Code's Bash tool is ugrep (a shell function of the session snapshot runs the claude binary as ugrep), else BSD
-# or GNU grep; `rg` is Claude Code's embedded ripgrep 14 or an installed one. An option is listed only when it
-# is read-only, runs and loads nothing, follows no symbolic link out of the paths it is given, and takes a value
-# in every one of those implementations or in none (BSD -O is a flag but ugrep's -O takes a value, so a word
-# the hook skipped as a value could be read as a file: such options are left out). Kinds:
+# or GNU grep; `rg` is Claude Code's embedded ripgrep 14 or an installed one; `find` is Claude Code's embedded
+# bfs (another shell function of the snapshot), else BSD or GNU find; sort, wc, file and diff are the system's
+# (BSD and Apple on macOS, GNU on Linux; Homebrew's GNU diff on many Macs). An option is listed only when it
+# is read-only, runs and loads nothing, reads no file it is not given as a checked path (no list of names),
+# follows no symbolic link out of the paths it is given, and takes a value in every one of those
+# implementations or in none (BSD -O is a flag but ugrep's -O takes a value, so a word the hook skipped as a
+# value could be read as a file: such options are left out). Kinds:
 #   FLAG              no value; `--name=value` is denied
 #   NUM               a count (digits; ugrep's -m also takes MIN,MAX), checked as one
 #   TEXT              a value that is never a path: a pattern, a glob, a file type name
 #   PATH              a file, checked like a Read path (`-` is standard input)
 #   ("enum", {...})   a required value from the set
 #   ("optenum", {...}) long only: no value, or `=value` from the set (grep's --color, whose value is optional)
-FLAG, NUM, TEXT, PATH = "flag", "num", "text", "path"
+#   OPTNUM            long only: no value, or `=<count>` (diff's --context and --unified: GNU's value is optional,
+#                     BSD's required, so the next word is never taken for it; it stays an operand and is checked)
+FLAG, NUM, TEXT, PATH, OPTNUM = "flag", "num", "text", "path", "optnum"
 COLOR_WHEN = ("optenum", frozenset({"never", "always", "auto"}))
-SEARCH_SPECS = {
+OPTION_SPECS = {
     "grep": {
         "short": dict({c: FLAG for c in "abcEFGHhIiLlnoPqrsTvwx0123456789"},
                       A=NUM, B=NUM, C=NUM, m=NUM, e=TEXT, f=PATH),
@@ -831,11 +841,71 @@ SEARCH_SPECS = {
                "sort": ("enum", frozenset({"none", "path", "modified", "accessed", "created"})),
                "sortr": ("enum", frozenset({"none", "path", "modified", "accessed", "created"}))}),
     },
+    # Not listed: -o/--output and -T/--temporary-directory (write), --compress-program (runs a program),
+    # --files0-from (reads the files a list names), --random-source (reads a file).
+    "sort": {
+        "short": dict({c: FLAG for c in "bcCdfghiMmnRrsuVz"}, k=TEXT, t=TEXT, S=TEXT),
+        "long": dict({n: FLAG for n in (
+            "ignore-leading-blanks", "dictionary-order", "ignore-case", "general-numeric-sort",
+            "human-numeric-sort", "ignore-nonprinting", "month-sort", "numeric-sort", "random-sort", "reverse",
+            "version-sort", "merge", "stable", "unique", "zero-terminated", "debug", "heapsort", "mergesort",
+            "radixsort", "qsort", "mmap")},
+            **{"key": TEXT, "field-separator": TEXT, "buffer-size": TEXT, "parallel": NUM, "batch-size": NUM,
+               "check": ("optenum", frozenset({"quiet", "silent", "diagnose-first"})),
+               "sort": ("enum", frozenset({"general-numeric", "human-numeric", "month", "numeric", "random",
+                                           "version"}))}),
+    },
+    # Not listed: --files0-from (reads the files a list names).
+    "wc": {
+        "short": {c: FLAG for c in "cmlLw"},
+        "long": dict({n: FLAG for n in ("bytes", "chars", "lines", "words", "max-line-length")},
+                     total=("enum", frozenset({"auto", "always", "only", "never"}))),
+    },
+    # Not listed: -f/--files-from (reads the files a list names), -m/--magic-file and macOS -M (load a magic
+    # file), -C/--compile (writes one), -z/-Z (decompress, possibly through a program), -s (reads devices).
+    "file": {
+        "short": dict({c: FLAG for c in "bihIkLNnp0"}, e=TEXT, F=TEXT),
+        "long": dict({n: FLAG for n in (
+            "brief", "mime", "mime-type", "mime-encoding", "extension", "keep-going", "dereference",
+            "no-dereference", "no-pad", "no-buffer", "print0", "preserve-date", "apple")},
+            **{"exclude": TEXT, "exclude-quiet": TEXT, "separator": TEXT}),
+    },
+    # Not listed: -l/--paginate (runs pr), --from-file and --to-file (compare against a further file), BSD -A,
+    # the GNU line and group formats and the digit context forms. --context and --unified take a value only
+    # as `=<n>` (OPTNUM). Two directories are compared only with --no-dereference (check_diff).
+    "diff": {
+        "short": dict({c: FLAG for c in "abBcdeinNpPqrstTuwy"}, C=NUM, U=NUM, W=NUM, D=TEXT, F=TEXT, I=TEXT,
+                      L=TEXT, x=TEXT, S=TEXT, X=PATH),
+        "long": dict({n: FLAG for n in (
+            "normal", "brief", "report-identical-files", "ed", "rcs", "forward-ed",
+            "side-by-side", "left-column", "suppress-common-lines", "show-c-function", "expand-tabs",
+            "initial-tab", "suppress-blank-empty", "recursive", "no-dereference", "new-file",
+            "unidirectional-new-file", "ignore-file-name-case", "no-ignore-file-name-case", "ignore-case",
+            "ignore-tab-expansion", "ignore-trailing-space", "ignore-space-change", "ignore-all-space",
+            "ignore-blank-lines", "text", "strip-trailing-cr", "minimal", "speed-large-files")},
+            **{"width": NUM, "tabsize": NUM, "horizon-lines": NUM, "show-function-line": TEXT, "label": TEXT,
+               "exclude": TEXT, "starting-file": TEXT, "ignore-matching-lines": TEXT, "ifdef": TEXT,
+               "exclude-from": PATH, "color": COLOR_WHEN, "context": OPTNUM, "unified": OPTNUM}),
+    },
 }
+# find takes only these primaries and flags, each by its exact name (PR 1 code review, item 4 and 5: GNU and bfs
+# -files0-from read the starting points from a committed list, -L, -H and -follow follow committed symbolic links
+# out of the roots, and bfs -rm deletes like -delete, which the former denylist did not name). Values by kind as
+# in OPTION_SPECS; every other word is a path (bfs takes paths anywhere in the expression) and is checked.
+FIND_SPEC = dict(
+    {w: FLAG for w in (
+        "-P", "-E", "-s", "-x", "-d", "-depth", "-print", "-print0", "-prune", "-empty", "-true", "-false", "-not",
+        "-a", "-and", "-o", "-or", "-xdev", "-mount", "-quit", "-ls", "-readable", "-writable", "-executable",
+        "-nouser", "-nogroup", "-daystart", "-noleaf", "!", "(", ")", ",")},
+    **{w: TEXT for w in (
+        "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-lname",
+        "-ilname", "-type", "-user", "-group", "-uid", "-gid", "-perm", "-size", "-mtime", "-mmin", "-atime",
+        "-amin", "-ctime", "-cmin", "-links", "-inum", "-regextype", "-printf")},
+    **{"-maxdepth": NUM, "-mindepth": NUM, "-newer": PATH})
+FIND_NEWER_RE = re.compile(r"^-newer[aBcm]([aBcmt])$")
 SEARCH_NUM_RE = re.compile(r"^[0-9]{1,9}(?:,[0-9]{0,9})?$")
 # The options that supply the pattern, so every operand is a path; rg's --files and --type-list take none.
 SEARCH_PATTERN_OPTIONS = {"e", "f", "regexp", "file", "files", "type-list"}
-FIND_FORBIDDEN = ("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fls")
 SED_ADDR = r"(?:\d+|\$|/(?:[^/\\]|\\.)*/)"
 SED_CMD_RE = re.compile(r"^%s(?:,%s)?!?(?:[p=lqd]|s/(?:[^/\\]|\\.)*/(?:[^/\\]|\\.)*/[gpiI0-9]*)$|^[p=lqd]$|"
                         r"^s/(?:[^/\\]|\\.)*/(?:[^/\\]|\\.)*/[gpiI0-9]*$" % (SED_ADDR, SED_ADDR))
@@ -906,8 +976,8 @@ def check_sed(ctx, args):
         ctx.path(w)
 
 
-def search_value(ctx, prog, label, kind, value):
-    """Checks the value of an allowlisted grep or rg option by its kind (SEARCH_SPECS)."""
+def option_value(ctx, prog, label, kind, value):
+    """Checks the value of an allowlisted option by its kind (OPTION_SPECS, FIND_SPEC)."""
     if kind == NUM:
         if not SEARCH_NUM_RE.match(value):
             raise Deny(f"the {prog} option {label} takes a count, not {value!r}")
@@ -919,10 +989,11 @@ def search_value(ctx, prog, label, kind, value):
             raise Deny(f"the {prog} option {label} takes one of {', '.join(sorted(kind[1]))}, not {value!r}")
 
 
-def parse_search_args(ctx, args, prog):
-    """grep's and rg's arguments against their allowlist (SEARCH_SPECS). Returns (operands, seen): the operand
-    Words and the names of the options used. Raises Deny for any option that is not listed by its exact name."""
-    spec = SEARCH_SPECS[prog]
+def parse_listed_args(ctx, args, prog):
+    """The arguments of grep, rg, sort, wc, file or diff against its allowlist (OPTION_SPECS). Returns (operands,
+    seen): the operand Words and the names of the options used. Raises Deny for any option that is not listed by
+    its exact name."""
+    spec = OPTION_SPECS[prog]
     operands, seen, i, opts_done = [], set(), 0, False
 
     def take(label, kind, attached):
@@ -965,8 +1036,11 @@ def parse_search_args(ctx, args, prog):
             elif isinstance(kind, tuple) and kind[0] == "optenum":
                 if eq and attached not in kind[1]:
                     raise Deny(f"the {prog} option {label} takes one of {', '.join(sorted(kind[1]))}")
+            elif kind == OPTNUM:
+                if eq:
+                    option_value(ctx, prog, label, NUM, attached)
             else:
-                search_value(ctx, prog, label, kind, take(label, kind, attached if eq else None))
+                option_value(ctx, prog, label, kind, take(label, kind, attached if eq else None))
             i += 1
             continue
         letters = text[1:]
@@ -979,7 +1053,7 @@ def parse_search_args(ctx, args, prog):
             seen.add(letter)
             if kind != FLAG:
                 rest = letters[j + 1:]
-                search_value(ctx, prog, f"-{letter}", kind, take(f"-{letter}", kind, rest or None))
+                option_value(ctx, prog, f"-{letter}", kind, take(f"-{letter}", kind, rest or None))
                 break
             j += 1
         i += 1
@@ -987,17 +1061,63 @@ def parse_search_args(ctx, args, prog):
 
 
 def check_find(ctx, args):
-    for w in args:
+    """find against FIND_SPEC: listed primaries with their values checked by kind, every other word a path."""
+    i = 0
+    while i < len(args):
+        w = args[i]
         text = w.value()
         if w.glob:
             ctx.globbed(w)
-        if text.startswith("-"):
-            if any(text == f or text.startswith(f) for f in FIND_FORBIDDEN):
-                raise Deny(f"find {text} writes or runs commands")
+        kind = FIND_SPEC.get(text)
+        m = FIND_NEWER_RE.match(text)
+        if m:  # -newerXY: Y t takes a date, any other Y a file (GNU find, bfs)
+            kind = TEXT if m.group(1) == "t" else PATH
+        if kind == FLAG:
+            i += 1
             continue
-        if text in ("!", "(", ")", ","):
+        if kind is not None:
+            if i + 1 >= len(args):
+                raise Deny(f"the find primary {text} has no value")
+            value = args[i + 1]
+            if value.glob:
+                ctx.globbed(value)
+            option_value(ctx, "find", text, kind, value.value())
+            i += 2
             continue
+        if text.startswith("-") and text != "-":
+            raise Deny(f"the find primary {text} is not on the reviewer's read-only allowlist (no -exec, -ok, "
+                       "-delete, -rm, -fprint, -fls, -files0-from, -f, -L, -H or -follow)")
         ctx.path(w)
+        i += 1
+
+
+def check_diff(ctx, operands, seen):
+    """diff of two plain paths. Two directories (or a directory and an absent path, which -N and -P make an
+    empty directory): diff reads every entry inside them and, without
+    --no-dereference, follows a committed symbolic link there out of the roots (GNU diff 3.10 and Apple's BSD
+    diff alike, with or without -r), so --no-dereference is required. A directory and a file: diff reads
+    <directory>/<the file's name>, which is checked like any path (Apple's diff follows a link there even with
+    --no-dereference)."""
+    if len(operands) != 2 or any(w.glob for w in operands):
+        raise Deny("diff compares exactly two paths, named without a glob")
+    for w in operands:
+        ctx.path(w)
+    full = [os.path.join(ctx.cwd, os.path.expanduser(w.value())) for w in operands]
+    dirs = [w.value() != "-" and os.path.isdir(f) for w, f in zip(operands, full)]
+    # Absent as diff sees it: a missing path or a dangling symbolic link (os.path.exists follows the link; an
+    # operand it cannot stat counts as absent too, which only requires --no-dereference).
+    absent = [w.value() != "-" and not os.path.exists(f) for w, f in zip(operands, full)]
+    if any(dirs) and any(absent):
+        # -N (--new-file) or -P makes an absent operand an empty directory beside a directory, and diff then
+        # reads the other tree whole (GNU and Apple diff, with or without -r): compared as two directories.
+        dirs = [True, True]
+    if all(dirs):
+        if "no-dereference" not in seen:
+            raise Deny("diff of two directories follows the symbolic links inside them: add --no-dereference")
+    elif any(dirs):
+        directory, other = (full[0], full[1]) if dirs[0] else (full[1], full[0])
+        check_path(os.path.join(directory, os.path.basename(os.path.normpath(other))), ctx.cwd, ctx.roots,
+                   "the file diff reads in the directory it is given")
 
 
 EXTERNAL_MODES = ("off", "bedrock-gpt")
@@ -1099,13 +1219,15 @@ def check_segment(ctx, words):
     if prog == "tr":
         parse_args(ctx, args, {})  # tr reads standard input only; its operands are character sets
         return
-    if prog in ("grep", "rg"):
-        operands, seen = parse_search_args(ctx, args, prog)
+    if prog in OPTION_SPECS:
+        operands, seen = parse_listed_args(ctx, args, prog)
+        if prog == "diff":
+            check_diff(ctx, operands, seen)
+            return
         # -e/--regexp or -f/--file supply the pattern; rg --files lists files and takes no pattern. Otherwise
-        # the first operand is the pattern. Options are matched by their full name only (SEARCH_SPECS), so an
+        # the first operand is the pattern. Options are matched by their full name only (OPTION_SPECS), so an
         # abbreviation of --regexp can no longer turn a file into "the pattern".
-        has_pattern = bool(seen & SEARCH_PATTERN_OPTIONS)
-        if operands and not has_pattern:
+        if prog in ("grep", "rg") and operands and not seen & SEARCH_PATTERN_OPTIONS:
             operands = operands[1:]  # the pattern: not a path
         for w in operands:
             ctx.path(w)
@@ -1131,9 +1253,10 @@ def check_bash(command, cwd, roots, role):
 # ------------------------------------------------------------------------------------------- main
 
 def skill_name(tool_input):
+    """The reviewer role a Skill call loads, or None. The `skill` input is read by ifs_paths.skill_parts, the
+    reading the approval gate's activation shares (whitespace and leading "/" dropped)."""
     invoked = tool_input.get("skill") if isinstance(tool_input, dict) else None
-    invoked = str(invoked or "").strip().lstrip("/")
-    namespace, _, name = invoked.rpartition(":")
+    namespace, name = load_paths().skill_parts(invoked)
     if name in REVIEWER_SKILLS and namespace in ("", PLUGIN_NAME):
         return name
     return None

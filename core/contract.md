@@ -444,10 +444,11 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
   registered reviewer the hook allows only Read, Grep, Glob, allowlisted Bash and bookkeeping tools (the task
   list, ToolSearch, SubagentHandback) and denies every other tool, every edit, web, agent, MCP and further
   Skill call among them; Read, Grep and Glob outside the repository, the plugin root and the snapshot directory, or on a credential path; and
-  every Bash line that is not wholly on its read-only allowlist (git reads, file viewers, `find` without
-  actions, `sed -n`, `review-snapshot.py verify`, `delta` and `gates`, and the external-review script for
-  `running-external-review` only; `grep` and `rg` with their listed read-only options only, each by its
-  full name); `state`, `save-findings` and `attach` are the main conversation's. Reviewers run
+  every Bash line that is not wholly on its read-only allowlist (git reads, file viewers, `find` with its
+  listed tests only, `sed -n`, `review-snapshot.py verify`, `delta` and `gates`, and the external-review
+  script for `running-external-review` only; `grep`, `rg`, `sort`, `wc`, `file` and `diff` with their listed
+  read-only options only, each by its full name, none that reads a list of file names; `diff` of two
+  directories only with `--no-dereference`); `state`, `save-findings` and `attach` are the main conversation's. Reviewers run
   no tests and no builds; the orchestrator's quality gate does. Every brief states the tool rules that
   keep a reviewer clear of denials: files read with Read, searched with Grep and listed with Glob; one
   plain allowlisted command per Bash call, with no `;`, `echo`, `cd`, variable or redirection (only
@@ -730,8 +731,9 @@ In a fix round the first line is `Snapshot: <id12> (valid; fix round <k> of 2, p
 Exit status: 0, the block is valid; 3, the candidate changed since the snapshot, and the printed block
 says `invalidated: <paths>` with verification incomplete ("snapshot invalidated"), or a snapshot record
 changed outside its writer (`invalidated: <file> changed outside <writer>`), either reported as printed; 1, no classification is recorded (run the preparation again); 64, an argument outside the forms
-above or a recommendation the rules contradict (a red gate recorded on the snapshot is *Blocked*;
-*Changes requested* needs an open Major; *Blocked* needs an open Blocker, an open Major or a red gate):
+above or a recommendation the rules contradict (a red gate recorded on the snapshot is *Blocked*; an open
+Blocker is *Blocked*, never *Changes requested*; *Changes requested* needs an open Major; *No blocking
+findings* needs no open Blocker or Major; *Blocked* needs an open Blocker, an open Major or a red gate):
 read stderr, correct the argument and run it once more. The rules:
 
 - **Blocked**: a confirmed open Blocker, a red gate, or a confirmed open security Blocker or Major

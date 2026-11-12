@@ -288,8 +288,9 @@ is undone and named in the report. Then two calls, each its own Bash call (contr
    full 12-character id, nothing reworded, reformatted or dropped. Exit 0: valid. Exit 3: the tree
    changed since the snapshot; the printed block says `invalidated: <paths>` and verification incomplete,
    and it is reported as printed. Exit 64: an argument outside those forms, or a recommendation the rules
-   contradict (red tests are Blocked, Changes requested needs an open Major, Blocked needs an open
-   Blocker, an open Major or a red gate); read stderr, correct it, run it once more
+   contradict (red tests or an open Blocker are Blocked, Changes requested needs an open Major, No
+   blocking findings needs no open Blocker or Major, Blocked needs an open Blocker, an open Major or a red
+   gate); read stderr, correct it, run it once more
 
 The report shows what a person acts on and counts the rest; it never restates findings.md. A section
 with nothing in it is left out. Use exactly this structure:

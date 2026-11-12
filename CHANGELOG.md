@@ -28,7 +28,7 @@ specification input formats, a minor version adds a stack or a check, a patch fi
 ### Security
 
 Fixes from the triage of pull request 1, from three independent reviews of those fixes and from the pull
-request's code review, in the unreleased changes above (2026-11-12):
+request's code review (two rounds), in the unreleased changes above (2026-11-12):
 
 - The PreToolUse dispatcher's failure policy is fail-closed for every tool, by decision: when `python3`
   cannot run, every tool call of a session with the plugin is blocked, reads included, until it is fixed
@@ -62,6 +62,19 @@ request's code review, in the unreleased changes above (2026-11-12):
   `--ignore-file`, `--type-add`; ugrep's `--filter`, `--pager`, `--view`, `--config`, `--exclude-from`), that
   follow symbolic links out of the paths given (`grep -R`, `-S`, `rg -L`) or whose value kind differs between
   BSD grep, GNU grep and ugrep (`-O`, `-J`, `-M`) are not on it (TM-55)
+- A reviewer's `sort`, `wc`, `file` and `diff` take an allowlist of read-only options too, and `find` an
+  allowlist of tests and actions. Until the seventh round, `sort --files0-from=<list>`, `wc --files0-from`,
+  `file -f <list>` and GNU and bfs `find -files0-from <list>` read the files or starting points that a list
+  committed in the change names, outside the allowed roots, while only the list itself was checked; `find -L`,
+  `-H` and `-follow` and `ls -L` followed a committed symbolic link out of the roots, and bfs `find -rm`
+  (Claude Code's `find`) deleted. `diff` of two directories, or of a directory and an absent path or a
+  dangling symbolic link (which `-N` and `-P` turn into an empty directory), now needs `--no-dereference`, since GNU and Apple's diff follow
+  a committed link inside them with or without `-r`, and for a directory and a file the file diff reads in
+  the directory is checked like any path (TM-55)
+- One reading of the Skill tool's `skill` input for the gate, the dispatcher and the reviewer isolation
+  (`ifs_paths.skill_parts`): the surrounding whitespace and a leading `/` are dropped, as Claude Code's Skill
+  tool drops them. The isolation hook already did; the gate did not, so `/implementing-python-from-spec` or
+  a padded name could start a gated skill with no activation and no gate (TM-08)
 - The CDK, CloudFormation and Terraform reviews no longer write into the review snapshot directory: in an
   implementing skill's gated session the gate denies every tool-call write there, so `cdk synth --output
   <DIR>/synth/change.out`, the gate outputs redirected to `<DIR>/gates/` and the change set or plan output
@@ -113,8 +126,17 @@ request's code review, in the unreleased changes above (2026-11-12):
 - Review records: a record whose `.sha256` sidecar is missing counts as changed outside its writer, so
   deleting `risk.json.sha256` and editing `risk.json` invalidates the snapshot and keeps human approval
   required. A record deleted together with its sidecar still reads as never recorded (TM-58)
+- Review policy copies: `verify`, `state` and a reused snapshot check `policy/` against the manifest (every
+  recorded file present with its sha256, nothing else there). Until the seventh round nothing but the
+  external stage checked them, so a `policy/REVIEW.md` edited after the snapshot steered the Claude reviewers
+  while `state` still printed valid; now the snapshot reads invalidated, and `create` refuses to reuse such a
+  directory (TM-58)
+- `review-snapshot.py state` refuses (exit 64) "No blocking findings" with an open Blocker or Major and
+  "Changes requested" with an open Blocker: such a block read as a complete review to the implementing skills
 - `review-prepare.py` prints repository-derived names with control characters, newlines and bidi controls
-  escaped, so a file name cannot add or restyle an output line (TM-62)
+  escaped, so a file name cannot add or restyle an output line, and writes them escaped into the reviewer
+  briefs too, where a model would read a forged heading or rule as part of the brief; when such a name would
+  have to go into the external runner's command, the external stage reports `not run` instead (TM-62)
 
 ### Fixed
 

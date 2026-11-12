@@ -28,6 +28,8 @@ state file to decide whether those checks can decide. The gate protects this fil
                                isolation hook's under both roots, the activation records)
     state_write_roots()        those plus the snapshot roots (and the HOME one), timing_dir(): never written by a
                                tool call while the gate is registered
+    skill_parts(value)         (namespace, name) of a Skill call's `skill` input, read the one way the gate, the
+                               dispatcher and the isolation hook share (whitespace and leading "/" dropped)
     may_exist(path)            False only when lstat says the path is absent (ENOENT, ENOTDIR); a path that
                                cannot be checked (EACCES on an ancestor, ELOOP, EIO) counts as present, so a
                                check that runs only when a state file exists runs (fail closed)
@@ -110,6 +112,38 @@ def gate_marker_file(session_id):
 
 def review_marker_file(session_id):
     return os.path.join(active_dir(), "review-" + session_key(session_id) + ".json")
+
+
+def _trimmed(text):
+    """text without the leading and trailing whitespace JavaScript's String.prototype.trim removes (Python's
+    str.strip covers it and more, all but U+FEFF, which is added)."""
+    while True:
+        out = text.strip().strip("\ufeff")
+        if out == text:
+            return out
+        text = out
+
+
+def skill_parts(value):
+    """(namespace, name) of a Skill tool call's `skill` input: the one reading of it that the gate's activation
+    (spec-approval-gate.py activate, starting_gated_skill), the dispatcher's selection (ifs-pretool.py
+    activate_may_decide) and the isolation hook's registration (review-isolation.py skill_name) share, so a name
+    that starts a gated skill or loads a reviewer skill is recognised as such by every one of them (PR 1 code
+    review, item 6: the isolation hook stripped whitespace and a leading "/", the gate did not, so
+    `/implementing-python-from-spec` could start a gated skill the gate never activated). Claude Code's Skill
+    tool trims the input and drops one leading "/" before it looks the skill up (Claude Code 2.1.319, the Skill
+    tool's validateInput and call: `let k=s.trim(); ... let r=b?k.substring(1):k`, read from the binary on
+    2026-11-12; code.claude.com/docs does not document the input's normalisation). This removes the surrounding
+    whitespace, then every leading "/" with the whitespace after it, and the whitespace around each part: a
+    superset of what the tool accepts, so the hooks read a spelling the tool would refuse as the skill it names,
+    which only adds a check. ("", "") for a value that is not a string."""
+    if not isinstance(value, str):
+        return "", ""
+    text = _trimmed(value)
+    while text.startswith("/"):
+        text = _trimmed(text[1:])
+    namespace, _, name = text.rpartition(":")
+    return _trimmed(namespace), _trimmed(name)
 
 
 def may_exist(path):

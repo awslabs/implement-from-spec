@@ -363,9 +363,9 @@ and print its block, each call its own Bash call:
    full 12-character id, nothing reworded, reformatted or dropped. Exit 3: the tree changed since the
    snapshot; the printed block says `invalidated: <paths>` and verification incomplete, it is reported as
    printed, and the change since is reviewed as a fix round (step 6). Exit 64: an argument outside those
-   forms, or a recommendation the rules contradict (a red gate is Blocked, Changes requested needs an
-   open Major, Blocked needs an open Blocker, an open Major or a red gate); read stderr, correct it, run
-   it once more
+   forms, or a recommendation the rules contradict (a red gate or an open Blocker is Blocked, Changes
+   requested needs an open Major, No blocking findings needs no open Blocker or Major, Blocked needs an
+   open Blocker, an open Major or a red gate); read stderr, correct it, run it once more
 
 The state's values:
 

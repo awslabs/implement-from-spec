@@ -59,7 +59,12 @@ without `hash`; record-gate only appends. gates.json, findings.md (save-findings
 the file's bytes), so a truncated or deleted file is caught too. verify, gates, record-gate and state check
 them: a broken chain, a sidecar that does not match, and a record whose sidecar is missing are "<file> changed
 outside <writer>", exit 3, and state renders the snapshot invalidated, verification incomplete and human
-approval required with that reason. A missing sidecar fails closed (2026-11-12): deleting risk.json.sha256 and
+approval required with that reason. verify and state check the policy copies the same way (policy_problems,
+PR 1 code review, item 8): every policy file the manifest records with a digest must be in DIR/policy/ as a
+regular file with that sha256, and nothing else may be there; an edited, added, deleted or symlinked copy is
+"policy/<path> does not match the manifest", and create refuses to reuse a directory whose copies do not match
+(exit 1), since the Claude-stage reviewers read the policy there only. A missing sidecar fails closed
+(2026-11-12): deleting risk.json.sha256 and
 editing risk.json used to leave the record "unverifiable", and state then rendered the edited classification
 with exit 0, so `approval_required` could be emptied. This detects edits made with other tools; it is not a
 defence against someone who recomputes the hashes, or who deletes a record together with its sidecar (an absent
@@ -94,7 +99,7 @@ The id is the sha256 of the canonical JSON (sorted keys, no whitespace, ASCII) o
 <id12>, where <state> is $CLAUDE_PLUGIN_DATA when set, else $XDG_STATE_HOME/implement-from-spec, else
 ~/.local/state/implement-from-spec. --out must lie outside the repository (a snapshot inside it would be
 part of its own candidate). Creating a snapshot whose directory already holds the same id reuses it, gate
-results included.
+results included, after checking its policy copies (a mismatch is refused, exit 1).
 
 The review state (state) is printed exactly as design section 6 defines it, six lines, a blank line and
 the JSON line, with the full 12-character id:
@@ -113,8 +118,11 @@ snapshot of the same repository and base) the first line is
 Every argument takes only the forms above (--verification complete or "incomplete (<reasons>)", --approval
 none or "human (<reasons>)", --rollback one of the four, counts as non-negative integers); anything else is
 a usage error, and so is a recommendation the rules contradict: a red gate (the latest result of a gate
-name recorded on this snapshot is fail) is Blocked; Changes requested needs an open Major; Blocked needs an
-open Blocker, an open Major or a red gate. A gate whose latest result is not-run adds "<name> not run:
+name recorded on this snapshot is fail) is Blocked; an open Blocker is Blocked (never Changes requested);
+Changes requested needs an open Major; No blocking findings needs no open Blocker or Major (until the PR 1
+code review it was accepted with either, exit 0, and the implementing skills read such a block as complete);
+Blocked needs an open Blocker, an open Major or a red gate. A gate whose latest result is not-run adds
+"<name> not run:
 <reason>" to the Verification reasons (incomplete, merged with the given ones); it never makes the
 recommendation Blocked. Risk is the classification review-prepare.py recorded in
 DIR/risk.json (schema ifs-review-risk/1, this snapshot's id), never an argument; its approval_required
@@ -681,6 +689,12 @@ def cmd_create(args) -> int:
                 existing = None
             if not existing or existing["id"] != sid:
                 raise Failure(EXIT_ERROR, f"{out} exists and holds something other than snapshot {sid[:12]}")
+            changed_policy = policy_problems(out, existing)
+            if changed_policy:
+                raise Failure(EXIT_ERROR, f"{out} holds snapshot {sid[:12]}, but "
+                                          f"{'; '.join(r for _k, r in changed_policy)}: it is not reused. Never "
+                                          "repair it by hand: report it and take the snapshot into a new --out "
+                                          "directory (or remove that directory first)")
             print(summary)
             print(f"Snapshot directory: {out} (unchanged, reused)")
             return EXIT_OK
@@ -725,7 +739,7 @@ def verify_manifest(manifest: dict) -> list:
 def cmd_verify(args) -> int:
     directory, manifest = load_manifest(args.dir)
     changed = verify_manifest(manifest)
-    problems = integrity_problems(directory, manifest["id"])
+    problems = integrity_problems(directory, manifest)
     changed += [reason for kind, reason in problems if kind == "tampered"]
     for rel in changed:
         print(f"changed: {rel}")
@@ -924,15 +938,63 @@ def check_gates(directory: str, sid: str) -> GateRecords:
         return load_gates(directory, sid)
 
 
-def integrity_problems(directory: str, sid: str, gates: GateRecords | None = None) -> list:
-    """Every ("tampered", reason) of the snapshot's records: gates.json, findings.md and risk.json."""
+POLICY_TAMPERED = "policy/{} does not match the manifest"
+
+
+def policy_problems(directory: str, manifest: dict) -> list:
+    """Every ("tampered", reason) of DIR/policy/ against the manifest (PR 1 code review, item 8): each policy file
+    the manifest records with a digest must be a regular file with that sha256, and nothing else may be there (a
+    file recorded with sha256 null, an added file, a symlink or another kind of entry anywhere under policy/). The
+    Claude-stage reviewers read the policy there only, so a copy edited, added or deleted after create would
+    otherwise steer them while verify and state still said valid. An unreadable policy/ counts as changed."""
+    expected = {}
+    for entry in manifest["policy"]["files"]:
+        if entry.get("sha256"):
+            expected[entry["path"]] = entry["sha256"]
+    root = os.path.join(directory, "policy")
+    found, odd, unreadable = set(), set(), []
+    try:
+        st = os.lstat(root)
+    except FileNotFoundError:
+        st = None
+    except OSError:
+        return [("tampered", POLICY_TAMPERED.format("") + " (it cannot be read)")]
+    if st is not None and not stat.S_ISDIR(st.st_mode):
+        return [("tampered", "policy/ is not a directory: it does not match the manifest")]
+    if st is not None:
+        for current, dirs, files in os.walk(root, onerror=unreadable.append):
+            rel_dir = os.path.relpath(current, root)
+            for name in list(dirs):
+                if os.path.islink(os.path.join(current, name)):
+                    dirs.remove(name)
+                    odd.add(name if rel_dir == "." else f"{rel_dir}/{name}")
+            for name in files:
+                found.add(name if rel_dir == "." else f"{rel_dir}/{name}")
+    bad = set(odd) | (found - set(expected))
+    for rel, digest in expected.items():
+        try:
+            data = read_regular(os.path.join(root, *rel.split("/"))) if rel in found else None
+        except (OSError, ValueError):
+            data = None
+        if data is None or sha256(data) != digest:
+            bad.add(rel)
+    problems = [("tampered", POLICY_TAMPERED.format(rel)) for rel in sorted(bad)]
+    if unreadable:
+        problems.append(("tampered", POLICY_TAMPERED.format("") + " (part of it cannot be read)"))
+    return problems
+
+
+def integrity_problems(directory: str, manifest: dict, gates: GateRecords | None = None) -> list:
+    """Every ("tampered", reason) of the snapshot's records (gates.json, findings.md and risk.json) and of its
+    policy copies (policy_problems)."""
+    sid = manifest["id"]
     gates = gates or check_gates(directory, sid)
     problems = [gates.problem] if gates.problem else []
     for name in (FINDINGS_FILE, RISK_FILE):
         _data, problem = check_record(directory, name, sid)
         if problem:
             problems.append(problem)
-    return problems
+    return problems + policy_problems(directory, manifest)
 
 
 def one_line_arg(value: str, label: str, limit: int) -> str:
@@ -1090,6 +1152,13 @@ def check_recommendation(rec: str, blockers: int, majors: int, red: list) -> Non
     if red and rec != "Blocked":
         raise Failure(EXIT_USAGE, f"a red gate makes the recommendation Blocked ({', '.join(red)} failed on "
                                   f"this snapshot), not {rec!r}")
+    if rec == "No blocking findings" and (blockers or majors):
+        raise Failure(EXIT_USAGE, f"No blocking findings needs no open Blocker or Major (--open-blocker is {blockers}, "
+                                  f"--open-major {majors}): an open Blocker is Blocked, an open Major Changes "
+                                  "requested or Blocked")
+    if rec == "Changes requested" and blockers:
+        raise Failure(EXIT_USAGE, f"a confirmed open Blocker makes the recommendation Blocked (--open-blocker is "
+                                  f"{blockers}), not 'Changes requested'")
     if rec == "Changes requested" and majors == 0:
         raise Failure(EXIT_USAGE, "Changes requested needs a confirmed open Major (--open-major is 0)")
     if rec == "Blocked" and not (blockers or majors or red):
@@ -1132,7 +1201,7 @@ def cmd_state(args) -> int:
         changed = verify_manifest(manifest)
     except Failure as exc:
         changed = [f"(the candidate cannot be recomputed: {exc.message})"]
-    problems = integrity_problems(directory, manifest["id"], gates)
+    problems = integrity_problems(directory, manifest, gates)
     tampered = [reason for kind, reason in problems if kind == "tampered"]
     added = not_run_reasons(gates) + [reason for _kind, reason in problems]
     if changed and not any(r.startswith(INVALIDATED_REASON) for r in verification or []):

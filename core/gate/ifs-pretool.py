@@ -219,11 +219,12 @@ def isolation_may_decide(raw, tool):
 
 
 def activate_may_decide(raw):
-    """activate acts only for a skill whose directory holds a gate_rules.json."""
+    """activate acts only for a skill whose directory holds a gate_rules.json. The name is read by
+    ifs_paths.skill_parts, as the gate's activation reads it, so a padded or `/`-prefixed name still runs it."""
     skill = top_string(raw, "skill")
     if skill is None:
         return True
-    name = skill.rpartition(":")[2]
+    name = load_paths().skill_parts(skill)[1]
     if not name:
         return False
     if "/" in name or name in (".", "..") or "\0" in name:
