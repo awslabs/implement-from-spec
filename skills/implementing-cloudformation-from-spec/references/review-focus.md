@@ -7,4 +7,5 @@ AWS CloudFormation templates in YAML, implementing specification items; the pipe
 - Quotas after loop expansion (500 resources, 200 outputs, 200 parameters), unconstrained parameters, unused parameters or conditions, cross-stack values published under the wrong name
 - Guard rules without passing and failing fixtures; template tests that would pass if the resource were removed
 - Resource properties or attributes that may not exist or may need replacement on update: say "verify in the Template Reference" rather than asserting
+- Temporal compatibility: an importing stack updated before its exporting stack, a partial pipeline run leaving stacks on old and new templates, a rollback after new writes that loses or strands data written under the new template
 - Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

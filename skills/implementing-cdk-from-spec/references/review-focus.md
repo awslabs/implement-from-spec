@@ -8,4 +8,5 @@ AWS CDK v2 apps in Python or Java, implementing specification items; the pipelin
 - Tests: fine-grained assertions that would pass if the resource were removed, snapshot tests as the only proof, missing characterisation tests for pinned logical IDs
 - New dependencies without an exact version or not named in the plan
 - CDK constructs, properties, defaults or CLI flags that may not exist in the app's CDK version: say "verify in the CDK API reference" rather than asserting
+- Temporal compatibility: producer and consumer stacks deployed in the wrong order, a partial deploy leaving stacks on old and new versions, a rollback after new writes that loses or strands data written under the new version
 - Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

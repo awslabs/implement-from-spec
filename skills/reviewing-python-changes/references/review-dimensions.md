@@ -32,8 +32,10 @@ its brief from `references/review-lenses.md` verbatim plus the groups below. The
 contract; these groups are the depth inside it.
 
 - Specification fidelity: group 1, and every check whose *Look for* names an item's `Interface:` or
-  `Acceptance:`
-- Failure handling: groups 5 and 6, plus PY-AWS-02, PY-AWS-07 and PY-AWS-08
+  `Acceptance:`, plus temporal compatibility of the interfaces and stored formats the change alters
+- Failure handling: groups 5 and 6, plus PY-AWS-02, PY-AWS-07 and PY-AWS-08, plus temporal
+  compatibility at run time (mixed versions, migration order, replay, rollback after new writes,
+  partial deployment)
 - Types and design: groups 2, 3, 4, 10 and 12
 - Security and AWS runtime: groups 7, 8 and 9, plus PY-ARC-03. There is no separate Python
   application-security reviewer: this lens is the security reviewer for Python. The plugin's
@@ -41,7 +43,8 @@ contract; these groups are the depth inside it.
   `reviewing-cdk-changes`), not application code
 - Tests: group 11
 
-A finding that belongs to another lens is still reported in one line, tagged with the owning group.
+A finding that belongs to another lens is still reported, as one out-of-lens head line naming the owning
+lens (`references/review-lenses.md` section 6), with no Why, Evidence or Fix.
 Shared principles and smells (PRN, ARC and SML IDs) are defined once in
 `${CLAUDE_PLUGIN_ROOT}/core/review/principles-and-architecture-smells.md`; the checks here give the
 Python form. As that file asks, name the concrete cost, not the principle, and report a tension the
@@ -50,10 +53,17 @@ rules and the plan do not settle as Minor `unsure`.
 **Evidence.** A size, count or shape in a *Look for* line prompts a closer look; it is not a finding by
 itself. A finding that needs evidence outside the diff (callers, the event source mapping, the
 effective AWS configuration, the deployed runtime) names it or is `unsure`, saying what is missing.
+Every Blocker and Major carries the `Evidence:` clause of `references/review-lenses.md` section 6
+(trigger, at most three file:line steps from source to sink with a `+<n> steps:` tail for the rest,
+wrong result) and `(pre-existing)` only when the defect and its exposure both exist
+on the base independent of the change.
 
 **Linters and the gate.** The quality gate runs the project's Ruff, mypy, pytest and (when present)
-Bandit; a red gate is a Block whatever the findings. Rule codes are cited so a finding can say "enable
-Ruff `B006`"; report a linter-detectable defect only when the rule is unselected or suppressed.
+Bandit, in the main conversation; reviewers read code and never run it. A red gate makes the
+recommendation Blocked whatever the findings. Rule codes are cited so a finding can say "enable Ruff
+`B006`"; report a linter-detectable defect only when the rule is unselected or suppressed, or the file is
+outside the gate's configuration (the orchestrator files a defect the green gate settles under *Covered
+by gate*).
 Ruff 0.17.0 (2026-10-09) changed its default rule set and, with no `target-version` or
 `requires-python`, assumes Python 3.11: read the project's `select` list and target.
 Rules marked *preview* in Ruff are opt-in.
@@ -75,9 +85,9 @@ default and when it escalates; the orchestrator sets the final class from the co
 - **Minor**: maintainability or local-correctness issue worth fixing in this change if quick
 - **Nit**: style and polish; optional
 
-Findings use the format in `references/review-lenses.md` section 6, with the check ID at the start of
-the problem text and, where the check names one, the shared ID in brackets after the lens, for example
-`[Major] src/orders/repo.py:41 - Types and design (ARC-01) - PY-ARC-01 ...`. This file's severity wins
+Findings use the format in `references/review-lenses.md` section 6 (contract section 9), with the check
+ID in brackets after the lens and, where the check names one, the shared ID beside it, for example
+`[Major] src/orders/repo.py:41 - Types and design (PY-ARC-01, ARC-01) - ...`. This file's severity wins
 over the shared file for Python, and `references/review-lenses.md` section 7 wins over both. A retired
 ID names the check that absorbed it; cite that one.
 

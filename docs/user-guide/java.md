@@ -102,8 +102,9 @@ the ledger with the command for you to run, the others are finished, and the rep
 ## The report
 
 The run ends with the report of contract section 11: the items in scope and whether each was verified,
-what changed, every check with its result, the `spec-trace code` counts, the review outcome (change
-digest, findings fixed, rejected and open, and the external reviewer's `External review: <state>
+what changed, every check with its result, the `spec-trace code` counts, the review outcome (snapshot,
+change digest, review state, findings fixed, rejected, covered by gate and open, fix rounds,
+and the external reviewer's `External review: <state>
 (<reason>)` line verbatim), files withheld from the external reviewer, findings that need runtime
 verification, the rulings the skill made, amendments, deferred items, the status (`implementation
 complete` or `verification incomplete (<what is missing>)`), and the next steps for the operator. For Java
@@ -119,7 +120,9 @@ the next steps give the deploy command the skill did not run.
 The arguments are the repository and a git range or a file list, optionally `--plan
 ai-planning/<slug>.plan`. A pasted diff works too. The skill runs the project's tests while the reviewers
 work, verifies every finding against the code, sets severity itself, and returns one Blocker, Major,
-Minor and Nit report with a concrete fix per finding.
+Minor and Nit report with a concrete fix per finding, opening with the review state block (snapshot,
+recommendation, verification, approval required, risk, rollback; see
+[external-review.md](external-review.md#the-review-around-it-snapshot-isolation-state-and-fix-rounds)).
 
 ## Out of scope
 

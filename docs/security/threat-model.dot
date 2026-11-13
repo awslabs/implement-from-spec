@@ -25,12 +25,13 @@ digraph threat_model {
 
     subgraph cluster_plugin {
       label="B2  plugin hooks and scripts (hooks/hooks.json)"; style="dashed"; color="#188038"; fontcolor="#188038";
-      gate [label="Approval gate (K22)\npython3 -I", fillcolor="#E6F4EA"];
+      gate [label="PreToolUse dispatcher (every tool)\npython3 -I -S: approval gate (K22),\nreview isolation, install ask", fillcolor="#E6F4EA"];
       askhook [label="Install ask hook", fillcolor="#E6F4EA"];
       notice [label="SessionStart notice", fillcolor="#E6F4EA"];
       review [label="spec-external-review.py\ncore/scripts/bedrock-gpt", fillcolor="#E6F4EA"];
       installer [label="Setup: doctor.py,\ninstall.py", fillcolor="#E6F4EA"];
       gatestate [label="Gate state\n$CLAUDE_PLUGIN_DATA/\nspec-approval-gate", shape=cylinder, fillcolor="#E6F4EA"];
+      isostate [label="Isolation state\n$CLAUDE_PLUGIN_DATA/\nreview-isolation", shape=cylinder, fillcolor="#E6F4EA"];
       reviewhome [label="Review home\n~/.local/state/\nspec-external-review", shape=cylinder, fillcolor="#E6F4EA"];
       setupstate [label="Setup state\n~/.local/state/\nimplement-from-spec/setup", shape=cylinder, fillcolor="#E6F4EA"];
     }
@@ -84,4 +85,5 @@ digraph threat_model {
   settings -> notice [label="18"];
   claude -> notice [label="19"];
   notice -> setupstate [label="19", dir=back];
+  gate -> isostate [label="20"];
 }

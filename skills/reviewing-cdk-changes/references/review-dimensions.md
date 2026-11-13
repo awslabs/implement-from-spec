@@ -50,7 +50,7 @@ severity that cost earns, as the shared file says.
 Evidence rule. A diff shows code; it does not show deployment frequency, out-of-repository importers of
 an export, whether a file holds a secret, what CI has installed, or whether a test was red before the
 change. Use what the review has: the repository, the plan's inventory, the synthesised templates and
-asset manifests in `cdk.out`, CI configuration and the supplied test and synth output. A finding that
+asset manifests in `cdk.out` (in a review, the snapshot's `synth/change.out`), CI configuration and the supplied test and synth output. A finding that
 needs evidence none of those holds is reported `unsure, needs runtime verification` and listed under
 "Needs runtime verification" in the SKILL.md report; it is never stated as fact. Report one finding per failure mode, under the check
 that names its root cause, and cite related checks in the text rather than reporting them again.
@@ -62,7 +62,7 @@ Reviewer split, matching `review.md` and `skills/reviewing-cdk-changes/SKILL.md`
   design); section 3 in group 2 (Data safety and logical IDs); section 4 in group 3 (Cross-stack contract)
   for CDK-ENV-09 and CDK-ENV-10 and in group 6 for the rest, except CDK-ENV-08, which lands in group 8
   (Deploy path); section 8 in group 7 (Tests); section 9 in group 6 and in the app-code language review the
-  SKILL.md brief assigns (the Python lenses or the Java dimensions)
+  code reviewer's brief assigns (`references/reviewer-briefs.md`: the Python lenses or the Java dimensions)
 - **`implement-from-spec:iac-security-reviewer`** (review.md groups 4 and 5): section 5 in group 4 (IAM)
   and section 6 in group 5 (Secrets and data exposure). Its own checklist (`skills/iac-security-reviewer/SKILL.md`)
   supplies the depth; the checks here name the CDK constructs, methods and cdk-nag rule IDs that make a
@@ -79,8 +79,8 @@ Python and Java spell the same API differently: Python uses `snake_case` keyword
 (`Bucket.Builder.create(this, "Id").removalPolicy(RemovalPolicy.RETAIN).build()`, `bucket.grantRead(fn)`).
 A check names the Python form first and the Java form where it differs by more than case.
 
-Severity classes. The main conversation sets the final severity from `skills/reviewing-cdk-changes/SKILL.md`
-step 5; the defaults below are consistent with it and with review.md's Blocker classes. Apply review.md's
+Severity classes. The main conversation sets the final severity from
+`skills/reviewing-cdk-changes/references/standalone-review.md` section 4; the defaults below are consistent with it and with review.md's Blocker classes. Apply review.md's
 Blocker classes first: a per-check default holds only when no Blocker condition is established, so a
 demonstrated synthesis failure, red test, replaced stateful resource or still-imported export changed is
 a Blocker whatever the check below says. A latent path (an input no current caller passes) keeps the
@@ -1190,12 +1190,17 @@ check's default.
 
 ### CDK-TST-03 No characterisation test for stateful logical IDs
 
-- **Look for:** a stateful resource the plan touches, refactors or moves with no test that asserts its
-  logical ID in `template.to_json()["Resources"]`
+- **Look for:** a stateful resource with a pinned logical ID (deployed, or named by the items, the
+  project's rules or the plan as an ID that must not change) that the plan touches, refactors or moves,
+  with no test that asserts its logical ID in `template.to_json()["Resources"]`; a characterisation test
+  the change weakens or deletes
 - **Why it matters:** a construct-ID change then reaches a change set before anyone notices (CDK-STA-01)
 - **Instead:** a test per stateful resource asserting the logical-ID key and type, written before the
-  refactor and green before and after
-- **Severity:** Major
+  refactor and green before and after. A stateful resource the change adds has no deployed logical ID
+  yet: recommend the test before its first deploy
+- **Severity:** Major for a pinned logical ID (`references/standalone-review.md` section 4); Minor for a
+  resource the change adds and nothing pins yet, since no change set can replace it before its first
+  deploy
 - **Source:** https://docs.aws.amazon.com/cdk/v2/guide/best-practices.html — "Write unit tests that assert
   that the logical IDs of your stateful resources remain static"
 
@@ -1217,7 +1222,7 @@ check's default.
 
 - **Look for:** copy-pasted app and stack setup in every test; one test asserting many unrelated
   behaviours; test names that do not say what broke; no item ID in the name or docstring. General test
-  naming and structure beyond CDK setup belong to the language review the SKILL.md brief assigns; report
+  naming and structure beyond CDK setup belong to the language review the code reviewer's brief assigns; report
   them once, there
 - **Why it matters:** a failure does not identify the behaviour, and setup drift makes tests disagree
   about the stack under test
@@ -1331,7 +1336,7 @@ check's default.
 ## 10. Out of scope / handled elsewhere
 
 - Specification fidelity, the Blocker classes, the output format and replacement evidence: review.md
-  groups 1 and 8 and `skills/reviewing-cdk-changes/SKILL.md` steps 3 to 5; a claim that nothing is
+  groups 1 and 8 and `skills/reviewing-cdk-changes/SKILL.md` steps 3 to 5 with its `references/standalone-review.md`; a claim that nothing is
   replaced needs `cdk diff --method change-set`, never a template diff
 - IAM and exposure depth beyond the CDK forms above (policy-document consistency, confused-deputy
   conditions, KMS key policies, bootstrap roles): `skills/iac-security-reviewer/SKILL.md`
@@ -1342,7 +1347,7 @@ check's default.
   acknowledgements (CDK-SEC-08), not the rules themselves
 - Language-level review of the app code (naming, error handling, typing beyond section 9): the Python
   lenses (`skills/reviewing-python-changes/references/review-lenses.md`) and the Java dimensions
-  (`skills/reviewing-java-changes/references/review-dimensions.md`) as the SKILL.md brief assigns
+  (`skills/reviewing-java-changes/references/review-dimensions.md`) as the code reviewer's brief assigns
 - Lambda handler code bundled by the app: `reviewing-python-changes` or `reviewing-java-changes`
 - Template-level design that is not specific to CDK (nested-stack plumbing, custom-resource protocol,
   StackSets): `skills/reviewing-cloudformation-changes/references/review-dimensions.md`

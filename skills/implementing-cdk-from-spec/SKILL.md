@@ -93,8 +93,8 @@ CDK implementation:
 - [ ] 5 Ledger created; shared files first; waves implemented, checks green after each wave
 - [ ] 6 Replacement evidence: change-set diff per changed stack, then the whole app (stop on anything unexpected)
 - [ ] 7 Verification: each item exists/substantive/wired/proven; spec-trace code exits 0
-- [ ] 8 Review: Claude stage (references/review.md) and GPT stage in one message; triage done
-- [ ] 9 Checks and change-set diff green again after the fixes; docs synced
+- [ ] 8 Docs synced; review (reviewing-cdk-changes, external stage per contract section 9); state line read; fix rounds (cap 2)
+- [ ] 9 Checks and change-set diffs green on the last fixed tree; review snapshot still valid
 - [ ] 10 Report sent (contract section 11), nothing deployed
 ```
 
@@ -170,7 +170,13 @@ Run the contract's section 4 gate. Then check each item below and fix the file o
   a resource another stack owns; cross-stack values travel the way the project already uses
 - **Logical ID stability**: every existing resource the plan touches keeps its construct ID and path; a
   move into a new construct keeps the logical ID with the `Default` ID (practices, Logical IDs); any
-  rename needs `cdk refactor` as its own step and a ruling (section 6)
+  rename needs `cdk refactor` as its own step and a ruling (section 6). When the request renames or
+  moves an existing resource, the approval message opens, before the Plan line, with the consequence in
+  plain words: a plain `cdk deploy` would replace it (CloudFormation creates a new resource under the
+  new logical ID and deletes the existing one, or orphans it under `RETAIN`), naming the resource and
+  both logical IDs. Then it offers the safe paths, the recommended one first: keep the construct ID,
+  keep the logical ID (the `Default` ID, or `overrideLogicalId`), or a separate `cdk refactor` step with
+  its `--dry-run` mapping, and asks the user to choose before anything outside `ai-planning/` changes
 - **Data protection**: every stateful resource keeps `RemovalPolicy.RETAIN` or the value the items
   require, set explicitly, and a test asserts both `DeletionPolicy` and `UpdateReplacePolicy` in the
   synthesised template; deletion protection where the resource has it; encryption at rest and in transit
@@ -212,7 +218,9 @@ name given as the plan's file name without `.plan`. Before sending it:
   user replies approve in this session
 - The plan comes from an earlier session (a resume, "I approved it yesterday"): an earlier approval does
   not carry over. Update the plan's `Drafted:` line with Edit, which makes it approvable in this
-  session, re-run step 3, then send the message
+  session, re-run step 3, then send the message, opening with one sentence that tells the user why:
+  the earlier approval does not unlock this session, because approval is per session and bound to the
+  plan's exact content, so the plan was re-checked and needs approve again before anything is written
 - The hook reports that nothing was approved (a reply with a question or a condition, a plan edited
   since): say which, and send the message again
 
@@ -279,57 +287,61 @@ parameters), and every value another stack reads is published under the name tha
 
 ### 8. Review
 
-Dispatch both stages in one message (contract section 9). Each reviewer is a generic subagent,
-`subagent_type: "general-purpose"`, whose prompt opens with "First load the skill
-`implement-from-spec:<skill>` with the Skill tool, then follow this brief:" and continues with its brief:
+Contract section 9. Sync the documents first (contract section 10), so the reviewed snapshot holds them:
+any edit after the review's snapshot invalidates it and its state. Then invoke the skill
+`implement-from-spec:reviewing-cdk-changes` with the change mode (`--base <the ledger's baseline
+commit>`), the plan path, the ledger path and the specification files in scope as context. One
+preparation call (`core/scripts/review-prepare.py`) creates the review snapshot, classifies its risk,
+writes every reviewer's brief and settles the external stage; the review then synthesises the app
+read-only and dispatches the code reviewer and the IaC security reviewer (this skill's
+`references/review.md`) and every security hand-off the risk names in one message, with short prompts
+that point at the briefs. The external stage runs on every review, with this skill's
+`references/review-focus.md`: by the preparation when the setting is off, otherwise through a generic
+subagent loading `implement-from-spec:running-external-review` in the same message. The script reads the
+plugin's settings and prints an `External review:` status line, which goes into the report unquoted,
+character for character; a user who asks to keep the change away from the external reviewer gets
+`--external-review off` on the preparation call, which then runs the script itself and records the line.
+The review records its quality gate against the snapshot, takes the replacement evidence from the
+change-set diffs section 6 recorded in the ledger, and returns one verified report whose state block ends
+in the `ifs-review-state:` JSON line. Read that line, not the prose:
 
-- **Claude stage**: two read-only subagents with `model: "opus"`, one loading
-  `implement-from-spec:code-reviewer` for check groups 1, 2, 3, 6, 7 and 8 and one loading
-  `implement-from-spec:iac-security-reviewer` for groups 4 and 5,
-  each given the REPO path, the change mode, the plan path and the instruction to read and
-  apply `${CLAUDE_PLUGIN_ROOT}/skills/implementing-cdk-from-spec/references/review.md` and its sibling
-  `cdk-practices.md`, and the sections
-  `${CLAUDE_PLUGIN_ROOT}/skills/reviewing-cdk-changes/references/review-dimensions.md` assigns to its
-  groups (its "How to apply" first), reporting every finding. Give both the cdk-nag and validation output
-  of the last synth as input. Give the code reviewer, verbatim, the `<code-reviewer only: ...>` part of
-  the brief in `${CLAUDE_PLUGIN_ROOT}/skills/reviewing-cdk-changes/SKILL.md` step 2: the shared
-  `${CLAUDE_PLUGIN_ROOT}/core/review/principles-and-architecture-smells.md` and the app code's language
-  review (the Python lenses with
-  `${CLAUDE_PLUGIN_ROOT}/skills/reviewing-python-changes/references/review-dimensions.md`, or
-  `${CLAUDE_PLUGIN_ROOT}/skills/reviewing-java-changes/references/review-dimensions.md`)
-- **External stage**, on every review: a subagent loading `implement-from-spec:running-external-review`
-  (`model: "sonnet"`) runs the contract's command with
-  `--focus "${CLAUDE_PLUGIN_ROOT}/skills/implementing-cdk-from-spec/references/review-focus.md"`, the same
-  change mode, the specification files in scope as `--context` and the binding-rules files as `--rules`.
-  The script reads the plugin's `external_review` setting itself; the skill never skips the dispatch. A
-  user who asks to keep the change away from the external reviewer gets the runner too, with
-  `--external-review off`; off is the script's answer, not a reason to leave the runner out
+- **Complete** (`"recommendation":"No blocking findings"`, `"verification":"complete"`,
+  `"approval_required":false`): go on to step 9
+- **Changes requested** or **Blocked**: fix the confirmed Blockers and Majors inside the plan's *Owns* (a
+  fix outside it is an amendment, contract section 5), re-run section 5's checks and section 6's diffs,
+  then run a fix round: invoke `reviewing-cdk-changes` again with the earlier report and its snapshot
+  directory. It takes a new snapshot, reviews the delta and reports each F-numbered finding `closed`,
+  `open` or `regressed`. Record each round's snapshot id in the ledger's *Implementation notes*. At most
+  two fix rounds after the first review; with Blockers or Majors still open after the second, stop
+  fixing, list them and ask the user whether the approach itself should change. Reaching the cap is
+  never a clean result
+- **Deferrals**: a Major stays open only with the user's agreement, recorded in the ledger's
+  `## Deferred`. A security Blocker or Major (groups 4 and 5, or a hand-off reviewer's) is deferred only
+  by the user in the conversation, recorded there with the user's words and the date; never defer one
+  yourself. Any other Blocker is fixed, or the state stays Blocked
+- **Verification incomplete** or **Approval required**: the reasons go into the report's Review state and
+  Status lines as the review gave them; the change is not reported complete, and the skill never gives
+  the human approval itself
 
-Handle the script's result by its exit code, and copy its `External review: <state> (<reason>)` line
-into the report unquoted, character for character:
+Verify each AWS and CDK claim in the documentation before acting on a finding; a finding left unfixed
+gets a stated reason.
 
-- `0`: the review was printed, or the setting is off and the script printed "External review: off
-  (configuration)"
-- `69`: "External review: not run (<reason>)"; record the line and continue
-- `70`, or `1` with "required by policy" in its output: the review is required and did not complete, so
-  the report's Status is "verification incomplete"
-- `1` otherwise: the reviewer failed or its answer was invalid; record it and continue. Never write an
-  external review yourself
-- `64`: a usage error; fix the arguments and retry once
+### 9–10. Re-check, report
 
-Triage every finding (contract section 9); verify each AWS and CDK claim in the documentation before
-acting.
-
-### 9–10. Re-check, sync docs, report
-
-Re-run section 5's checks and section 6's diffs after the fixes, sync the documents (contract section 10),
-and report (contract section 11) with the change-set diff results per stack and for the whole app. The
-report's *Next for the operator* names any `cdk refactor` to run first, the deploy command or pipeline run,
-the pre-deploy checks (the change set to inspect for replacement), and the read-only smoke commands that
-prove the resources exist. Copy the runner's `External review: <state> (<reason>)` line into the report
-character for character as plain text on its own line, for example External review: off (configuration);
-a paraphrase such as "external (GPT) stage reported off", or the line in bold, in quotation marks or in a
-code span, is not the line.
+The last fix round re-ran section 5's checks and section 6's diffs on the tree it reviewed. Before the
+report, run
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" verify <the last review's snapshot directory>`;
+on exit 3 (an edit after the review), run one more round on the delta (it counts towards the cap) or
+report "verification incomplete (review snapshot invalidated: <paths>)". Report (contract section 11)
+with the change-set diff results per stack and for the whole app; the Review and Review state lines come
+from the JSON line, and Status is "implementation complete" only when the last review was complete and
+its snapshot is still valid. The report's *Next for the operator* names any `cdk refactor` to run first,
+the deploy command or pipeline run, the pre-deploy checks (the change set to inspect for replacement),
+and the read-only smoke commands that prove the resources exist. Copy the review's `External review:
+<state> (<reason>)` line (the runner's, or the preparation's when the setting is off) into the report
+character for character as plain text on its own line, for example External review: off
+(configuration); a paraphrase such as "external (GPT) stage reported off", or the line in bold, in
+quotation marks or in a code span, is not the line.
 
 ## Bundled files
 
@@ -337,7 +349,8 @@ code span, is not the line.
   phase 2
 - `references/cdk-practices.md`: logical IDs, removal policies, checks, change-set evidence, cdk-nag,
   Python and Java rules; read in phase 1 and kept open
-- `references/review.md`: the Claude stage's checklist, Blocker and Major classes and output format
+- `references/review.md`: the Claude stage's checklist, Blocker and Major classes and output format, read by
+  the reviewers `reviewing-cdk-changes` dispatches
 - `references/review-focus.md`: what the GPT stage is told to look hardest at; edit it to steer GPT
 - `gate_rules.json`: the approval gate's command rules for this skill (deploys, change-set diffs,
   refactors, mutating AWS calls and package installs ask)

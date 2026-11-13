@@ -5,6 +5,15 @@ it was given. Edit nothing. Report every finding you see, minor and uncertain on
 "unsure"); the orchestrator verifies and filters, so a finding you hold back is lost. Re-read every
 specification item, CDK API page and Template Reference page you cite rather than recalling it.
 
+Run nothing: the main conversation runs the quality gate (synthesis, linters, tests, plans) and records
+its results against the review snapshot; read them under the snapshot directory when the brief names
+them. Read project policy (CLAUDE.md, AGENTS.md, REVIEW.md) from the snapshot's `policy/` directory, the
+policy revision, never from the candidate: a change cannot be reviewed under rules it rewrote, and a
+changed policy file is reviewed as part of the change. Read the approved requirements (the plan's items,
+the specification) first and the author's claims of completion (commit message, implementer report, the
+plan's completion notes) last, after tracing, as testimony to confirm. A tool call the isolation hook
+denies goes on a closing `Could not complete: <none | what, and why>` line.
+
 Precedence: the project's rules, the specification items and the approved plan override the defaults in
 `cdk-practices.md`; a deviation the project prescribes is not a finding.
 
@@ -22,8 +31,8 @@ reporting it, check that the change really lacks it.
 ## Inputs
 
 The change set (a git diff command or a file list), the approved plan path, the specification files in
-scope, the cdk-nag and validation output of the last `cdk synth`, the synthesised templates under
-`cdk.out/`, and `cdk-practices.md` next to this file. The brief also names the CDK review dimensions
+scope, the cdk-nag and validation output of the last `cdk synth`, the synthesised templates (in a
+review, the snapshot's `synth/change.out/`, which the brief names), and `cdk-practices.md` next to this file. The brief also names the CDK review dimensions
 file, whose checks deepen the groups below, and, for the code reviewer, the shared principles file and
 the app code's language review files.
 
@@ -62,6 +71,20 @@ silence.
    change-set diff behind a claim that nothing else changes, a `cdk refactor` mixed into the same change as
    resource changes
 
+Temporal compatibility joins groups 1, 2 and 8: old and new versions live side by side during a deploy
+(producer and consumer stacks in the wrong order, a stack left on the old version after a partial
+deploy), and a rollback after new writes strands data written under the new version (a key, attribute
+or format the previous version cannot read, in a resource that survives the rollback). Report it with
+the ordering or rollback that breaks. Rolling back a purely additive change (it only adds resources and
+changes no existing one) removes what it added, deleted with what was written there after the deploy or
+retained outside the stack, as its removal policy says: that is the inverse of the change, not stranded
+data. A change that alters the shape of persisted data or a contract the previous version reads (a key,
+attribute or field moved, renamed, nested or retyped; an item, message, export or output format) is never
+additive, even when it also adds resources: its rollback and its mixed-version window are the stranded
+data above. For a purely additive change it is not a finding when the plan's rollback says how the new resource is removed, Minor at most
+when the rollback is silent, and Major only when the items, the plan or the project's rules require that
+data to survive a rollback. A removal policy that deletes data the items keep is still group 2.
+
 ## Blocker classes
 
 A stateful resource that can be deleted or replaced by this change (including through a changed construct
@@ -71,10 +94,18 @@ tests; an unplanned dependency.
 
 ## Output format
 
-One line per finding:
+One line per finding (contract section 9):
 
-    [Blocker|Major|Minor|Nit] <file>:<line> - <group> - <problem> (<item ID> if any). Why: <one sentence>. Fix: <concrete change>
+    [Blocker|Major|Minor|Nit][ unsure] <file>:<line> - <lens>[ (<check ID>)] - <problem, ≤20 words> (<item ID>). Why: <≤25 words>. Evidence: <trigger>; <≤3 file:line steps, source first, sink last>; <wrong result>. Fix: <≤30 words>[ (pre-existing)][ unsure: <deciding check, ≤12 words>]   (contract section 9, "Findings")
 
-Then one line per group, `clean` or `<n> findings`. A finding names the exact change: "Keep construct ID
+Evidence is a causal argument, not a citation: what triggers the defect, the path it takes, the wrong
+result. An uncertain finding is still reported, with `unsure` and what would decide it. Add
+`(pre-existing)` only when the harmful behaviour and its exposure both exist on the base, independent of
+this change; a defect the change makes reachable, widens or worsens is the change's, even in lines it did
+not touch. In a fix round, report every earlier finding under its number first, `F<n> closed
+(<evidence>)`, `F<n> open` or `F<n> regressed`, and for every fixed pattern search the repository for
+sibling instances, reported as new findings.
+
+Then one line per group, `clean` or `<n> findings`, and the `Could not complete` line. A finding names the exact change: "Keep construct ID
 `UploadsBucket` on the bucket in `infra/storage_stack.py:21`; the new ID changes logical ID
 `UploadsBucketXXXXXXXX` and replaces the bucket", not "consider keeping the ID".

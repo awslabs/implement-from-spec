@@ -3,6 +3,150 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
+## Unreleased
+
+### Changed
+
+- Eval speed and review cost (2026-10-27, analysis in the maintainer's timing report): one PreToolUse
+  dispatcher hook, `core/gate/ifs-pretool.py`, in place of the four PreToolUse registrations of 0.1.0. It is
+  registered on every tool (matcher `*`, `onFailure: block`), Read, Grep and Glob included, because the
+  reviewer isolation needs every tool call; calls no check can decide load nothing beyond the dispatcher;
+  Python review lenses on Opus (the critical lens 357 s to 129 s at the same cost); lane discipline
+  and a capped finding line, with findings written once in findings.md; CDK reviewers dispatched in
+  parallel with `cdk synth`; fix rounds re-dispatch only the lens that owns a finding; a local eval
+  runner with one longest-first queue
+- Review model (decided 2026-10-26, `docs/design-notes.md`): every review is bound to a snapshot of the
+  change (`core/scripts/review-snapshot.py`), classified by an escalation-only risk script
+  (`core/scripts/review-risk.py`) that adds Opus lenses, a human-approval requirement and a mandatory
+  security hand-off, and read under the review policy (`CLAUDE.md`, `AGENTS.md`, `REVIEW.md`) of the base
+  revision, never the change's own. Reviewer subagents are held read-only by a new hook,
+  `core/gate/review-isolation.py`. Findings carry an Evidence clause and a causal pre-existing
+  attribution; the report opens with a fail-closed state block (recommendation, verification, approval
+  required, risk, rollback) and a JSON state line the implementing skills read; fixes are re-reviewed on
+  the snapshot delta, at most two fix rounds. Ten new review eval cases, tagged `review-model`
+
+### Security
+
+Fixes from the triage of pull request 1, from three independent reviews of those fixes and from the pull
+request's code review (two rounds), in the unreleased changes above (2026-11-12):
+
+- The PreToolUse dispatcher's failure policy is fail-closed for every tool, by decision: when `python3`
+  cannot run, every tool call of a session with the plugin is blocked, reads included, until it is fixed
+  or the plugin is turned off; documented in the threat model (TM-47) and tested
+- The dispatcher no longer keeps its own copy of the gate's and the isolation hook's state locations: all
+  three use `core/gate/ifs_paths.py`, and a paths module that cannot load fails closed
+- `SPEC_GATE_STATE_DIR` is removed: it took precedence over the plugin data directory, a repository's settings
+  `env` block could set it, and moving the gate's state between two calls made an activated session read as
+  ungated. Starting a gated skill now also writes an activation record under
+  `~/.local/state/implement-from-spec/active/`; while it exists, a gate state that is missing, unreadable or
+  somewhere else denies every write and shell command of the session (start a new session to continue), and
+  a registered reviewer whose registration is lost is denied every call (TM-61). A state file or record that
+  cannot be read or even checked (mode 000, a directory above it the hooks may not search, a dangling symlink
+  in its place) counts as present: the session's guards and the reviewer's isolation then deny with a message
+  naming the directories, where an unreadable state and record used to read as "no state" and lifted both
+  (TM-55, TM-61). While the plugin's state directories cannot be reached, this denies the writes and shell
+  commands of every session and the calls of every subagent. The hooks' failure handlers build their messages
+  best-effort, so a deny is printed even when the error came from `core/gate/ifs_paths.py` itself: until the
+  fourth fix round the gate's guard handler and the isolation hook's (naming the activation records, the
+  state directory, or checking a reviewer's raw records) could raise there, and the deny was lost to a
+  traceback
+- Reviewer isolation is an allowlist: a registered reviewer may use Read, Grep, Glob, read-only Bash and a
+  few bookkeeping tools; every other tool is denied, a new Claude Code tool included
+- A reviewer's `grep` and `rg` take only an allowlist of read-only options, each matched by its full name, with
+  `--opt=value` and `--opt value` both checked; an abbreviation, an unlisted option and a value given to an
+  option that takes none are denied. Until the code review, `rg` forbade only `--pre` and `--pre-glob`:
+  `rg --hostname-bin=<program>` ran a program (a script in the change under review, an instruction planted in
+  it could ask for), and its spaced form was taken for the pattern and never checked; and BSD grep took
+  `--regex=` for `--regexp=`, so the hook took the next word, a file outside the allowed roots, for the
+  pattern. Options that run or load something (`rg --pre`, `--hostname-bin`, `--hyperlink-format`, `-z`,
+  `--ignore-file`, `--type-add`; ugrep's `--filter`, `--pager`, `--view`, `--config`, `--exclude-from`), that
+  follow symbolic links out of the paths given (`grep -R`, `-S`, `rg -L`) or whose value kind differs between
+  BSD grep, GNU grep and ugrep (`-O`, `-J`, `-M`) are not on it (TM-55)
+- A reviewer's `sort`, `wc`, `file` and `diff` take an allowlist of read-only options too, and `find` an
+  allowlist of tests and actions. Until the seventh round, `sort --files0-from=<list>`, `wc --files0-from`,
+  `file -f <list>` and GNU and bfs `find -files0-from <list>` read the files or starting points that a list
+  committed in the change names, outside the allowed roots, while only the list itself was checked; `find -L`,
+  `-H` and `-follow` and `ls -L` followed a committed symbolic link out of the roots, and bfs `find -rm`
+  (Claude Code's `find`) deleted. `diff` of two directories, or of a directory and an absent path or a
+  dangling symbolic link (which `-N` and `-P` turn into an empty directory), now needs `--no-dereference`, since GNU and Apple's diff follow
+  a committed link inside them with or without `-r`, and for a directory and a file the file diff reads in
+  the directory is checked like any path (TM-55)
+- One reading of the Skill tool's `skill` input for the gate, the dispatcher and the reviewer isolation
+  (`ifs_paths.skill_parts`): the surrounding whitespace and a leading `/` are dropped, as Claude Code's Skill
+  tool drops them. The isolation hook already did; the gate did not, so `/implementing-python-from-spec` or
+  a padded name could start a gated skill with no activation and no gate (TM-08)
+- The CDK, CloudFormation and Terraform reviews no longer write into the review snapshot directory: in an
+  implementing skill's gated session the gate denies every tool-call write there, so `cdk synth --output
+  <DIR>/synth/change.out`, the gate outputs redirected to `<DIR>/gates/` and the change set or plan output
+  copied to `<DIR>/input/` were denied, and the IaC security reviewer of an implementing CDK review got no
+  synthesised template. The command now writes to a scratch directory, and the new
+  `review-snapshot.py attach` copies the result in: write-once, only to `synth/<name>.out`, `gates/<name>.txt`
+  or `input/<name>` (never `input/change.diff`) of a snapshot directly under the default snapshot roots that
+  still verifies, never through a symlink on either side, from no source that is or holds a credential path
+  (every entry of a directory checked), without CDK's `asset.<sha256>`
+  staging, within 256 MiB and 20,000 files. Reviewers cannot run it, and the gate still denies the direct
+  writes. A new eval case, `cloudformation-review-gated-session`, runs the review step of
+  `implementing-cloudformation-from-spec` in the session its command gates (TM-58)
+- In a gated session the gate also denies tool writes, deletions and renames of the other hooks' state: the
+  reviewer registrations, the activation records, the review snapshots and the timing log; a shell command
+  may not name the registrations or the records
+- No bytecode cache under the plugin data directory: the dispatcher's checks and `ifs_paths.py` are compiled
+  from source and the dispatcher writes no `.pyc`, so a file planted in the former cache directory can no
+  longer run inside the hooks. The modules a check loads itself (`depslib.py` and `install.py` on the setup
+  ask path) and the standard library still use Python's normal loader (TM-40). The price, measured on
+  macOS's built-in Python 3.9 (2026-11-12, median of 15 calls, wall time with interpreter start): a gated
+  Bash call 98 to 148 ms, a gated Write 98 to 172 ms, a registered reviewer's Read 86 to 162 ms; a call no
+  check can decide is unchanged at 58 ms
+- The opt-in hook timing log (`IFS_HOOK_TIMING_LOG`, `EVAL_IFS_HOOK_TIMING_LOG`) is written only in
+  `~/.local/state/implement-from-spec/hook-timing/`, reached from `HOME` through directory descriptors with
+  no symlink followed, and only to a private (0600) regular file of the user with one link that the record
+  keeps within 64 MiB (a soft cap: hooks writing at the same moment can pass it by one record each), opened
+  non-blocking; anything else is skipped. A repository's settings `env` block can still switch it on,
+  which writes timestamps, tool names and ids to that directory (TM-57)
+- Terraform review: `terraform validate` in a scratch copy runs `init` without a question only when the root
+  has no `module` block and no JSON configuration at all (no `.tf.json` or `.tftest.json` file in the root or
+  a directory directly below it, whatever it holds, since a JSON key can be escaped past a text search; no
+  `.tf` or `.tftest.hcl` file there holds the word `module`; no symlink; no error from the search, whose
+  errors are no longer discarded) and a local provider mirror holds the providers; otherwise the user is
+  asked before `init`. The search's `grep` exits 1 when nothing matches, and `find` with it, so the text now
+  reads "no module" from no output at all with exit 0 or 1, and asks on any path, any error message or any
+  other exit; until the fourth fix round it asked on every non-zero exit, so every module-free root asked.
+  This is skill text the orchestrator follows; nothing enforces it (TM-59)
+- `spec-external-review.py --policy-dir` accepts only the `policy/` directory of a snapshot of the change under
+  review (`<snapshot home>/<id12>/policy`, `<id12>` in the id's exact form, its manifest naming `--repo`, its
+  policy at its base, the same mode and commits as the change arguments, and every policy file that applies
+  to a changed path recorded), with no symlink from the state directory down (each component opened with
+  `O_NOFOLLOW` through the one above it); each policy file is read once and the bytes sent are the bytes
+  checked against the manifest's sha256, and without `--rules` every recorded file must be there and readable;
+  a directory inside the repository is no longer accepted. A `--files` review (a fix round's delta), which
+  names no base, also needs `--snapshot-id`, the round's snapshot's full id, equal to its manifest's, and the
+  snapshot's base must be an ancestor of `HEAD`; before, it was bound by coverage only, so an older snapshot
+  of another base was accepted. `review-prepare.py`'s runner command carries the id, and the reviewing
+  skills' fix rounds keep it (TM-15)
+- Review records: a record whose `.sha256` sidecar is missing counts as changed outside its writer, so
+  deleting `risk.json.sha256` and editing `risk.json` invalidates the snapshot and keeps human approval
+  required. A record deleted together with its sidecar still reads as never recorded (TM-58)
+- Review policy copies: `verify`, `state` and a reused snapshot check `policy/` against the manifest (every
+  recorded file present with its sha256, nothing else there). Until the seventh round nothing but the
+  external stage checked them, so a `policy/REVIEW.md` edited after the snapshot steered the Claude reviewers
+  while `state` still printed valid; now the snapshot reads invalidated, and `create` refuses to reuse such a
+  directory (TM-58)
+- `review-snapshot.py state` refuses (exit 64) "No blocking findings" with an open Blocker or Major and
+  "Changes requested" with an open Blocker: such a block read as a complete review to the implementing skills
+- `review-prepare.py` prints repository-derived names with control characters, newlines and bidi controls
+  escaped, so a file name cannot add or restyle an output line, and writes them escaped into the reviewer
+  briefs too, where a model would read a forged heading or rule as part of the brief; when such a name would
+  have to go into the external runner's command, the external stage reports `not run` instead (TM-62)
+
+### Fixed
+
+- A plan approved in an earlier session: the approval message now opens by saying why that approval does
+  not unlock this session (approval is per session and bound to the plan's exact content), in all five
+  implementing skills
+- CDK: a request that renames or moves an existing resource gets an approval message that opens by
+  saying a plain `cdk deploy` would replace it (both logical IDs named), then offers the safe paths (keep
+  the construct ID, keep the logical ID, or a separate `cdk refactor` with its `--dry-run` mapping)
+
 ## 0.1.0 — 2026-11-25
 
 ### Added

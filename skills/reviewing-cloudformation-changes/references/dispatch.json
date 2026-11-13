@@ -1,0 +1,44 @@
+{
+  "schema": "ifs-review-dispatch/1",
+  "reviewers": [
+    {
+      "name": "code-reviewer",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/reviewer-briefs.md", "section": "Every reviewer"},
+        {"file": "references/reviewer-briefs.md", "section": "Code reviewer"},
+        {"file": "references/standalone-review.md", "section": "3. Check groups without a plan or specification"}
+      ],
+      "assign": "groups 1 to 3 and 6 to 8 of review.md"
+    },
+    {
+      "name": "iac-security-reviewer",
+      "skill": "iac-security-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/reviewer-briefs.md", "section": "Every reviewer"},
+        {"file": "references/reviewer-briefs.md", "section": "IaC security reviewer"},
+        {"file": "references/standalone-review.md", "section": "3. Check groups without a plan or specification"}
+      ],
+      "assign": "groups 4 (IAM) and 5 (Secrets and data exposure) of review.md"
+    },
+    {
+      "name": "reviewing-terraform-security",
+      "skill": "reviewing-terraform-security",
+      "model": "opus",
+      "when": "security_handoff",
+      "brief": [
+        {"file": "references/reviewer-briefs.md", "section": "Every reviewer"},
+        {"file": "references/reviewer-briefs.md", "section": "Terraform security hand-off"},
+        {"file": "references/standalone-review.md", "section": "3. Check groups without a plan or specification"}
+      ],
+      "assign": "groups 3 (IAM) and 4 (Exposure and data protection) of the Terraform review.md, on the paths the hand-off reason names"
+    }
+  ],
+  "runner": {
+    "skill": "running-external-review",
+    "model": "sonnet",
+    "focus": "../implementing-cloudformation-from-spec/references/review-focus.md"
+  }
+}

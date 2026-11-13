@@ -6,26 +6,37 @@
 Owner: the implement-from-spec plugin; this file lives in the plugin's core/gate/ directory. Standard
 library only (Python 3.9+, the python3 macOS ships).
 
-Plugin mode (--skills-dir), the plugin's mode. The plugin's hooks/hooks.json registers the gate once, in
-every session. It is inert, and writes no state, until the session starts one of the plugin's gated
-skills (a skill whose directory holds a gate_rules.json), through the Skill tool (`activate`) or the
-user's /<plugin>:<skill> command (`record`). Starting the skill registers the repository the session is
-in; writing an `ai-planning/*.plan` in another repository registers that one too. Only registered
-repositories are gated; every other repository stays writable. The rules are the union of the gated
+Plugin mode (--skills-dir), the plugin's mode. The plugin's hooks/hooks.json registers the gate once, in every
+session: record (UserPromptSubmit) and plan-changed (PostToolUse) as commands of this file, and activate,
+guard-edit and guard-bash through the plugin's one PreToolUse hook, core/gate/ifs-pretool.py, which runs them
+in-process (run_event) with the same --skills-dir. It is inert, and writes no state, until the session starts
+one of the plugin's gated skills (a skill whose directory holds a gate_rules.json), through the Skill tool
+(`activate`) or the user's /<plugin>:<skill> command (`record`). Starting the skill registers the repository
+the session is in; writing an `ai-planning/*.plan` in another repository registers that one too. Only
+registered repositories are gated; every other repository stays writable. The rules are the union of the gated
 skills' rules files. The state belongs to the session and lives in the plugin's data directory
-(CLAUDE_PLUGIN_DATA). Plugin hooks also see the tool calls of subagents (their payloads carry
-`agent_id`), and those are gated exactly like the main conversation.
+(CLAUDE_PLUGIN_DATA). Plugin hooks also see the tool calls of subagents (their payloads carry `agent_id`), and
+those are gated exactly like the main conversation.
 
 What it gates. Until the user approves a registered project's plan, writes inside the project outside
-`writable_before_approval` (ai-planning/ and .claude/) are denied, through Write/Edit/NotebookEdit and
-through the shell. Paths are resolved through `..` and symlinks first. Inside .claude/, the files that
-could switch the gate off (`.claude/settings.json`, `.claude/settings.local.json`, anything under
-`.claude/hooks/`, and .claude/ itself) are denied until approval and ask after it, also where a symlink
-makes them live. The gate's own state, its directory (core/gate/), the plugin's hooks/, the skills' rules and
-the whole installed plugin tree (the plugin root, or its core/, hooks/, bin/, skills/, agents/ and
-.claude-plugin/ when it holds no manifest; in plugin mode also the plugin root above --skills-dir) are never
-writable while the gate is registered. An edit of an approved plan revokes the approval when the
-edit starts (PreToolUse), not only when it is recorded.
+`writable_before_approval` (ai-planning/ and .claude/) are denied, through Write/Edit/NotebookEdit and through
+the shell. Paths are resolved through `..` and symlinks first. Inside .claude/, the files that could switch
+the gate off (`.claude/settings.json`, `.claude/settings.local.json`, anything under `.claude/hooks/`, and
+.claude/ itself) are denied until approval and ask after it, also where a symlink makes them live. The gate's
+own state, its directory (core/gate/), the plugin's hooks/, the skills' rules and the whole installed plugin
+tree (the plugin root, or its core/, hooks/, bin/, skills/, agents/ and .claude-plugin/ when it holds no
+manifest; in plugin mode also the plugin root above --skills-dir) are never writable while the gate is
+registered, and neither is the other hooks' state (core/gate/ifs_paths.py state_write_roots: the reviewer
+registrations, the activation records, the review snapshots and the timing log), so a tool call cannot lift a
+reviewer's isolation or rewrite a snapshot's records; a shell command may not even name the registrations or
+the records. An edit of an approved plan revokes the approval when the edit starts (PreToolUse), not only when
+it is recorded.
+
+Activation records (plugin mode). Starting a gated skill also writes
+~/.local/state/implement-from-spec/active/gate-<session>.json, which names the session's state file and is
+located from HOME alone. While it exists, a state file that is missing, unreadable or not the one it names
+(the environment moved CLAUDE_PLUGIN_DATA or XDG_STATE_HOME between two calls) never makes the session
+ungated: every guard denies, a further activation is refused, and the user starts a new session.
 
 Skill mode (--rules FILE), the alternative registration. A skill's `hooks` frontmatter registers the
 gate with that skill's rules file. A project repository is then the nearest enclosing git work tree of a
@@ -72,10 +83,11 @@ the shell lexer cannot parse (an unterminated quote) count as a write at the wor
 repository holding it, so they are denied inside an unapproved project. Before approval, `ln -s` to a path
 that may not be written is refused, and a write under a path an earlier segment of the same command copied,
 moved, linked or extracted into the project is denied (the analysis sees the file system before the command
-runs). A command that runs the gate's own script (under any spelling or symlink), names its state directory
-or sets the variable that locates it is denied. It is a guard against mistakes, not a sandbox: a script
-file run by an interpreter is not inspected, inline code that writes through an API the gate does not know
-is not seen, a hard link made outside the project before the session is not detected, and a determined
+runs). A command that runs the gate's own script or the PreToolUse dispatcher (under any spelling or
+symlink), names its state directory, or sets the variable that locates it is denied. It is a guard against
+mistakes, not a sandbox: a script file run by an interpreter is not inspected, inline code that writes
+through an API the gate does not know is not seen, a hard link made outside the project before the session
+is not detected, and a determined
 process running as the same user can still reach the state; the approval comes from the user's reply,
 recorded only by the UserPromptSubmit hook.
 
@@ -97,9 +109,9 @@ Subcommands, one per hook event:
   plan-changed  PostToolUse       a Write/Edit of <repo>/ai-planning/*.plan
 
 Failure policy. A guard that fails (a malformed payload, a hook error, a rules file that is not of the
-documented shape in skill mode) denies in a gated session; in plugin mode a session that never started a
-gated skill is never blocked. When the payload is not valid JSON, its session is read from the raw text so
-a gated session still fails closed. Starting a gated skill when the gate cannot record the session (its
+documented shape in skill mode, a lost state of an activated session) denies in a gated session; in plugin
+mode a session that never started a gated skill is never blocked. When the payload is not valid JSON, its
+session is read from the raw text so a gated session still fails closed. Starting a gated skill when the gate cannot record the session (its
 state directory unwritable) is refused: the Skill call is denied, the /<plugin>:<skill> prompt blocked.
 In plugin mode a skill's unreadable or malformed gate_rules.json (or one that has gone after its skill
 started) keeps the default writable prefixes, and every shell command in a gated session asks until it is
@@ -108,7 +120,7 @@ fixed. Every decision is JSON on stdout with exit
 from a guard. The paths and commands a reason or notice quotes lose their control characters and bidi
 controls first (clean), so text the model supplied cannot start a new line or restyle the text.
 
-Usage (what Claude Code does on a Write in plugin mode):
+Usage (the guard-edit event of a Write in plugin mode, by hand; Claude Code runs it through ifs-pretool.py):
   echo '{"session_id":"s1","cwd":"/repo","tool_name":"Write","tool_input":{"file_path":"/repo/src/a.py"}}' \
     | python3 -I <plugin-root>/core/gate/spec-approval-gate.py guard-edit --skills-dir <plugin-root>/skills
 The unit tests, which execute every gate_rules.json example, are kept in the development repository.
@@ -116,6 +128,9 @@ The unit tests, which execute every gate_rules.json example, are kept in the dev
 
 import os
 import sys
+from time import monotonic as _monotonic  # first: the opt-in timing log (run_timed) counts from here; built in
+
+_HOOK_T0 = _monotonic()
 
 # The gate's own directory is not an import location: Python puts a script's directory first on sys.path, so a
 # json.py written next to this file would run inside every hook call. os and sys are loaded at interpreter
@@ -124,18 +139,44 @@ import sys
 if sys.path and os.path.realpath(sys.path[0] or os.getcwd()) == os.path.dirname(os.path.realpath(__file__)):
     del sys.path[0]
 
-import argparse  # noqa: E402 - after the sys.path guard above
-import contextlib  # noqa: E402 - after the sys.path guard above
+import contextlib  # noqa: E402 - after the sys.path guard above; argparse and tempfile load where used
 import fcntl
 import glob
 import hashlib
 import json
 import re
 import shlex
-import tempfile
 import time
 
 HOOK_FILE = os.path.realpath(__file__)
+
+
+def load_paths():
+    """core/gate/ifs_paths.py, the state locations every check shares, loaded by path from the directory this
+    file runs from, compiled from source, once per process. Identical in ifs-pretool.py, spec-approval-gate.py
+    and review-isolation.py, so in-process the three share one module object."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ifs_paths.py")
+    mod = sys.modules.get("ifs_gate_paths")
+    if mod is not None and getattr(mod, "__file__", None) == path:
+        return mod
+    try:
+        import _frozen_importlib as bootstrap
+        import _frozen_importlib_external as external
+    except ImportError:
+        import importlib._bootstrap as bootstrap
+        import importlib._bootstrap_external as external
+
+    class SourceOnly(external.SourceFileLoader):
+        def get_code(self, fullname):
+            return self.source_to_code(self.get_data(self.path), self.path)
+
+    spec = bootstrap.spec_from_loader("ifs_gate_paths", SourceOnly("ifs_gate_paths", path))
+    mod = bootstrap.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["ifs_gate_paths"] = mod
+    return mod
+
+
 # Copies of this hook registered by several skills receive one reply within milliseconds of each other;
 # the same text arriving later is a new reply (re-approving an amended plan).
 DUPLICATE_WINDOW_S = 10
@@ -151,20 +192,25 @@ EXEMPT_ROOTS = {os.path.realpath(os.path.expanduser(p)) for p in
                 if p}
 # Session state lives outside every project, so the gate never dirties a work tree: in the plugin's
 # data directory, which Claude Code exports to hook commands as CLAUDE_PLUGIN_DATA and keeps across plugin
-# updates; outside Claude Code, in the XDG state directory. SPEC_GATE_STATE_DIR overrides both (the
-# self-test does).
-STATE_DIR = os.path.realpath(os.environ.get("SPEC_GATE_STATE_DIR") or os.path.join(
-    os.environ.get("CLAUDE_PLUGIN_DATA") or os.environ.get("XDG_STATE_HOME")
-    or os.path.expanduser("~/.local/state"), "spec-approval-gate"))
+# updates; outside Claude Code, in the XDG state directory. No other variable moves it (a repository's settings
+# env block can set neither: core/gate/ifs_paths.py). ifs_paths.py computes it, for this file and for the
+# PreToolUse dispatcher alike. In plugin mode, starting a gated skill also writes an activation record
+# (ifs_paths.gate_marker_file, from HOME alone) naming this state file: when the record exists and the state
+# it names is missing, unreadable or elsewhere, the session's guards deny (state_txn raises StateLost).
+STATE_DIR = load_paths().gate_state_dir()
 # Setup's state (core/deps/depslib.py data_dir, default location): the saved dry runs the setup ask hook reads
 # when it describes a plan in the permission prompt, the journal and the record of what setup installed. Setup
 # writes it from its own Python process, never through a tool call the gate sees.
 SETUP_STATE_DIR = os.path.realpath(os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "implement-from-spec", "setup"))
 # Never writable while the gate is registered: its state, its code (the whole directory it runs from, where a
-# file could shadow a module it imports), the plugin's hook registrations, the skills' rule files, and setup's
-# state (G6).
+# file could shadow a module it imports, ifs_paths.py included), the plugin's hook registrations, the skills'
+# rule files and setup's state (G6); and the other hooks' state (ifs_paths.state_write_roots: the isolation
+# hook's reviewer registrations, the activation records, the review snapshots and the timing log), so a tool
+# call cannot remove a reviewer's registration or rewrite a snapshot's records and their hashes.
 GATE_DIR = os.path.dirname(HOOK_FILE)
+STATE_WRITE_ROOTS = load_paths().state_write_roots()
+STATE_NAME_ROOTS = load_paths().state_name_roots()
 PLUGIN_HOOKS_DIR = os.path.join(PLUGIN_ROOT, "hooks")
 PROTECTED_RE = re.compile(r"^(%s|%s|%s|%s)(/|$)|^%s/[^/]+/gate_rules\.json$"
                           % (re.escape(STATE_DIR), re.escape(GATE_DIR), re.escape(PLUGIN_HOOKS_DIR),
@@ -176,6 +222,10 @@ PROTECTED_RE = re.compile(r"^(%s|%s|%s|%s)(/|$)|^%s/[^/]+/gate_rules\.json$"
 PLUGIN_MANIFEST = os.path.join(".claude-plugin", "plugin.json")
 PLUGIN_DIRS = ("core", "hooks", "bin", "skills", "agents", ".claude-plugin")
 HOOK_BASENAME = os.path.basename(HOOK_FILE)
+# The PreToolUse dispatcher runs this file's activate, guard-edit and guard-bash events in-process, so running it
+# counts as running the gate.
+DISPATCHER_FILE = os.path.join(os.path.dirname(HOOK_FILE), "ifs-pretool.py")
+DISPATCHER_BASENAME = os.path.basename(DISPATCHER_FILE)
 # Setting a variable that locates the gate's state (so a copy of the script would write the real state).
 STATE_ENV_RE = re.compile(r"(?<![\w$])(CLAUDE_PLUGIN_DATA|SPEC_GATE_STATE_DIR)['\"\]]*\s*=")
 # The user's Claude configuration: its settings files and hooks can switch every hook off (Claude Code's file
@@ -356,7 +406,7 @@ def emit_context(event, text):
 # ------------------------------------------------------------------------------------------- state
 
 def session_key(data):
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(data.get("session_id") or "no-session"))
+    return load_paths().session_key(data.get("session_id"))
 
 
 @contextlib.contextmanager
@@ -366,14 +416,19 @@ def state_txn(data, write):
     Several skills may register this hook, so several copies run per event: the lock makes each
     read-modify-write one transaction instead of a lost update."""
     # Owner-only: the directory 0700 and the lock files 0600 (state files are 0600 through mkstemp).
-    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     path = os.path.join(STATE_DIR, f"{session_key(data)}.json")
+    marker_state = recorded_state(data) if PLUGIN_MODE["on"] else None
+    if marker_state is not None and marker_state != path:
+        raise lost(data, marker_state, path)  # the environment moved the state since activation
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     with os.fdopen(os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o600), "r+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             with open(path, encoding="utf-8") as fh:
                 state = json.load(fh)
         except FileNotFoundError:
+            if marker_state is not None:
+                raise lost(data, marker_state, path)  # deleted since activation: never start afresh, ungated
             state = {}
         state.setdefault("seq", 0)
         state.setdefault("plans", {})       # abs plan path -> {"repo", "seq", "sha256"}
@@ -383,6 +438,7 @@ def state_txn(data, write):
         state["handled"] = [h for h in state["handled"] if isinstance(h, list) and len(h) == 2]
         yield state
         if write:
+            import tempfile
             fd, tmp = tempfile.mkstemp(dir=STATE_DIR, prefix=".state-")
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(state, fh, indent=1)
@@ -390,8 +446,62 @@ def state_txn(data, write):
 
 
 def session_active(data):
-    """Plugin mode: whether this session has started a gated skill (its state file exists)."""
-    return os.path.exists(os.path.join(STATE_DIR, f"{session_key(data)}.json"))
+    """Plugin mode: whether this session has started a gated skill (its state file or, in plugin mode, its
+    activation record exists). A file that cannot be checked (EACCES on a directory above it, ELOOP) counts as
+    existing (ifs_paths.may_exist), so an unreachable state is guarded and denied, never taken for none."""
+    paths = load_paths()
+    return paths.may_exist(os.path.join(STATE_DIR, f"{session_key(data)}.json")) or (
+        PLUGIN_MODE["on"] and paths.may_exist(paths.gate_marker_file(data.get("session_id"))))
+
+
+class StateLost(Exception):
+    """An activated session's gate state is missing, unreadable or not where its activation record says."""
+
+
+def recorded_state(data):
+    """Plugin mode: the state file this session's activation record names, or None when there is no record.
+    Raises StateLost when the record cannot be read."""
+    marker = load_paths().gate_marker_file(data.get("session_id"))
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except FileNotFoundError:
+        if load_paths().may_exist(marker):  # a dangling symlink in its place: not "no record"
+            raise StateLost(f"the activation record {marker} cannot be read (not a regular file)")
+        return None
+    except (OSError, ValueError) as exc:
+        raise StateLost(f"the activation record {marker} cannot be read ({type(exc).__name__})")
+    if not isinstance(record, dict) or not isinstance(record.get("state"), str):
+        raise StateLost(f"the activation record {marker} is not of the gate's shape")
+    return record["state"]
+
+
+def lost(data, marker_state, path):
+    marker = load_paths().gate_marker_file(data.get("session_id"))
+    return StateLost(
+        f"this session started a gated skill (activation record {marker}), "
+        f"but its gate state {marker_state} is missing or not the state this call finds ({path}), "
+        "so every write and shell command of the session is denied. Start a new session; the approvals of "
+        "this one cannot be restored")
+
+
+def write_marker(data):
+    """Plugin mode, on activation: the activation record, naming this session's state file. Written atomically,
+    0600 in a 0700 directory; an existing record is kept (it names the first state)."""
+    marker = load_paths().gate_marker_file(data.get("session_id"))
+    try:
+        os.lstat(marker)
+        return  # an existing record is kept
+    except (FileNotFoundError, NotADirectoryError):
+        pass  # any other error (a record that cannot be checked) raises: activation fails, never unrecorded
+    import tempfile
+    directory = os.path.dirname(marker)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".gate-")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"state": os.path.join(STATE_DIR, f"{session_key(data)}.json"),
+                   "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, fh)
+    os.replace(tmp, marker)
 
 
 def sha256(path):
@@ -506,8 +616,8 @@ def plugin_trees():
 
 
 def protected_roots():
-    return [STATE_DIR, GATE_DIR, PLUGIN_HOOKS_DIR, SETUP_STATE_DIR] + plugin_trees() + sorted(glob.glob(os.path.join(
-        SKILLS_ROOT, "*", "gate_rules.json")))
+    return [STATE_DIR, GATE_DIR, PLUGIN_HOOKS_DIR, SETUP_STATE_DIR] + STATE_WRITE_ROOTS + plugin_trees() + \
+        sorted(glob.glob(os.path.join(SKILLS_ROOT, "*", "gate_rules.json")))
 
 
 def gated(abspath, rules, state, explicit=True):
@@ -515,11 +625,13 @@ def gated(abspath, rules, state, explicit=True):
 
     `explicit` is false for the synthetic 'somewhere under the working directory' target of formatters,
     git and inline code: such a target is checked as a location, not as a directory being replaced."""
-    if PROTECTED_RE.search(abspath) or any(under(abspath, tree) for tree in plugin_trees()) or (
+    if PROTECTED_RE.search(abspath) or any(under(abspath, root) for root in plugin_trees() + STATE_WRITE_ROOTS) or (
             PLUGIN_MODE["skills_dir"] and re.match(
                 r"^%s/[^/]+/gate_rules\.json$" % re.escape(PLUGIN_MODE["skills_dir"]), abspath)):
-        return (f"spec-approval-gate (K22): '{abspath}' is the approval gate's own state, code or rules, or a "
-                "file of the installed plugin, which are never written while the gate is registered. Ask the "
+        return (f"spec-approval-gate (K22): '{abspath}' is the approval gate's own state, code or rules, the "
+                "plugin's other hook state (reviewer registrations, review snapshots, activation records, the "
+                "timing log) or a file of the installed plugin, which are never written while the gate is "
+                "registered. Ask the "
                 "user to change it in a session without the implementing skills.")
     if explicit:
         for root in protected_roots():
@@ -630,16 +742,36 @@ def guard_ask(abspath, state):
 
 # -------------------------------------------------------------------------------------- subcommands
 
+def skill_parts(invoked):
+    """(namespace, name) of a Skill call's `skill` input, read by ifs_paths.skill_parts, the reading the dispatcher
+    and the isolation hook share (whitespace and leading "/" dropped). When ifs_paths.py itself cannot load, a
+    reading at least as wide (every Python whitespace character, U+FEFF and "/" stripped from both ends until
+    none is left, then the parts) keeps an ungated skill from being refused for a module only the gated path
+    needs, and still names a gated skill as gated."""
+    try:
+        return load_paths().skill_parts(invoked)
+    except Exception:  # noqa: BLE001 - ifs_paths.py may be what failed
+        text = invoked if isinstance(invoked, str) else ""
+        while True:
+            stripped = text.strip().strip("\ufeff/")
+            if stripped == text:
+                break
+            text = stripped
+        namespace, _, name = text.rpartition(":")
+        return namespace.strip().strip("\ufeff"), name.strip().strip("\ufeff")
+
+
 def cmd_activate(data, rules):
     """Plugin mode, PreToolUse on the Skill tool: starting a gated skill registers the repository."""
-    skill = (data.get("tool_input") or {}).get("skill") or ""
-    activate(data, skill)
+    tool_input = data.get("tool_input")
+    activate(data, tool_input.get("skill") if isinstance(tool_input, dict) else None)
 
 
 def activate(data, invoked):
     """Register the session's current repository when `invoked` names one of the plugin's gated skills
-    (`<plugin>:<skill>`, or the bare skill name). Returns the repository, or None."""
-    namespace, _, name = invoked.rpartition(":")
+    (`<plugin>:<skill>`, or the bare skill name; read by ifs_paths.skill_parts, as the dispatcher and the
+    isolation hook read it, so `/<skill>` and a padded name activate too). Returns the repository, or None."""
+    namespace, name = skill_parts(invoked)
     if name not in PLUGIN_MODE["skills"] or (namespace and namespace != PLUGIN_MODE["name"]):
         return None
     repo = git_tree(resolve(data.get("cwd") or os.getcwd(), os.getcwd()))
@@ -649,6 +781,7 @@ def activate(data, invoked):
             state["active_skills"].append(name)
         if repo and repo not in state["repos"]:
             state["repos"].append(repo)
+    write_marker(data)  # a failure here refuses the skill (run_event): activation is always recorded
     return repo
 
 
@@ -1569,19 +1702,25 @@ def inline_targets(command):
 def touches_gate(command, segments):
     """A denial when the command runs the gate's own entrypoint (which could record a forged approval) or
     names its state directory; else None. The gate's code may still be read (cat, git diff)."""
-    state_dirs = {STATE_DIR, os.path.join(os.environ.get("CLAUDE_PLUGIN_DATA") or "\0", "spec-approval-gate")}
+    data_root = os.environ.get("CLAUDE_PLUGIN_DATA") or "\0"
+    state_dirs = {STATE_DIR, os.path.join(data_root, "spec-approval-gate"),
+                  os.path.join(data_root, "review-isolation")}
+    state_dirs |= set(STATE_NAME_ROOTS)
     texts = [command] + [" ".join(w) for w, _t, _c in segments] + [t for _w, ts, _c in segments for t in ts]
     if any(d in text for d in state_dirs for text in texts) or STATE_ENV_RE.search(command) or any(
             STATE_ENV_RE.search(w) for ws, _t, _c in segments for w in ws):
-        return (f"spec-approval-gate (K22): the command names the gate's state directory ({STATE_DIR}) or sets "
-                "the variable that locates it, which only the gate itself reads and writes.")
-    runners = SHELLS | {"source", ".", "exec", HOOK_BASENAME}
-    named = HOOK_BASENAME in command or HOOK_FILE in command
+        return (f"spec-approval-gate (K22): the command names the gate's state directory ({STATE_DIR}), the "
+                "isolation hook's reviewer registrations or the activation records, or sets the variable that "
+                "locates them, which only the hooks themselves read and write.")
+    runners = SHELLS | {"source", ".", "exec", HOOK_BASENAME, DISPATCHER_BASENAME}
+    names = (HOOK_BASENAME, HOOK_FILE, DISPATCHER_BASENAME, DISPATCHER_FILE)
+    named = any(n in command for n in names)
     for words, _targets, cwd in segments:
         # The words as the shell passes them on (quotes joined, variables expanded), and what each names on
         # disk: spec-approval-''gate.py, "$g-gate.py" and a symlink to the script are all the script.
-        named = named or any(HOOK_BASENAME in w or HOOK_FILE in w or (
-            ("/" in w or w.endswith(".py")) and resolve_shell(w, cwd) == HOOK_FILE) for w in words)
+        named = named or any(any(n in w for n in names) or (
+            ("/" in w or w.endswith(".py")) and resolve_shell(w, cwd) in (HOOK_FILE, DISPATCHER_FILE))
+            for w in words)
     if named:
         for words, _targets, _cwd in segments:
             prog = os.path.basename(words[0]) if words else ""
@@ -2155,10 +2294,47 @@ def starting_gated_skill(event, data):
         invoked = slash.group(1) if slash else ""
     else:
         return ""
-    namespace, _, name = str(invoked or "").rpartition(":")
+    namespace, name = skill_parts(invoked)
     if not name or (namespace and namespace != plugin_name()):
         return ""
-    return name if os.path.isfile(os.path.join(PLUGIN_MODE["skills_dir"], name, "gate_rules.json")) else ""
+    # may_exist: an unreadable rules file still names a gated skill, which then does not start ungated.
+    return name if load_paths().may_exist(os.path.join(PLUGIN_MODE["skills_dir"], name, "gate_rules.json")) else ""
+
+
+def gated_skill_named(event, data):
+    """The fallback of starting_gated_skill when it raised: the name of the skill of this plugin an activate or
+    record event starts, gated or not (whether it is cannot be checked, so it is refused rather than run
+    ungated), or '' for any other event or a name with no skills/<name> entry (lstat, no ifs_paths: an error
+    other than "no such file" counts as one). Reads the payload, plugin.json and that one entry."""
+    try:
+        if not PLUGIN_MODE["on"] or not isinstance(data, dict) or event not in ("activate", "record"):
+            return ""
+        if event == "activate":
+            tool_input = data.get("tool_input")
+            invoked = tool_input.get("skill") if isinstance(tool_input, dict) else ""
+        else:
+            slash = re.match(r"/([\w.:-]+)", str(data.get("prompt") or "").strip())
+            invoked = slash.group(1) if slash else ""
+        namespace, name = skill_parts(invoked)
+        if not name or (namespace and namespace != plugin_name()):
+            return ""
+        try:
+            os.lstat(os.path.join(PLUGIN_MODE["skills_dir"], name))
+        except (FileNotFoundError, NotADirectoryError):
+            return ""
+        except OSError:
+            pass
+        return name
+    except Exception:  # noqa: BLE001 - a fallback never raises
+        return ""
+
+
+def describe(exc):
+    """str(exc), or its type's name when even that raises: an error message never stops a denial."""
+    try:
+        return str(exc)
+    except Exception:  # noqa: BLE001
+        return type(exc).__name__
 
 
 def plugin_name():
@@ -2170,6 +2346,7 @@ def plugin_name():
 
 
 def main(argv):
+    import argparse
     parser = argparse.ArgumentParser(description="K22 spec approval gate (Claude Code hook; reads hook "
                                                  "JSON on stdin).")
     parser.add_argument("event", choices=sorted(COMMANDS))
@@ -2179,33 +2356,49 @@ def main(argv):
     mode.add_argument("--skills-dir", help="plugin mode: the plugin's skills/ directory; every skill there "
                                            "with a gate_rules.json is gated")
     args = parser.parse_args(argv[1:])
-    if args.skills_dir:
-        # Plugin mode is on before anything can fail, so the failure policy below knows the mode.
-        PLUGIN_MODE.update(on=True, skills_dir=os.path.realpath(args.skills_dir))
-    elif args.event == "activate":
+    if not args.skills_dir and args.event == "activate":
         parser.error("activate is a plugin-mode event: pass --skills-dir")
+    return run_event(args.event, rules_path=args.rules, skills_dir=args.skills_dir)
+
+
+def run_event(event, rules_path=None, skills_dir=None):
+    """One hook event on the payload read from standard input; returns the exit status. main() calls it after
+    parsing the command line; the PreToolUse dispatcher (core/gate/ifs-pretool.py) calls it in-process for
+    activate, guard-edit and guard-bash with skills_dir set, as hooks.json's --skills-dir did."""
+    if skills_dir:
+        # Plugin mode is on before anything can fail, so the failure policy below knows the mode.
+        PLUGIN_MODE.update(on=True, skills_dir=os.path.realpath(skills_dir))
     raw, data = "", {}
     try:
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}
-        if args.event.startswith("guard") and not data:
+        if event.startswith("guard") and not data:
             raise ValueError("empty hook payload")
         if not isinstance(data, dict):
             raise ValueError("the hook payload is not a JSON object")
-        if args.skills_dir:
-            skills, rules = plugin_rules(args.skills_dir)
+        if skills_dir and event.startswith("guard") and not session_active(data):
+            # A guard in a session that never started a gated skill decides nothing (cmd_guard_*): return
+            # before the skills' rules files are read.
+            return 0
+        if skills_dir:
+            skills, rules = plugin_rules(skills_dir)
             PLUGIN_MODE.update(skills=skills, name=plugin_name())
         else:
-            rules = load_rules(args.rules)
-        COMMANDS[args.event](data, rules)
+            rules = load_rules(rules_path)
+        COMMANDS[event](data, rules)
     except Exception as exc:  # noqa: BLE001 - the gate must never fail silently
-        starting = starting_gated_skill(args.event, data)
+        # Nothing in this handler may raise before its decision is printed (PR 1 fix round 4, defect 3): each
+        # helper that reads the file system or loads ifs_paths runs best-effort, and its failure fails closed.
+        try:
+            starting = starting_gated_skill(event, data)
+        except Exception:  # noqa: BLE001 - cannot tell whether a gated skill starts: it does not start ungated
+            starting = gated_skill_named(event, data)
         if starting:
             # The skill would run with no gate registered: refuse to start it rather than run it ungated.
             reason = (f"spec-approval-gate (K22) could not register the approval gate for {starting} "
-                      f"({type(exc).__name__}: {exc}), so the skill does not start. Tell the user; the gate's "
-                      f"state directory is {STATE_DIR}.")
-            if args.event == "activate":
+                      f"({type(exc).__name__}: {describe(exc)}), so the skill does not start. Tell the user; the "
+                      f"gate's state directory is {STATE_DIR}.")
+            if event == "activate":
                 emit_pre_tool("deny", reason)
             else:
                 print(json.dumps({"decision": "block", "reason": clean(reason)}))
@@ -2214,20 +2407,85 @@ def main(argv):
             # A payload that is not valid JSON still names its session: a gated session fails closed.
             found = re.search(r'"session_id"\s*:\s*"([^"\\]*)"', raw if isinstance(raw, str) else "")
             data = {"session_id": found.group(1)} if found else {}
-        if PLUGIN_MODE["on"] and not session_active(data):
+        try:
+            active = session_active(data)
+        except Exception:  # noqa: BLE001 - whether the session is gated is unknown: it is guarded
+            active = True
+        if PLUGIN_MODE["on"] and not active:
             # Plugin mode registers the gate in every session; one that never started a gated skill is
             # not gated, so an error here must not block its tools.
-            print(f"spec-approval-gate: {args.event} failed in an ungated session: {exc}", file=sys.stderr)
+            print(f"spec-approval-gate: {event} failed in an ungated session: {describe(exc)}", file=sys.stderr)
             return 0
-        if args.event.startswith("guard"):
+        if event.startswith("guard"):
             # Fail closed: a guard that silently opens is worse than one that asks to be fixed.
-            emit_pre_tool("deny", f"spec-approval-gate hook error ({type(exc).__name__}: {exc}). Tell the "
-                                  "user; they can fix core/gate/spec-approval-gate.py or the rules file.")
+            if not isinstance(exc, OSError):
+                fix = "they can fix core/gate/spec-approval-gate.py or the rules file."
+            else:
+                try:
+                    records = f" or its activation records ({load_paths().active_dir()})"
+                except Exception:  # noqa: BLE001 - the denial stands without the location
+                    records = " or its activation records (under ~/.local/state/implement-from-spec/active)"
+                fix = (f"the gate's state ({STATE_DIR}){records} cannot be reached: restore this user's access to "
+                       "them, or start a new session.")
+            emit_pre_tool("deny", f"spec-approval-gate hook error ({type(exc).__name__}: {describe(exc)}). Tell "
+                                  f"the user; {fix}")
             return 0
-        print(f"spec-approval-gate: {args.event} failed: {exc}", file=sys.stderr)
+        print(f"spec-approval-gate: {event} failed: {describe(exc)}", file=sys.stderr)
         return 1
     return 0
 
 
+# --------------------------------------------------------------------------------- opt-in timing log
+# Off unless IFS_HOOK_TIMING_LOG (or EVAL_IFS_HOOK_TIMING_LOG, the form `claude plugin eval` passes to its
+# sessions) names a log in ~/.local/state/implement-from-spec/hook-timing/ (ifs_paths.timing_log_path; any
+# other value is refused, so no hook appends to a file elsewhere, the project included): then each call appends
+# one line, <start, ISO 8601 UTC>\t<hook>\t<tool or ->\t<agent_id or ->\t<duration ms>\t<session_id or ->,
+# for the eval timeline tool. The duration runs from the
+# first statement of this file (interpreter start-up is not included) to the end of the decision. The line is
+# written by ifs_paths.write_timing: one O_APPEND write, the directory reached from HOME with no symlink
+# followed, only to a private (0600) regular file of this user with one link, opened non-blocking; a log that
+# cannot be written so is skipped silently, and nothing is printed: timing never changes or fails a decision.
+# Unset, the hook reads one clock value and the two variables, nothing else.
+TIMING_ENV = ("IFS_HOOK_TIMING_LOG", "EVAL_IFS_HOOK_TIMING_LOG")
+
+
+def timing_log_path():
+    if not any(os.environ.get(n) for n in TIMING_ENV):
+        return None
+    try:
+        return load_paths().timing_log_path()
+    except Exception:  # noqa: BLE001 - timing never changes a decision
+        return None
+
+
+def run_timed(run, hook, log_path):
+    """run() with stdin buffered (so the payload's ids can be logged), then the timing line."""
+    import io
+    raw = sys.stdin.read()
+    sys.stdin = io.StringIO(raw)
+    try:
+        return run()
+    finally:
+        try:
+            import datetime
+            import time as clock
+            ms = (_monotonic() - _HOOK_T0) * 1000.0
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                payload = None
+            payload = payload if isinstance(payload, dict) else {}
+            start = datetime.datetime.fromtimestamp(clock.time() - ms / 1000.0, datetime.timezone.utc)
+            fields = [start.strftime("%Y-%m-%dT%H:%M:%S.") + f"{start.microsecond // 1000:03d}Z", hook]
+            fields += [str(payload.get(k) or "-") for k in ("tool_name", "agent_id")]
+            fields += [f"{ms:.1f}", str(payload.get("session_id") or "-")]
+            line = "\t".join(" ".join(f.split()) or "-" for f in fields) + "\n"
+            load_paths().write_timing(log_path, line)
+        except Exception:  # noqa: BLE001 - the timing log is best effort; the hook's decision stands
+            pass
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    _log = timing_log_path()
+    _hook = "spec-approval-gate " + (sys.argv[1] if len(sys.argv) > 1 else "-")
+    sys.exit(run_timed(lambda: main(sys.argv), _hook, _log) if _log else main(sys.argv))

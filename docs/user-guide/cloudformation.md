@@ -103,8 +103,9 @@ section 12).
 ## The report
 
 The run ends with the report of contract section 11: the items in scope and whether each was verified,
-what changed, every check with its result, the `spec-trace code` counts, the review outcome (change
-digest, findings fixed, rejected and open, and the external reviewer's `External review: <state>
+what changed, every check with its result, the `spec-trace code` counts, the review outcome (snapshot,
+change digest, review state, findings fixed, rejected, covered by gate and open, fix rounds,
+and the external reviewer's `External review: <state>
 (<reason>)` line verbatim), files withheld from the external reviewer, findings that need runtime
 verification, the rulings the skill made, amendments, deferred items, the status (`implementation
 complete` or `verification incomplete (<what is missing>)`), and the next steps for the operator: the
@@ -122,7 +123,9 @@ or a diff file, optionally `--plan ai-planning/<slug>.plan` and `--change-set <f
 `describe-change-set --output json` file you created. The skill runs the same two stages, plus only
 read-only checks (`cfn-lint`, `cfn-validate`, `cfn-guard`, and the change-set replacement rule on the
 change set you supplied), verifies every finding against the templates, sets severity itself, and returns
-one Blocker, Major, Minor and Nit report with a fix per finding and a verdict. It never creates a change
+one Blocker, Major, Minor and Nit report with a fix per finding, opening with the review state block
+(snapshot, recommendation, verification, approval required, risk, rollback; see
+[external-review.md](external-review.md#the-review-around-it-snapshot-isolation-state-and-fix-rounds)). It never creates a change
 set; without one, the report does not claim that nothing is replaced.
 
 ## Out of scope

@@ -1,0 +1,44 @@
+{
+  "schema": "ifs-review-dispatch/1",
+  "reviewers": [
+    {
+      "name": "terraform-code-reviewer",
+      "skill": "reviewing-terraform-code",
+      "model": "opus",
+      "brief": [
+        {"file": "references/reviewer-briefs.md", "section": "Every reviewer"},
+        {"file": "references/reviewer-briefs.md", "section": "Terraform code reviewer"},
+        {"file": "references/standalone-review.md", "section": "3. Check groups without a plan or specification"}
+      ],
+      "assign": "groups 1, 2, 5, 6 and 7 of review.md"
+    },
+    {
+      "name": "terraform-security-reviewer",
+      "skill": "reviewing-terraform-security",
+      "model": "opus",
+      "brief": [
+        {"file": "references/reviewer-briefs.md", "section": "Every reviewer"},
+        {"file": "references/reviewer-briefs.md", "section": "Terraform security reviewer"},
+        {"file": "references/standalone-review.md", "section": "3. Check groups without a plan or specification"}
+      ],
+      "assign": "groups 3 (IAM) and 4 (Exposure and data protection) of review.md"
+    },
+    {
+      "name": "iac-security-reviewer",
+      "skill": "iac-security-reviewer",
+      "model": "opus",
+      "when": "security_handoff",
+      "brief": [
+        {"file": "references/reviewer-briefs.md", "section": "Every reviewer"},
+        {"file": "references/reviewer-briefs.md", "section": "CloudFormation or CDK security hand-off"},
+        {"file": "references/standalone-review.md", "section": "3. Check groups without a plan or specification"}
+      ],
+      "assign": "groups 4 (IAM) and 5 (Secrets and data exposure) of the CloudFormation review.md (templates) or the CDK review.md (CDK code), on the paths the hand-off reason names"
+    }
+  ],
+  "runner": {
+    "skill": "running-external-review",
+    "model": "sonnet",
+    "focus": "../implementing-terraform-from-spec/references/review-focus.md"
+  }
+}

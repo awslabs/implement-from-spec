@@ -38,10 +38,11 @@ change introduces. Absence holds only within what was searched (callers, tests, 
 state, external consumers, other repositories and effective permissions are not in a diff: a finding
 resting on them says `unsure, needs runtime verification` and names the plan or check that settles it.
 
-**Reviewer split.** The groups below extend the check groups of `review.md`; they do not replace them, and
-`review.md`'s output format stays the format. Report a finding under the `review.md` group named here and
-put the check ID at the start of the problem text, for example
-`[Major] modules/queue/main.tf:12 - Invariants - TF-MOD-05 module creates its own KMS key ...`.
+**Reviewer split.** The groups below extend the check groups of `review.md`; they do not replace them.
+The format is the findings format of contract section 9, which the brief repeats and which replaces
+`review.md`'s output format. Report a finding under the `review.md` group named here, with the check ID
+in brackets after the group, for example
+`[Major] modules/queue/main.tf:12 - Invariants (TF-MOD-05) - module creates its own KMS key ...`.
 
 - `implement-from-spec:reviewing-terraform-code` (review.md groups 1, 2, 5, 6 and 7):
   - Group 2 *State safety*: TF-STA, TF-LIF, TF-DRF, TF-IDM-01, TF-IDM-02 and TF-IDM-05
@@ -54,8 +55,8 @@ put the check ID at the start of the problem text, for example
   - Group 4 *Exposure and data protection*: TF-SEC-06 to TF-SEC-09, and the security angle of TF-STA-03
     (backend credentials), TF-DEP-03 (state read access), TF-DRF-03 (unsafe image filters) and TF-IDM-05
     (commands built from inputs). The code reviewer reports those checks' design angle in its own groups
-  - Either reviewer that sees the other's issue reports it in one line, as the reviewer skills' own instructions
-    say; the main conversation de-duplicates
+  - Either reviewer that sees the other's issue reports it as one out-of-lens head line, as the reviewer
+    skills' own instructions say; the main conversation de-duplicates or traces it
 
 **Severity classes.** `terraform-practices.md` section 5 is authoritative: whenever it names a case, its
 class applies and a check's default below never lowers it. The defaults fill the rest:
@@ -499,14 +500,21 @@ Retired 2026-10-16: merged into TF-STA-02
 
 ### TF-LIF-04 Resource block deleted to stop managing an object
 
-- **Look for:** a deleted `resource` or `module` block whose object should survive (handed to another stack
-  or team), with `prevent_destroy` relied on to protect it
+- **Look for:** a `resource` or `module` block this change deletes whose object should survive (handed to
+  another stack or team), with `prevent_destroy` relied on to protect it. A future revert of a change
+  that adds the block is not this check, because the change deletes nothing: it is `review.md`'s temporal
+  compatibility (reverting after new writes destroys the object this change created, with what was
+  written to it), rated in the Severity line
 - **Why it matters:** removing the block destroys the object, and `prevent_destroy` does not stop it because
   the rule lives in the deleted block
 - **Instead:** replace the block with `removed { from = aws_x.y  lifecycle { destroy = false } }`
   (Terraform 1.7 or later); on an older pin, an operator-run `terraform state rm` under the approval gate
   (`terraform-practices.md` section 3); a handoff to another root also needs TF-STA-05
-- **Severity:** Blocker
+- **Severity:** Blocker. The revert of a change that only adds the object: not a finding when the plan's
+  rollback says removing it takes a reviewed change, a drain, or a `removed` block with
+  `lifecycle { destroy = false }`; Minor when the rollback is silent or says `prevent_destroy` survives
+  a revert; Major only when the items, the plan or the project's rules require that data to survive a
+  rollback
 - **Source:** developer.hashicorp.com/terraform/language/meta-arguments/lifecycle — "Terraform destroys the
   actual infrastructure during an apply operation if you remove the resource's configuration, even if
   prevent_destroy is enabled"; .../language/state/remove — "we recommend using the removed block instead"

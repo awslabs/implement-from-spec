@@ -6,7 +6,10 @@ Python (AWS Lambda handlers, Strands agents on Amazon Bedrock AgentCore, a share
 - AWS clients created per invocation, invocation data in globals, legacy or implicit retry mode, 60-second default timeouts, missing pagination
 - Sensitive data in logs, metric dimensions, trace responses or errors; secrets in code or environment variables; high-cardinality metric dimensions
 - Runtime and dependencies: a deprecated or preview Lambda runtime, the AWS SDK for Python developer preview in production code, a dependency or lock file change the plan does not name
-- Types: mypy strict violations, Any leaks, type: ignore without a code, naive datetimes, float where Decimal is needed
+- Types: holes mypy strict cannot see (Any or cast hiding a real path, a type: ignore or noqa hiding a defect, a file the gate excludes), naive datetimes, float where Decimal is needed
 - Tests that would still pass if the implementation were removed or broken; missing fault tests for documented error codes; moto clients created before the mock
+- Temporal compatibility: old and new versions running side by side, migration or backfill order, replay of events written before the change, rollback after the new version wrote data, partial deployment
+- A specification item or test case edited by this change that no approved plan item or amendment covers (an unapproved requirement change)
+- For every finding, the evidence as a causal argument: what triggers the defect, the path it takes (file:line steps) and the wrong result; mark a defect that exists on the base independently of this change "pre-existing"
 - Library behaviour you are not sure of (Powertools, Strands, pydantic, boto3): say "verify against the docs" rather than asserting
 - Precedence: the repository rules, the specification items and the approved plan override these defaults; a deviation the project prescribes is not a finding

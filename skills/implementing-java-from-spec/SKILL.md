@@ -70,8 +70,8 @@ Java implementation:
 - [ ] 4 User replied "approve"
 - [ ] 5 Ledger created; references/implementation.md read; docs and shared files first; waves test-first
 - [ ] 6 Verification: each item exists/substantive/wired/proven; spec-trace code exits 0; build and smoke
-- [ ] 7 reviewing-java-changes run with the plan; Blockers and Majors fixed
-- [ ] 8 Full build green again; docs synced
+- [ ] 7 reviewing-java-changes run with the plan; state line read; fix rounds (cap 2)
+- [ ] 8 Full build green again; docs synced; review snapshot still valid
 - [ ] 9 Report sent
 ```
 
@@ -189,7 +189,9 @@ name given as the plan's file name without `.plan`. Before sending it:
   `ai-planning/` until the user replies approve in this session
 - The plan comes from an earlier session (a resume, "I approved it yesterday"): an earlier approval does
   not carry over. Update the plan's `Drafted:` line with Edit, which makes it approvable in this
-  session, re-run step 3, then send the message
+  session, re-run step 3, then send the message, opening with one sentence that tells the user why:
+  the earlier approval does not unlock this session, because approval is per session and bound to the
+  plan's exact content, so the plan was re-checked and needs approve again before anything is written
 - The hook reports that nothing was approved (a reply with a question or a condition, a plan edited
   since): say which, and send the message again
 
@@ -209,15 +211,33 @@ deployed system can show (IAM, VPC endpoints, SnapStart restore behaviour, real 
 ### 7. Review
 
 Contract section 9. Invoke `reviewing-java-changes` with the change mode (the ledger's baseline commit as
-`--base`), the plan path, the specification files in scope as context and the binding-rules files. It
-runs the Claude stage and, on every review, the external stage through a generic subagent loading
-`implement-from-spec:running-external-review` with
-`--focus "${CLAUDE_PLUGIN_ROOT}/skills/implementing-java-from-spec/references/review-focus.md"` (the core
-script reads the `external_review` setting itself and reports `off` when it is turned off), and returns
-one verified report. Copy the script's `External review: <state> (<reason>)` line into the report
+`--base`), the plan path, the specification files in scope as context and the binding-rules files. One
+preparation call (`core/scripts/review-prepare.py`) creates the review snapshot, classifies its risk and
+writes every reviewer's brief; the skill then runs the Claude stage, the security hand-off reviewers the
+risk names and, on every review, the external stage with
+`--focus "${CLAUDE_PLUGIN_ROOT}/skills/implementing-java-from-spec/references/review-focus.md"`: run by
+the preparation when the `external_review` setting is off (the core script then reports `off`),
+otherwise by a generic subagent loading `implement-from-spec:running-external-review`. It records the
+build against the snapshot and returns one verified report whose state block ends in the
+`ifs-review-state:` JSON line. Copy the script's `External review: <state> (<reason>)` line into the report
 unquoted, character for character; when the stage was required by policy and did not complete, the report's Status is
-"verification incomplete" Fix every Blocker and Major; a finding left unfixed gets a stated reason.
-Re-run the build after fixes.
+"verification incomplete". Read the JSON line, not the prose:
+
+- **Complete** (`"recommendation":"No blocking findings"`, `"verification":"complete"`,
+  `"approval_required":false`): go on to step 8
+- **Changes requested** or **Blocked**: fix the confirmed Blockers and Majors inside the plan's *Owns* (a
+  fix outside it is an amendment, contract section 5), then run a fix round: invoke the reviewing skill
+  again with the earlier report and its snapshot directory. It takes a new snapshot, reviews the delta
+  and reports each F-numbered finding `closed`, `open` or `regressed`. At most two fix rounds after the
+  first review; with Blockers or Majors still open after the second, stop fixing, list them and ask the
+  user whether the approach itself should change
+- **Deferrals**: a Major stays open only with the user's agreement, recorded in the ledger. A security
+  Blocker or Major (the Safety/security dimension or a hand-off reviewer) is deferred only by the user in
+  the conversation, recorded in the ledger with the user's words and date; never defer one yourself
+- **Verification incomplete** or **Approval required**: the reasons go into the report's Status and
+  Review lines as the review gave them; the change is not reported complete
+
+A finding left unfixed gets a stated reason.
 
 ### 8–9. Sync and report
 
@@ -225,10 +245,18 @@ Contract sections 10 and 11. For a project that keeps a `specification/` tree, e
 SPEC, every new test a `TC-xxx` and a coverage-matrix row, and test-case statuses move from `PLANNED` to
 `READY`. The report's checks line names each build command, the static analysis and the smoke call with
 their results, and the coverage of the changed files when the project measures it. "Next for the
-operator" names the deploy command the skill did not run. Copy the runner's `External review: <state>
+operator" names the deploy command the skill did not run. Copy the external stage's `External review: <state>
 (<reason>)` line into the report character for character as plain text, on its own line directly under
 the Review line, for example External review: off (configuration). "External stage: off", or the line in
 bold, in quotation marks or in a code span, is a paraphrase, not the line, and a reader or script searching for "External review: off (configuration)" will not find it.
+
+Any edit after the review's last snapshot, the documentation sync included, invalidates the review
+state. Before the report, run
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" verify <the review's snapshot directory>`;
+on exit 3, run one more round on the delta (it counts towards the cap) or report "verification
+incomplete (review snapshot invalidated: <paths>)". The Review line names the snapshot id, the
+recommendation, the verification state and the approvals required, from the JSON line. Status is
+"implementation complete" only when the last review was complete and its snapshot is still valid.
 
 ## Bundled files
 

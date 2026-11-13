@@ -1,0 +1,85 @@
+{
+  "schema": "ifs-review-dispatch/1",
+  "reviewers": [
+    {
+      "name": "specification-fidelity",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "1. Specification fidelity"},
+        {"file": "references/review-lenses.md", "section": "6. Shared instructions and findings format"},
+        {"file": "references/review-lenses.md", "section": "7. Severity classes"}
+      ],
+      "assign": "Specification fidelity: group 1 of references/review-dimensions.md, every check whose Look for names an item's Interface: or Acceptance:, and temporal compatibility of the interfaces and stored formats the change alters"
+    },
+    {
+      "name": "failure-handling",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "2. Failure handling"},
+        {"file": "references/review-lenses.md", "section": "6. Shared instructions and findings format"},
+        {"file": "references/review-lenses.md", "section": "7. Severity classes"}
+      ],
+      "assign": "Failure handling: groups 5 and 6 of references/review-dimensions.md, plus PY-AWS-02, PY-AWS-07 and PY-AWS-08, plus temporal compatibility at run time (mixed versions, migration order, replay, rollback after new writes, partial deployment)"
+    },
+    {
+      "name": "types-and-design",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "3. Types and design"},
+        {"file": "references/review-lenses.md", "section": "6. Shared instructions and findings format"},
+        {"file": "references/review-lenses.md", "section": "7. Severity classes"}
+      ],
+      "assign": "Types and design: groups 2, 3, 4, 10 and 12 of references/review-dimensions.md, plus the shared core/review/principles-and-architecture-smells.md"
+    },
+    {
+      "name": "security-and-aws-runtime",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "4. Security and AWS runtime"},
+        {"file": "references/review-lenses.md", "section": "6. Shared instructions and findings format"},
+        {"file": "references/review-lenses.md", "section": "7. Severity classes"}
+      ],
+      "assign": "Security and AWS runtime: groups 7, 8 and 9 of references/review-dimensions.md, plus PY-ARC-03; this lens is the security reviewer for Python application code"
+    },
+    {
+      "name": "tests",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "5. Tests"},
+        {"file": "references/review-lenses.md", "section": "6. Shared instructions and findings format"},
+        {"file": "references/review-lenses.md", "section": "7. Severity classes"}
+      ],
+      "assign": "Tests: group 11 of references/review-dimensions.md"
+    },
+    {
+      "name": "iac-security-handoff",
+      "skill": "iac-security-reviewer",
+      "model": "opus",
+      "when": "security_handoff",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "8. Security hand-off"}
+      ],
+      "assign": "groups 4 (IAM) and 5 (Secrets and data exposure) of the review file of each path's stack (CloudFormation for a template, CDK for a construct), on the paths the hand-off reason names"
+    },
+    {
+      "name": "terraform-security-handoff",
+      "skill": "reviewing-terraform-security",
+      "model": "opus",
+      "when": "security_handoff",
+      "brief": [
+        {"file": "references/review-lenses.md", "section": "8. Security hand-off"}
+      ],
+      "assign": "groups 3 (IAM) and 4 (Exposure and data protection) of the Terraform review file, on the paths the hand-off reason names"
+    }
+  ],
+  "runner": {
+    "skill": "running-external-review",
+    "model": "sonnet",
+    "focus": "../implementing-python-from-spec/references/review-focus.md"
+  }
+}

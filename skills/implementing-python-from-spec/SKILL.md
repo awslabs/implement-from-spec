@@ -68,8 +68,8 @@ Python implementation:
 - [ ] 4 User replied "approve"
 - [ ] 5 Ledger created; shared files first; waves test-first; quality gate green after each wave
 - [ ] 6 Verification: each item exists/substantive/wired/proven; spec-trace code exits 0
-- [ ] 7 Review (reviewing-python-changes, external stage per contract section 9); Blockers and Majors fixed
-- [ ] 8 Quality gate green again; docs synced
+- [ ] 7 Review (reviewing-python-changes, external stage per contract section 9); state line read; fix rounds (cap 2)
+- [ ] 8 Quality gate green again; docs synced; review snapshot still valid
 - [ ] 9 Report sent
 ```
 
@@ -171,7 +171,9 @@ plan name given as the plan's file name without `.plan`. Before sending it:
   `ai-planning/` until the user replies approve in this session
 - The plan comes from an earlier session (a resume, "I approved it yesterday"): an earlier approval does
   not carry over. Update the plan's `Drafted:` line with Edit, which makes it approvable in this
-  session, re-run step 3, then send the message
+  session, re-run step 3, then send the message, opening with one sentence that tells the user why:
+  the earlier approval does not unlock this session, because approval is per session and bound to the
+  plan's exact content, so the plan was re-checked and needs approve again before anything is written
 - The hook reports that nothing was approved (a reply with a question or a condition, a plan edited
   since): say which, and send the message again
 
@@ -225,14 +227,31 @@ code path that runs, the metric or event is emitted where the item says.
 
 Contract section 9. Invoke the skill `implement-from-spec:reviewing-python-changes` with the change mode
 (`--base <the ledger's baseline commit>`), the plan path, the specification files in scope as context,
-and the binding-rules files. It is the Claude stage (five read-only lens subagents) and it dispatches
-the external stage through a generic subagent loading `implement-from-spec:running-external-review`
-in parallel, with this skill's
-`references/review-focus.md`, on every review: the script reads the plugin's settings and prints an
-`External review:` status line, which goes into the report unquoted, character for character. It returns one verified report;
-when the external review is required by policy and did not run, the status is "verification
-incomplete". Fix every Blocker and Major; a finding left unfixed gets a stated reason. Re-run the
-quality gate after fixes.
+and the binding-rules files. One preparation call (`core/scripts/review-prepare.py`) creates the review
+snapshot, classifies its risk and writes every reviewer's brief; the skill then runs the Claude stage
+(five read-only lens subagents) and the security hand-off reviewers the risk names, and the external
+stage with this skill's `references/review-focus.md` on every review: run by the preparation when the
+setting is off, otherwise by a generic subagent loading `implement-from-spec:running-external-review`
+in parallel. The script reads the plugin's settings and prints an
+`External review:` status line, which goes into the report unquoted, character for character. It records
+the quality gate against the snapshot and returns one verified report whose state block ends in the
+`ifs-review-state:` JSON line. Read that line, not the prose:
+
+- **Complete** (`"recommendation":"No blocking findings"`, `"verification":"complete"`,
+  `"approval_required":false`): go on to step 8
+- **Changes requested** or **Blocked**: fix the confirmed Blockers and Majors inside the plan's *Owns* (a
+  fix outside it is an amendment, contract section 5), then run a fix round: invoke the reviewing skill
+  again with the earlier report and its snapshot directory. It takes a new snapshot, reviews the delta
+  and reports each F-numbered finding `closed`, `open` or `regressed`. At most two fix rounds after the
+  first review; with Blockers or Majors still open after the second, stop fixing, list them and ask the
+  user whether the approach itself should change
+- **Deferrals**: a Major stays open only with the user's agreement, recorded in the ledger. A security
+  Blocker or Major (the security lens or a hand-off reviewer) is deferred only by the user in the
+  conversation, recorded in the ledger with the user's words and date; never defer one yourself
+- **Verification incomplete** or **Approval required**: the reasons go into the report's Status and
+  Review lines as the review gave them; the change is not reported complete
+
+A finding left unfixed gets a stated reason.
 
 ### 8–9. Sync and report
 
@@ -243,6 +262,14 @@ line, character for character as plain text, for example External review: off (c
 in bold, in quotation marks or in a code span is a paraphrase, not the line. The report's checks
 line names each gate command, the build and the smoke with their results, and the coverage of the
 changed files when the project measures it.
+
+Any edit after the review's last snapshot, the documentation sync included, invalidates the review
+state. Before the report, run
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" verify <the review's snapshot directory>`;
+on exit 3, run one more round on the delta (it counts towards the cap) or report "verification
+incomplete (review snapshot invalidated: <paths>)". The Review line names the snapshot id, the
+recommendation, the verification state and the approvals required, from the JSON line. Status is
+"implementation complete" only when the last review was complete and its snapshot is still valid.
 
 ## Bundled files
 

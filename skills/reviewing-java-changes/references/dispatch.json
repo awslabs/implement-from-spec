@@ -1,0 +1,39 @@
+{
+  "schema": "ifs-review-dispatch/1",
+  "reviewers": [
+    {
+      "name": "claude-stage",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-brief.md", "section": "Claude stage"}
+      ],
+      "assign": "Every group of references/review-dimensions.md under the report dimension it names (Correctness, Design, Patterns, Extensibility, Safety/security, Maintainability, Readability), plus Contract files and Documentation fidelity, with the shared core/review/principles-and-architecture-smells.md inside Design, Extensibility and Maintainability"
+    },
+    {
+      "name": "iac-security-handoff",
+      "skill": "iac-security-reviewer",
+      "model": "opus",
+      "when": "security_handoff",
+      "brief": [
+        {"file": "references/review-brief.md", "section": "Security hand-off"}
+      ],
+      "assign": "groups 4 (IAM) and 5 (Secrets and data exposure) of the review file of each path's stack (CloudFormation for a template, CDK for a construct), on the paths the hand-off reason names"
+    },
+    {
+      "name": "terraform-security-handoff",
+      "skill": "reviewing-terraform-security",
+      "model": "opus",
+      "when": "security_handoff",
+      "brief": [
+        {"file": "references/review-brief.md", "section": "Security hand-off"}
+      ],
+      "assign": "groups 3 (IAM) and 4 (Exposure and data protection) of the Terraform review file, on the paths the hand-off reason names"
+    }
+  ],
+  "runner": {
+    "skill": "running-external-review",
+    "model": "sonnet",
+    "focus": "../implementing-java-from-spec/references/review-focus.md"
+  }
+}

@@ -104,8 +104,8 @@ CloudFormation implementation:
 - [ ] 4 User replied "approve"
 - [ ] 5 Ledger created; shared files first; waves implemented, validation green after each wave
 - [ ] 6 Verification: each item exists/substantive/wired/proven; spec-trace code exits 0; change-set check
-- [ ] 7 Review: Claude stage (references/review.md) and external stage in one message; triage done
-- [ ] 8 Validation green again after the fixes; docs synced
+- [ ] 7 Docs synced; review (reviewing-cloudformation-changes, external stage per contract section 9); state line read; fix rounds (cap 2)
+- [ ] 8 Validation green on the last fixed tree; review snapshot still valid
 - [ ] 9 Report sent (contract section 11), nothing deployed
 ```
 
@@ -215,7 +215,9 @@ name given as the plan's file name without `.plan`. Before sending it:
   `ai-planning/` until the user replies approve in this session
 - The plan comes from an earlier session (a resume, "I approved it yesterday"): an earlier approval does
   not carry over. Update the plan's `Drafted:` line with Edit, which makes it approvable in this
-  session, re-run step 3, then send the message
+  session, re-run step 3, then send the message, opening with one sentence that tells the user why:
+  the earlier approval does not unlock this session, because approval is per session and bound to the
+  plan's exact content, so the plan was re-checked and needs approve again before anything is written
 - The hook reports that nothing was approved (a reply with a question or a condition, a plan edited
   since): say which, and send the message again
 
@@ -285,59 +287,67 @@ create the change set to get one.
 
 ### 7. Review
 
-Dispatch all reviewers in one message (contract section 9), each a generic subagent,
-`subagent_type: "general-purpose"`, whose prompt opens with "First load the skill
-`implement-from-spec:<skill>` with the Skill tool, then follow this brief:", and each given the REPO
-path, the change mode, the plan path and the instruction to read and apply
-`${CLAUDE_PLUGIN_ROOT}/skills/implementing-cloudformation-from-spec/references/review.md` and its sibling
-`cloudformation-practices.md`, and the sections
-`${CLAUDE_PLUGIN_ROOT}/skills/reviewing-cloudformation-changes/references/review-dimensions.md` assigns to
-its groups (its "How to apply" first), reporting every finding. The code reviewer also applies
-`${CLAUDE_PLUGIN_ROOT}/core/review/principles-and-architecture-smells.md` inside groups 3 and 6:
+Contract section 9. Sync the documents first (contract section 10), so the reviewed snapshot holds them:
+any edit after the review's snapshot invalidates it and its state. Then invoke the skill
+`implement-from-spec:reviewing-cloudformation-changes` with the change mode (`--base <the ledger's
+baseline commit>`), the plan path, the ledger path, the specification files in scope as context and the
+change-set JSON section 6 kept, when there is one. One preparation call
+(`core/scripts/review-prepare.py`) creates the review snapshot, classifies its risk, writes every
+reviewer's brief and settles the external stage; the review then dispatches the code reviewer and the IaC
+security reviewer (this skill's `references/review.md`) and every security hand-off the risk names in one
+message, with short prompts that point at the briefs. The external stage runs on every review, with this
+skill's `references/review-focus.md`: by the preparation when the setting is off, otherwise through a
+generic subagent loading `implement-from-spec:running-external-review` in the same message. The script
+reads the plugin's settings and prints an `External review:` status line, which goes into the report
+unquoted, character for character; a user who asks to keep the change away from the external reviewer
+gets `--external-review off` on the preparation call, which then runs the script itself and records the
+line. The review runs and records its quality gate against the snapshot and returns one verified report
+whose state block ends in the `ifs-review-state:` JSON line. Read that line, not the prose:
 
-- **Claude stage, IAM and exposure**: one subagent loading `implement-from-spec:iac-security-reviewer`
-  (`model: "opus"`, read-only), told to cover review groups 4 (IAM) and 5 (Secrets and data exposure)
-- **Claude stage, everything else**: one subagent loading `implement-from-spec:code-reviewer`
-  (`model: "opus"`, read-only), told to cover review groups 1 to 3 and 6 to 8
-- **External stage**, on every review: one subagent loading `implement-from-spec:running-external-review`
-  (`model: "sonnet"`) running exactly the contract's command with
-  `--focus "${CLAUDE_PLUGIN_ROOT}/skills/implementing-cloudformation-from-spec/references/review-focus.md"`,
-  the same change mode, the specification files in scope as `--context`, and the binding-rules files as
-  `--rules`. The script reads the plugin's `external_review` setting itself; the skill never skips the
-  stage on its own. A user who asks to keep the change away from the external reviewer gets the runner
-  too, with `--external-review off`; off is the script's answer, not a reason to leave the runner out
+- **Complete** (`"recommendation":"No blocking findings"`, `"verification":"complete"`,
+  `"approval_required":false`): go on to step 8
+- **Changes requested** or **Blocked**: fix the confirmed Blockers and Majors inside the plan's *Owns* (a
+  fix outside it is an amendment, contract section 5), re-run section 5's validation, then run a fix
+  round: invoke `reviewing-cloudformation-changes` again with the earlier report and its snapshot
+  directory. It takes a new snapshot, reviews the delta and reports each F-numbered finding `closed`,
+  `open` or `regressed`. Record each round's snapshot id in the ledger's *Implementation notes*. At most
+  two fix rounds after the first review; with Blockers or Majors still open after the second, stop
+  fixing, list them and ask the user whether the approach itself should change. Reaching the cap is
+  never a clean result
+- **Deferrals**: a Major stays open only with the user's agreement, recorded in the ledger's
+  `## Deferred`. A security Blocker or Major (groups 4 and 5, or a hand-off reviewer's) is deferred only
+  by the user in the conversation, recorded there with the user's words and the date; never defer one
+  yourself. Any other Blocker is fixed, or the state stays Blocked
+- **Verification incomplete** or **Approval required**: the reasons go into the report's Review state and
+  Status lines as the review gave them; the change is not reported complete, and the skill never gives
+  the human approval itself
 
-Handle the runner's exit code, and copy the script's `External review: <state> (<reason>)` line
-into the report unquoted, character for character:
+Verify each AWS claim in the Template Reference before acting on a finding; a finding left unfixed gets a
+stated reason.
 
-- `0`: the review printed, or the setting is off and the script printed "External review: off
-  (configuration)"
-- `69`: "External review: not run (<reason>)"; record the line and continue
-- `70`, or `1` with "required by policy" on stderr: the external review is required and did not run, so
-  the report's Status is "verification incomplete"
-- `1` otherwise: the reviewer failed or gave an invalid answer; record it, and never write a review
-  yourself
-- `64`: a usage error; fix the arguments and retry once
+### 8–9. Re-validate, report
 
-Triage every finding (contract section 9); verify each AWS claim in the Template Reference before acting.
-
-### 8–9. Re-validate, sync docs, report
-
-Re-run section 5's validation after the fixes, sync the documents (contract section 10), and report
-(contract section 11). The report's *Next for the operator* names the pipeline run or the exact command
-that deploys the change, the pre-deploy check (the change set to inspect with section 6's commands for
-`Replacement` and `PolicyAction`), and the read-only smoke commands that prove the resources exist. Copy
-the runner's `External review: <state> (<reason>)` line into the report character for character as
+The last fix round re-ran section 5's validation on the tree it reviewed. Before the report, run
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" verify <the last review's snapshot directory>`;
+on exit 3 (an edit after the review), run one more round on the delta (it counts towards the cap) or
+report "verification incomplete (review snapshot invalidated: <paths>)". Report (contract section 11);
+the Review and Review state lines come from the JSON line, and Status is "implementation complete" only
+when the last review was complete and its snapshot is still valid. The report's *Next for the operator*
+names the pipeline run or the exact command that deploys the change, the pre-deploy check (the change set
+to inspect with section 6's commands for `Replacement` and `PolicyAction`), and the read-only smoke
+commands that prove the resources exist. Copy the review's `External review: <state> (<reason>)` line
+(the runner's, or the preparation's when the setting is off) into the report character for character as
 plain text on its own line, for example External review: off (configuration); a paraphrase such as
-"external (GPT) stage reported off", or the line in bold, in quotation marks or in a code span, is not the
-line.
+"external (GPT) stage reported off", or the line in bold, in quotation marks or in a code span, is not
+the line.
 
 ## Bundled files
 
 - `references/plan-template.md`: the plan structure, read in phase 2
 - `references/cloudformation-practices.md`: authoring rules, quotas, the LanguageExtensions and change-set
   traps, the validation toolchain; read in phase 1 and kept open
-- `references/review.md`: the Claude stage's checklist, Blocker and Major classes and output format
+- `references/review.md`: the Claude stage's checklist, Blocker and Major classes and output format, read by
+  the reviewers `reviewing-cloudformation-changes` dispatches
 - `references/review-focus.md`: what the external stage is told to look hardest at; edit it to steer it
 - `rules/change-set-replacement.guard` and `rules/change-set-replacement_tests.yaml`: the change-set
   check of section 6, with its unit tests (`cfn-guard test --rules-file ... --test-data ...`)

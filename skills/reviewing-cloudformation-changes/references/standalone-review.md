@@ -1,16 +1,18 @@
 # Standalone CloudFormation review
 
-What a review outside `implementing-cloudformation-from-spec` adds to that skill's `review.md`,
+What the review skill adds to `implementing-cloudformation-from-spec`'s `review.md`,
 `cloudformation-practices.md`, `review-focus.md` and `rules/change-set-replacement.guard` (read in place
 under `${CLAUDE_PLUGIN_ROOT}/skills/implementing-cloudformation-from-spec/`; this file does not restate
-them).
+them). It applies standalone and when the implementing skill calls the review. The snapshot, the review
+state and the fix rounds are contract section 9 and SKILL.md steps 1, 5 and 6.
 
 ## Contents
 
 1. What counts as a CloudFormation change
-2. Read-only checks
+2. Read-only checks (the quality gate)
 3. Check groups without a plan or specification
 4. Severity classes
+5. Rollback evidence
 
 ## 1. What counts as a CloudFormation change
 
@@ -27,20 +29,29 @@ them).
   request: the user checks out the branch; the range is `$(git -C <repo> merge-base <target> HEAD)..HEAD`
   with `<target>` the branch the PR merges into. Never fetch, pull or check out a branch yourself
 
-## 2. Read-only checks
+## 2. Read-only checks (the quality gate)
 
-Run from the main conversation while the stages work, from the repository root. Each command below
-changes nothing in the repository. Run them against the tree the change mode names; for a committed
-range whose tip differs from the working tree, extract the tip into a scratch directory
-(`scratch="$(mktemp -d)"; git -C <repo> archive <b> | tar -x -C "$scratch"`, which writes nothing in
-the repository) and run there.
+Run from the main conversation while the stages work, from the repository root; the reviewers never run
+them. Each command below changes nothing in the repository: a check that wrote there would change the
+candidate, and `record-gate` would then refuse its result. Run them against the tree the change mode
+names; for a committed range whose tip differs from the working tree, extract the tip into a scratch
+directory (`scratch="$(mktemp -d)"; git -C <repo> archive <b> | tar -x -C "$scratch"`, which writes
+nothing in the repository) and run there. Write each output to `<work>/<name>.txt` (SKILL.md step 1, the
+review's scratch directory) and attach it as `<DIR>/gates/<name>.txt`, where the reviewers of a fix round
+can read it (never redirect into `<DIR>`: in the implementing skill's gated session the approval gate
+denies every write there), and record checks 2 to 5 with `record-gate` (SKILL.md step 3) under
+the names `validate-entry-point`, `cfn-lint`, `cfn-validate`, `cfn-guard-test:<rule>` and
+`cfn-guard-validate`: `pass` when the check is green as defined below, `fail` when it is red, and
+`not-run` with `--reason` when a required check could not run to a result (below), never `fail`. Checks 2
+to 5 are the quality gate; check 6 is evidence for the triage, outside it.
 
 1. **Binaries**, read-only:
 
        python3 -I "${CLAUDE_PLUGIN_ROOT}/core/deps/doctor.py" --stack cloudformation --project <repo> --json
 
    Exit 69 names the gap (cfn-lint or cfn-guard missing or too old). In a review that is not a stop: the
-   checks that need the binary are reported as not run with that reason, and the review continues.
+   required checks that need the binary are recorded as `not-run` with that reason (below), and the
+   review continues.
    Point the user to `/implement-from-spec:setup`; never install anything
 
 2. **The project's validate entry point** (for example `scripts/validate.sh`, a Makefile target), when
@@ -75,12 +86,14 @@ the repository) and run there.
      the registry (practices section 12)
 
 6. **The change-set rule**, only on a CloudFormation change set that already exists:
-   - The user supplies the JSON `aws cloudformation describe-change-set --output json` printed: copy it
-     to a `mktemp -d` directory outside the repository when it was pasted
+   - The user supplies the JSON `aws cloudformation describe-change-set --output json` printed: attach
+     it as `<DIR>/input/change-set.json` (from its file, or `--from -` with the pasted text in a quoted
+     heredoc), outside the repository, so the reviewers can read it
    - The user names an existing change set and allows the call: the read-only
      `aws cloudformation describe-change-set --stack-name <stack> --change-set-name <name> --output json`
-     under the AWS profile the project's CLAUDE.md prescribes, its output saved to that scratch
-     directory. Ask first, naming the command and the profile; never with another profile
+     under the AWS profile the project's CLAUDE.md prescribes, its output written to
+     `<work>/change-set.json` and attached as `<DIR>/input/change-set.json`. Ask
+     first, naming the command and the profile; never with another profile
    - Run:
 
          cfn-guard validate --rules "${CLAUDE_PLUGIN_ROOT}/skills/implementing-cloudformation-from-spec/rules/change-set-replacement.guard" \
@@ -105,12 +118,25 @@ the repository) and run there.
    `validate-template` (a service call; cfn-lint and cfn-validate cover it offline), `sam` commands,
    TaskCat, `cfn-lint --output-file` pointed into the repository, or any other mutating `aws` call
 
-A missing optional tool is "not run: not installed", never "clean". When a check runs against a scratch
-copy, say so in its report line.
+A required check that could not run (cfn-lint or cfn-guard missing, a sandbox that blocks it) is
+reported as not run with its reason, never as clean and never as `fail`, and recorded so:
+
+    python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" record-gate <DIR> --name cfn-lint \
+        --status not-run --command "<the command that could not run>" --reason "<why, one line>"
+
+`state` then reports verification incomplete with `<name> not run: <reason>`, never Blocked by itself. A
+result recorded by mistake stays in `gates.json`: record the right one after it (`state` reads each
+name's latest result), never edit, rewrite or delete the file. An optional one (cfn-validate, a change
+set not supplied) is reported as not run and not recorded: a missing optional tool is "not run: not
+installed", never "clean".
+Advisory results (cfn-lint warnings and informational results, a change-set rule FAIL, registry rules the
+project did not adopt) go into the triage like a reviewer's, tagged *(tool)*. When a check runs against a
+scratch copy, say so in its report line.
 
 ## 3. Check groups without a plan or specification
 
-Give the reviewers this rule verbatim when neither a plan nor specification files are in scope:
+When neither a plan nor specification files are in scope, this rule holds verbatim
+(`references/dispatch.json` copies this section into every reviewer's brief):
 
     No plan and no specification are in scope. Group 1 (Specification fidelity): review the change
     against what it claims to do (commit messages, PR description, template Description and comments,
@@ -153,3 +179,45 @@ The main conversation sets severity from the code, never from a reviewer or a to
 - **Minor**: worth fixing in this change if quick (an unused parameter or condition, a missing
   description, a cfn-lint informational result the project does not require)
 - **Nit**: optional polish
+- A finding attributed to the base keeps its class under *Pre-existing* (SKILL.md step 4); it is outside
+  the recommendation, and a pre-existing Blocker carries an escalation note
+
+## 5. Rollback evidence
+
+The report's `Rollback:` line rests on the templates and the change set, never on the author's word, and
+states code rollback and data recovery separately: reverting the template restores configuration, not
+data a replacement or a deleting removal destroyed. A report never says the change replaces or deletes
+nothing unless a supplied change set passed the change-set rule: without one, the replacement analysis
+is from the Template Reference's update behaviour, and the report says so.
+
+- **Evidence that counts**: a supplied change set and its change-set rule result (`Replacement` and
+  `PolicyAction` per logical ID); for every modified property of an existing resource, its update
+  behaviour in the Template Reference (No interruption, Some interruptions, Replacement); `DeletionPolicy`
+  and `UpdateReplacePolicy` on every stateful resource the change touches, before and after (both default
+  to `Delete`, `DeletionPolicy` to `Snapshot` on RDS clusters and instances outside a cluster); deletion
+  protection and point-in-time recovery or backup settings; changed logical IDs, including `Fn::ForEach`
+  tokens
+- **not applicable**: the change deploys nothing (Guard rules and their fixtures, template tests,
+  documentation, a parameter registry no stack reads yet)
+- **supported (<evidence>)**: code: redeploy the previous template through the pipeline (a failed update
+  rolls back on its own); data: no stateful resource is replaced or removed, shown by a passing
+  change-set rule or by the update behaviour of every changed property, and each touched stateful resource
+  keeps `Retain` or `Snapshot` in both policies. Name the evidence, for example `supported (code: previous
+  template via the pipeline; data: change-set rule PASS on dev-orders, OrdersTable Retain/Retain)`. A
+  change that only adds resources and changes no existing one is supported: a rollback removes the new
+  resources, deleted with what was written to them after the deploy or retained as their
+  `DeletionPolicy` says, which is the inverse of the change, not stranded writes; say so in the evidence
+  (`data: change-set rule PASS, 2 Add, 0 Remove; a rollback deletes the new queue and its messages`).
+  That revert is not a finding when the plan's rollback says how the new resources are removed, Minor at
+  most when it is silent, and Major only when the items, the plan or the project's rules require that
+  data to survive a rollback. A change that alters the shape of persisted data or a contract the previous
+  template reads (a key, attribute or field moved, renamed, nested or retyped; an item, message, export or
+  output format) is never additive, even when it also adds resources: it is judged under unsafe below
+- **unsafe (<finding>)**: a finding shows a stateful resource replaced or removed whose policy deletes
+  it, or a change whose revert strands writes made after it (the previous template cannot read, or no
+  longer grants access to, data in a resource that survives the revert, or a revert deletes data that
+  the items, the plan or the project's rules require to survive a rollback); name the F-number and the
+  data recovery it needs (a snapshot or PITR restore, a backup), or "no recovery path" when none exists
+- **unknown (<what settles it>)**: a modified property's update behaviour is Replacement or Conditional and
+  no change set was supplied, or the behaviour is not documented: name the operator's change set and the
+  change-set rule command
