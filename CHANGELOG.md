@@ -3,7 +3,7 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
-## Unreleased
+## 0.2.0 — 2026-11-13
 
 ### Changed
 
@@ -146,8 +146,16 @@ request's code review (two rounds), in the unreleased changes above (2026-11-12)
 - CDK: a request that renames or moves an existing resource gets an approval message that opens by
   saying a plain `cdk deploy` would replace it (both logical IDs named), then offers the safe paths (keep
   the construct ID, keep the logical ID, or a separate `cdk refactor` with its `--dry-run` mapping)
+- Documentation: the README and the customer hand-off no longer say the hooks fail open without `python3`
+  (on Claude Code 2.1.295 or later every tool call blocks until it is fixed or the plugin is turned off);
+  the README's "Security model" lists the residual risks the threat model names; the threat model's
+  citations were re-read and re-pointed for every row, with data flows for the review snapshots, the
+  activation records and the timing log; the design notes and the user guides state the current Terraform
+  `init` rule, the report's sections (covered-by-gate findings are counts only), the documentation sync
+  before the review in the infrastructure skills, and the `--files` limit of the external review's
+  snapshot binding
 
-## 0.1.0 — 2026-11-25
+## 0.1.0 — 2026-11-12
 
 ### Added
 

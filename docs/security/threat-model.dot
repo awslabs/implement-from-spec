@@ -29,11 +29,15 @@ digraph threat_model {
       askhook [label="Install ask hook", fillcolor="#E6F4EA"];
       notice [label="SessionStart notice", fillcolor="#E6F4EA"];
       review [label="spec-external-review.py\ncore/scripts/bedrock-gpt", fillcolor="#E6F4EA"];
+      revscripts [label="Review scripts: review-prepare.py,\nreview-snapshot.py, review-risk.py", fillcolor="#E6F4EA"];
       installer [label="Setup: doctor.py,\ninstall.py", fillcolor="#E6F4EA"];
       gatestate [label="Gate state\n$CLAUDE_PLUGIN_DATA/\nspec-approval-gate", shape=cylinder, fillcolor="#E6F4EA"];
       isostate [label="Isolation state\n$CLAUDE_PLUGIN_DATA/\nreview-isolation", shape=cylinder, fillcolor="#E6F4EA"];
       reviewhome [label="Review home\n~/.local/state/\nspec-external-review", shape=cylinder, fillcolor="#E6F4EA"];
       setupstate [label="Setup state\n~/.local/state/\nimplement-from-spec/setup", shape=cylinder, fillcolor="#E6F4EA"];
+      snapshots [label="Review snapshots\n<state>/review-snapshots", shape=cylinder, fillcolor="#E6F4EA"];
+      active [label="Activation records\n~/.local/state/\nimplement-from-spec/active", shape=cylinder, fillcolor="#E6F4EA"];
+      timing [label="Timing log (opt-in)\n~/.local/state/\nimplement-from-spec/hook-timing", shape=cylinder, fillcolor="#E6F4EA"];
     }
 
     subgraph cluster_repo {
@@ -58,8 +62,8 @@ digraph threat_model {
   }
 
   { rank=same; claude; subagents; }
-  { rank=same; gate; askhook; notice; review; installer; }
-  { rank=same; gatestate; reviewhome; setupstate; }
+  { rank=same; gate; askhook; notice; review; revscripts; installer; }
+  { rank=same; gatestate; reviewhome; setupstate; snapshots; }
   { rank=same; inference; reviewer; aws; vendors; }
 
   user -> claude [label="1"];
@@ -86,4 +90,10 @@ digraph threat_model {
   claude -> notice [label="19"];
   notice -> setupstate [label="19", dir=back];
   gate -> isostate [label="20"];
+  claude -> revscripts [label="21"];
+  revscripts -> snapshots [label="21"];
+  snapshots -> subagents [label="21", constraint=false];
+  revscripts -> review [label="9", style=dotted];
+  gate -> active [label="22"];
+  gate -> timing [label="23 (opt-in)", style=dashed];
 }

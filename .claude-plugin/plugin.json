@@ -1,7 +1,7 @@
 {
   "name": "implement-from-spec",
   "displayName": "Implement from Spec",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Spec-driven, approval-gated implementation skills for Terraform, AWS CDK, CloudFormation, Java and Python: a code-free plan the user approves, implementation in waves, the stack's checks, review, and no deploy without explicit approval",
   "author": {"name": "Denis Demichev", "email": "ddemich@amazon.com"},
   "keywords": ["spec-driven", "terraform", "cdk", "cloudformation", "java", "python", "aws"],

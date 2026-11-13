@@ -61,12 +61,13 @@ but the project's own commands need them on PATH.
    `Snapshot`. A failure stops the run unless you agreed to that replacement. When no change set is named,
    or the inspection cannot run, the check is recorded as not run, with the commands for you to run, and
    the run goes on to review; the skill never creates a change set to get one
-7. Review: the `iac-security-reviewer` skill (IAM, secrets and exposure) and the `code-reviewer` skill
+7. Review, after a documentation sync (so the reviewed snapshot holds it): the `iac-security-reviewer`
+   skill (IAM, secrets and exposure) and the `code-reviewer` skill
    (everything else), each loaded by its own generic subagent,
    applying the skill's `references/review.md` and the checks of
    [`reviewing-cloudformation-changes/references/review-dimensions.md`](../../skills/reviewing-cloudformation-changes/references/review-dimensions.md),
    and, when you enable it, the external reviewer (off by default), in parallel
-8. Validation again after the fixes, then a documentation sync
+8. Validation again after the fixes
 9. The report, with the deploy command or pipeline run, the change-set check to run before deploying, and
    read-only smoke commands
 

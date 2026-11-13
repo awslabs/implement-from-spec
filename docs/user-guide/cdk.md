@@ -62,13 +62,13 @@ but the project's own commands need them on PATH.
    every file changed against `HEAD` that no task owns and that is not under `ai-planning/`
    (`unowned-change`). A write outside the plan is an amendment you approve, never a ruling the skill
    makes alone
-8. Review: the `code-reviewer` and `iac-security-reviewer` skills (Claude, each loaded by its own
-   generic subagent), applying the skill's
+8. Review, after a documentation sync (so the reviewed snapshot holds it): the `code-reviewer` and
+   `iac-security-reviewer` skills (Claude, each loaded by its own generic subagent), applying the skill's
    `references/review.md` and the checks of
    [`reviewing-cdk-changes/references/review-dimensions.md`](../../skills/reviewing-cdk-changes/references/review-dimensions.md)
    (and the Python or Java review dimensions for the app code), and, when you enable it, the external
    reviewer (off by default), in parallel
-9. Checks and diffs again after the fixes, then a documentation sync
+9. Checks and diffs again after the fixes
 10. The report, with the diff results per stack and for the whole app, and the operator's next steps
 
 **Construct IDs.** A changed construct ID or path is a changed logical ID, and CloudFormation creates a
