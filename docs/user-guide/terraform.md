@@ -64,13 +64,14 @@ but the project's own commands need them on PATH.
    every file changed against `HEAD` that no task owns and that is not under `ai-planning/`
    (`unowned-change`). A write outside the plan is an amendment you approve, never a ruling the skill
    makes alone
-8. Review: the `reviewing-terraform-code` (Code Reviewer for HashiCorp Terraform) and
+8. Review, after a sync of the specification, the cost file and `CLAUDE.md` (so the reviewed snapshot
+   holds them): the `reviewing-terraform-code` (Code Reviewer for HashiCorp Terraform) and
    `reviewing-terraform-security` (Security Reviewer for HashiCorp Terraform) skills (Claude, each loaded by
    its own generic subagent), applying the skill's
    `references/review.md` and the checks of
    [`reviewing-terraform-changes/references/review-dimensions.md`](../../skills/reviewing-terraform-changes/references/review-dimensions.md),
    and, when you enable it, the external reviewer (off by default), in parallel
-9. Re-validation after the fixes, then a sync of the specification, the cost file and `CLAUDE.md`
+9. Re-validation after the fixes
 10. The report, with the plan counts, the cost delta and the apply command for the operator
 
 A provider version a new resource needs is said prominently in the plan, because you must run

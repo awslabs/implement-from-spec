@@ -6,7 +6,7 @@ rules, writes a code-free plan, and waits until you reply `approve`. A hook enfo
 builds the change test-first, runs the stack's own checks, has it reviewed by Claude and, if you enable
 it, by an external model, and reports. It never deploys on its own: every deploy or live change asks you first.
 
-Version 0.1.0.
+Version 0.2.0.
 
 ## Disclaimer
 
@@ -107,13 +107,35 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
   variable
 - **Findings are verified.** Every reviewer finding is checked against the code before anything is fixed,
   and a fix stays inside the approved plan
+- **What it does not stop.** These residual risks stay with you (the threat model,
+  [docs/security/threat-model.md](docs/security/threat-model.md), gives each one with its control):
+  - Repository content reaches the Claude model provider you chose, as in any Claude Code session
+  - The shell analysis does not see inside a script an interpreter runs, nor a tool's side-effect writes
+    that no command rule names
+  - Reviewer isolation works in Claude Code's tool layer: the allowed read-only programs run with your
+    permissions, a search over an allowed directory can read a `.env` file inside it, and a subagent that
+    never loads a reviewer skill is not isolated (the before-and-after comparison of the work tree still
+    shows its writes)
+  - The report's `External review:` line is Claude's text, steered by the contract; the saved review and
+    its digests are the evidence
+  - A fix round's external review (`--files`) is bound to the snapshot its command names and to a base on
+    `HEAD`'s history, not to the change itself
+  - Outside a gated session, the plugin's own files, its state and the review records are as writable as
+    any of your files: a review record deleted together with its hash reads as never recorded, and Python
+    bytecode planted beside the plugin's setup or review scripts would run
+  - A trusted repository's `.claude/settings.json` `env` block can enable the external reviewer, run a
+    reviewer command from outside the repository and switch on the hook timing log, which writes only to
+    `~/.local/state/implement-from-spec/hook-timing/`
+  - The Terraform review asks you before any `terraform init` whenever a root may hold a `module` block or
+    JSON configuration; that is an instruction the skill follows, not a control the gate enforces
+  - Any process running as your user can change the plugin's state, plans and saved reviews
 
 ## Requirements
 
-- Claude Code 2.1.271 or later; 2.1.295 or later recommended, because from 2.1.295 the gate's guard hooks
-  block a tool call when they cannot run (for example without `python3`), while older releases run them
-  without blocking and so fail open. `/implement-from-spec:setup` warns below 2.1.295. Tested with 2.1.292
-  and 2.1.302
+- Claude Code 2.1.271 or later; 2.1.295 or later recommended, because from 2.1.295 a plugin hook that
+  cannot run (for example without `python3`) blocks every tool call, reads included, while older releases
+  run it without blocking and so fail open (see "Behaviour to know"). `/implement-from-spec:setup` warns
+  below 2.1.295. Tested with 2.1.292 and 2.1.302
 - macOS, Linux or WSL2. Native Windows is not supported
 - python3 3.9 or later, which is the `python3` macOS ships with the Command Line Tools. Every script and
   hook uses the standard library only, so there is nothing to `pip install`
@@ -339,8 +361,9 @@ The second stage of every review is the external reviewer, which runs only when 
 Each skill except the reviewer skills appears as `/implement-from-spec:<skill>`. Claude also starts the
 implementing and reviewing skills on its own when a request matches ("implement SPEC-F012 in this repo").
 
-The plugin ships no agents. Each review step dispatches one generic subagent per reviewer, all in one
-message so they run in parallel, and each subagent first loads its reviewer skill with the Skill tool.
+The plugin ships no agents. Each review step dispatches one generic subagent per reviewer, in one message
+so they run in parallel (the CDK review in two waves: its IaC security reviewer starts when the app is
+synthesised), and each subagent first loads its reviewer skill with the Skill tool.
 The reviewer skills are read-only, and the review-isolation hook enforces it with an allowlist: a subagent
 that loaded a reviewer skill may use Read, Grep, Glob, read-only shell commands (`grep`, `rg`, `sort`, `wc`,
 `file`, `diff` and `find` only with their listed read-only options) and a few bookkeeping tools (the task list, tool search, its hand-back), and
@@ -401,8 +424,11 @@ CDK skills fetch `docs.aws.amazon.com` pages directly; the other skills expect t
 
 ## Behaviour to know
 
-- **The gate needs python3.** The plugin's hooks fail open when `python3` is missing or broken, so that
-  an unrelated session is never blocked. Without `python3` there is no gate. Setup checks for it
+- **The plugin needs python3.** Its PreToolUse hook runs on every tool call and blocks the call when it
+  cannot start: with `python3` missing or broken, every tool call of every session with the
+  plugin enabled is blocked, Read included, until `python3` is fixed or the plugin is turned off in
+  `enabledPlugins` of your Claude settings (Claude Code 2.1.295 or later; older releases let the calls run
+  ungated, so there is no gate and no reviewer isolation). Setup checks for it
 - **Starting again.** After `claude --resume` or in a new session, start the skill again before it
   writes, so the gate knows the repository
 - **Subagents.** Writing subagents are dispatched only after approval, and their brief carries the same
@@ -420,7 +446,11 @@ CDK skills fetch `docs.aws.amazon.com` pages directly; the other skills expect t
   (`~/.claude/plugins/data/<id>/spec-approval-gate/`). External reviews are saved in the review home:
   `$SPEC_REVIEW_HOME` when set, else `~/.local/state/spec-external-review/` (or under `$XDG_STATE_HOME`).
   Setup keeps its doctor result and install journal in `~/.local/state/implement-from-spec/` (or under
-  `$XDG_STATE_HOME`). Nothing is written into the project except the files listed under "Use"
+  `$XDG_STATE_HOME`), and so do the review snapshots (`review-snapshots/`: what each review read, its
+  briefs, gate results and findings) and the records of each session that started a gated skill or a
+  reviewer (`active/`, from your home directory alone, never `$XDG_STATE_HOME`); the reviewer
+  registrations are in the plugin's data directory
+  (`review-isolation/`). Nothing is written into the project except the files listed under "Use"
 
 ## Uninstall
 
@@ -435,7 +465,8 @@ rm -r ~/.local/state/spec-external-review ~/.local/state/implement-from-spec
 ```
 
 Uninstalling deletes the plugin's saved settings and its data directory, which holds the gate state
-(`--keep-data` keeps the directory). The second line removes the saved external reviews and setup's state.
+(`--keep-data` keeps the directory). The second line removes the saved external reviews, setup's state, the
+review snapshots and the activation records.
 
 ## Documentation
 

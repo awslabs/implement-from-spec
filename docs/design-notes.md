@@ -71,8 +71,10 @@ pass settings through.
 
 `hooks/hooks.json` starts every hook as `python3 -I`. Since 2026-10-27 every PreToolUse call runs one
 dispatcher, `core/gate/ifs-pretool.py` (`python3 -I -S`, exec form, `onFailure: block`), which runs the
-gate's guards, the reviewer-isolation hook and the install ask in-process, with decisions identical to
-the separate hooks it replaced; the gate's other registrations and the two setup hooks
+gate's guards, the reviewer-isolation hook and the install ask in-process, with the decisions of the
+separate hooks it replaced, except that a failing install ask, or a skill activation that raises or exits 0 without a
+decision, now denies instead of allowing (an activation that exits non-zero, documented as exit 1 with a
+note, gives no decision and the call proceeds); the gate's other registrations and the two setup hooks
 (`core/deps/install-ask-hook.py`, `core/deps/session-notice.py`) start as before. `session-notice.py`
 loads its sibling `depslib.py` by file path and adds nothing to `sys.path`.
 
@@ -529,8 +531,9 @@ After the state block the report adds `### For the human reviewer`: two or three
 change does and why, written from the traced code (the author's narrative is testimony), and the hunks a
 human should read, as many as the risk warrants, each with its reason, highest blast radius first. A
 `### Pre-existing (not caused by this change)` section keeps those findings with their severity, outside
-the recommendation, with an escalation note on any Blocker. `### Covered by gate` lists those
-dispositions.
+the recommendation, with an escalation note on any Blocker. Covered-by-gate and rejected findings appear
+in the report only as counts on its `Counts:` line; `findings.md` in the snapshot holds them in full
+(`core/contract.md`, section 9).
 
 ### 7. Fix rounds
 
@@ -643,8 +646,12 @@ the snapshot's `risk.json` (written by `review-prepare.py`); in a fix round the 
 `Snapshot: <id12> (valid; fix round <K> of 2, previous <old id12>)`. Findings are saved with
 `review-snapshot.py save-findings DIR` from a quoted heredoc. `open` counts confirmed Blockers and Majors
 of the change that are neither fixed nor deferred with the user's agreement, in every stack. Terraform
-validate first runs `init` against a local provider mirror with a CLI configuration that has no `direct`
-method, and asks for a download only when no mirror holds the providers. Reviewer briefs say one plain
+validate runs `init` in a scratch copy against a local provider mirror with a CLI configuration that has
+no `direct` method. Since 2026-11-12 (threat model TM-59) `init` runs without a question only when the root
+may hold no `module` block (no `.tf` or `.tftest.hcl` file holding the word `module`, no JSON
+configuration, no symlink and no error from the search) and the mirror holds the providers; otherwise the
+user is asked once before any `init` (`skills/reviewing-terraform-changes/references/standalone-review.md`,
+step 3), because a provider mirror does not stop `init` from downloading modules. Reviewer briefs say one plain
 command per Bash call, because designed isolation denials cost 4.1 retries per run.
 
 ### 7. External stage fail-closed (added 2026-10-26)

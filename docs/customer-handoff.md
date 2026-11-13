@@ -30,14 +30,16 @@ cheaply, so the gate holds the repository until you approve.
 - Before approval, only `ai-planning/` and `.claude/` are writable, through file tools and the shell
 - The approval is your whole reply, `approve`, and it is bound to the plan's content: editing the plan
   revokes it
-- The gate needs `python3`. Without it, Claude Code 2.1.295 or later blocks every Write, Edit and Bash
-  call until `python3` is fixed; older releases let the calls run ungated
+- The plugin needs `python3`. Without it (or with one that is broken), Claude Code
+  2.1.295 or later blocks every tool call of every session with the plugin enabled, reads included, until
+  `python3` is fixed or the plugin is turned off in `enabledPlugins`; older releases let the calls run
+  ungated
 - It is a guard against mistakes, not a sandbox
 
 ## Prerequisites
 
 - Claude Code 2.1.271 or later, on macOS, Linux or WSL2; 2.1.295 or later recommended (below it the
-  gate's guard hooks fail open when `python3` cannot run, and setup warns)
+  plugin's hook fails open when `python3` cannot run, and setup warns)
 - python3 3.9 or later (the `python3` macOS ships), git and bash
 - Per stack, checked and installed by `/implement-from-spec:setup <stack>`:
   - Terraform: terraform 1.6.0 or later; TFLint and Checkov optional
@@ -77,11 +79,11 @@ skills do not need it. Details: [user-guide/providers.md](user-guide/providers.m
 
 ## Install
 
-Until the repository is published, you receive a copy of it from your AWS contact. Add that directory as
-the marketplace, then install:
+From GitHub, in the shell (inside Claude Code: `/plugin marketplace add awslabs/implement-from-spec`, then
+`/plugin install implement-from-spec@implement-from-spec`):
 
 ```
-claude plugin marketplace add ./implement-from-spec
+claude plugin marketplace add awslabs/implement-from-spec
 claude plugin install implement-from-spec@implement-from-spec
 ```
 
@@ -96,4 +98,5 @@ Terraform 1.6 and later is under the Business Source License 1.1, which is not a
 open-source licence.
 
 For the trust boundaries (what the gate does and does not stop, what the external reviewer receives,
-how credentials are handled), see the README's [Security model](../README.md#security-model).
+how credentials are handled, and the residual risks that stay with you), see the README's
+[Security model](../README.md#security-model).
