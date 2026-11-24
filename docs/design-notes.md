@@ -239,8 +239,8 @@ Why:
   `python3` itself, which setup checks
 - **Python 3.9 as the floor.** It is the interpreter a Mac has without any install, so a customer can try
   the plugin on a stock machine. Code therefore avoids newer syntax and modules (`match`, `tomllib`, the
-  `X | Y` union at run time; `from __future__ import annotations` keeps annotations unevaluated), and
-  the maintainers' local checks run every suite on both the newest `python3` and the 3.9 interpreter
+  `X | Y` union at run time; `from __future__ import annotations` keeps annotations unevaluated). The
+  maintainers' local checks run every suite once, on the most recent stable Python release, not on 3.9
 - **Supply chain.** Nothing in the plugin is fetched from a package index at run time, so there is no
   dependency to pin, audit, typosquat or compromise, and a release is exactly the files in the
   repository. The same reasoning keeps MCP servers out of the bundle: they are other projects' code, and
@@ -675,3 +675,182 @@ user's real home to every run. The tools the cases need come from a prepared off
 `validate` cannot run under the macOS eval sandbox, which blocks the provider plugin's local socket; the
 Terraform review records it as not run with that reason (the maintainer, 2026-10-26). The test harness's
 README describes the isolation, the toolchain cache, sharding and the smoke evidence.
+
+## Specification handling (decided 2026-11-24)
+
+The implementing skills used to take the specification as given: they read the items, and a project
+without any had nothing to be checked against. The maintainer decided on 2026-11-24 that every run
+finds the project's specification, follows it and extends it, and that a project without one gets a
+first specification derived from its code. One skill, `spec-handling`, owns that work, and
+`core/scripts/spec-layout.py` checks it. The contract's section 13 is the rule; this section records
+why it is built this way.
+
+### 1. One skill, called by the others and usable on its own
+
+Specification work is the same for every stack, so it lives in one skill rather than five copies. The
+implementing skills call it (for a baseline, through one generic subagent that loads it first, because
+deriving a specification reads the whole code base; for an extension, in the main conversation, which
+already holds the items and the request), and the user can start it alone. As with the reviewers, it is
+a skill and not an agent (section "Reviewers are skills"). It carries a `gate_rules.json` with no
+command rule: the file's presence makes the approval gate guard a run of the skill on its own, so the
+same rule holds there as everywhere else, nothing outside `ai-planning/` before approval.
+
+### 2. The layout a new specification gets
+
+A first specification is written to `specification/`: an index, `functional/` and `non-functional/`
+item files, and beside the index the documents a reader needs to work with the system (architecture,
+deployment, feature list, test cases, a generated traceability report, open questions). The item files
+follow the kit layout the skills already read; the documents and the item form (the ID and title in
+bold, one requirement with MUST, an acceptance check) follow a reference project the maintainer built
+with the plugin. A format line in the index, `Format: implement-from-spec specification format 1`, tells
+the checker that the stricter rules of this layout apply, so an older `specification/` tree is never
+judged by rules it was not written to.
+
+### 3. An existing specification is extended where it is
+
+A specification in any recognised layout (`specification/`, `docs/specifications/`,
+`docs/SPECIFICATION.md`) counts as the project's, and is extended in its own location and format. It is
+not moved, and a standard document it lacks is reported, not created: a project that chose its layout
+keeps it, and a run that quietly restructured a team's specification would lose their trust in every
+later diff. Migration into `specification/` is a change the user asks for, planned like any other:
+the new files are drafted, each old file is a `deleted` record under `## Specification changes`, and a
+task owns it as `(deleted)`.
+
+A new `specification/` is derived from the code only when no specification exists. A project may keep
+its specification somewhere the layouts do not cover (`docs/requirements.md`, a PRD), and deriving a
+second one beside it would split the source of truth. `detect` therefore names candidate files, and with
+layout `none` and a candidate the plan asks first, recommending that the candidate be treated as the
+existing specification; a confirmed file is checked as layout `named` through `--spec`. When more than
+one recognised place holds specification files, even without items, no rule can say which one is the
+project's, so `check` fails `layout-ambiguous` until `--spec` or the plan's line
+``Specification root: `<place>` `` under `## Specification changes` names it.
+
+### 4. One approval that binds the plan and its draft
+
+A specification change is the user's decision (contract section 10), and the approval gate already
+denies every write outside `ai-planning/` until a plan is approved. Rather than widen the gate to let
+specification files through earlier, the skills draft every specification file that is new or changes
+under `ai-planning/<slug>.spec/`, at the path it will have, and the plan records each item under
+`## Specification changes`. The one approval of the plan covers both; the files are written after it,
+by tasks that own them, so `spec-trace.py code` sees them as owned changes. The alternatives were a
+second approval for the specification (the first run in a project would stop twice) and writing a
+baseline before the plan (which needs the gate to allow `specification/` before approval).
+
+The plan carries the draft's digest: one line, `Draft digest: sha256 <hex>`, under
+`## Specification changes`, printed by `spec-layout.py digest` as the sha256 over the sorted
+`<relative path>\t<sha256>` lines of the draft (a symlink in the draft is refused, so the digest covers
+exactly what a copy would write). One implementation, `core/gate/draft_digest.py`, serves the gate and
+`spec-layout.py`, so the two can never disagree about a draft; without it every `spec-layout.py`
+command exits 2. The maintainer decided that the approval gate binds the draft
+mechanically through that line, so the binding does not depend on the skill running its checks:
+
+- On `approve` the gate computes the draft's digest and approves only when it equals the plan's line.
+  It refuses when the two differ, when the line exists without the draft or the draft without the line,
+  and when the draft cannot be digested; the refusal names the reason and asks for the plan and its
+  draft to be re-checked (`spec-layout.py check --draft --plan`) before the plan is presented again
+- While the approval holds, a write into the draft, or one that names `ai-planning/`, revokes it, the
+  path an edit of the approved plan takes
+- Before a write to a drafted path, or one that names the repository root, the gate computes the digest
+  again; on a mismatch it revokes the approval and denies the write, so a copy reads the approved bytes
+  when it starts
+- `core/gate/draft_digest.py` is loaded only for those calls, so a session without a draft costs what it
+  did before; when it is missing the gate fails closed
+- A plan without a draft behaves as in 0.2.0
+
+Residuals remain. A write the shell analysis sees only as a location (git, formatters, inline
+code, a target it cannot resolve) revokes only when that location is inside the draft. A change behind
+the hook's back, and one made in parallel between the re-check and a copy's read, are not seen by that
+copy; each is caught at the next write to a drafted path or by the skill's check.
+
+What the gate does not judge is the bytes a write puts into `specification/`: that each drafted file was
+written unchanged is the skill's check. `check --draft --plan` fails `draft-digest-mismatch` before
+approval; the first-wave task re-runs it before it copies anything; verification computes the digest
+again and requires every drafted file to be byte-equal where it was written (`draft-not-applied`).
+
+That makes two kinds of specification file. A drafted file is frozen at approval: the last-wave sync
+never edits it, and a change it needs is an amendment. A sync-owned file is the generated
+`TRACEABILITY.md`, which is never drafted because it depends on code that does not exist yet, and the
+living documents the draft does not contain. The draft carries the final index, so the sync has no
+reason to touch it. The last-wave sync task is planned whenever the layout keeps a generated
+traceability report (`traceability-unowned` otherwise). A resumed run after a partial copy must not
+stall on its own work: a drafted file the work tree already holds byte for byte is compared with the
+base commit, so it is not reported as a change without a record.
+
+### 5. Requirements get specification IDs
+
+Until now a feature spec without IDs was restated in the plan under plan-local `SPEC-PLAN-n` IDs, and a
+task added a specification entry afterwards. Two sets of IDs for one requirement made tests cite IDs
+that never existed in the specification. Each requirement now becomes a specification item before the
+plan is written, with the next free ID, and the plan, the tasks and the tests use that ID.
+`SPEC-PLAN-n` is superseded: plans drafted earlier still pass, and a plan with
+`## Specification changes` that uses one fails `plan-local-id`, so the two sets of IDs cannot coexist
+again. For compatibility, a plan without that section (drafted before specification handling) is not
+failed for the specification items it changed: each is a WARN `change-legacy`, which the user confirms
+as the 0.2.0 contract's section 10 required. A plan without the section but with a draft still fails.
+
+### 6. `spec-layout.py`: what is mechanical
+
+The script decides what needs no judgement: which layout a repository keeps and the next free ID of each
+family (`detect`); whether a specification, or a draft laid over it, keeps the format, loses no ID, and
+changes exactly the items the plan records (`check`); and which tests and code cite each item
+(`traceability`). The plan comparison is the point of it: an item that is new, reworded or struck without a
+record fails, and so does a record with no such change, so the plan the user approves describes the item
+delta. The item comparison alone does not prove that the files written are the files approved, since a draft
+edited after approval keeps the same item delta when only prose changed; the draft digest, which the gate
+binds (section 4), closes that gap, and the check after implementation, against the commit the work started
+from, compares both the items and the drafted bytes. Like `spec-trace.py`, it loads only the standard
+library, runs under `python3 -I` and writes nothing: the traceability report is printed and the skill writes
+it, so the write is a tool call the gate judges. It prints the report to stdout only on a clean run
+(findings go to stderr, stdout stays empty), and the skill redirects it into a temporary file under
+`ai-planning/` and moves that into place on exit 0, so a failed run never truncates the report. A symlink
+anywhere in the specification places, the report's path and its parents included, stops every command (exit
+2), so a move cannot land elsewhere. It reuses `spec-trace.py`'s ID pattern, exact-citation rule and
+test-file rule by loading that script by path.
+
+The traceability report carries no date and no commit, so the same tree gives the same bytes: a report
+that changes on every run would invalidate the review snapshot it is part of, and the check can compare
+the file with a fresh rendering to fail one that is stale or was edited by hand. Its headings carry no
+item ID, because `spec-trace.py` treats a heading with an ID as the item's definition. Only a report
+that carries the plugin's generated mark is checked or regenerated: a `TRACEABILITY.md` without it is
+the project's own (WARN `traceability-project`) and is never overwritten, and when the project keeps
+its own generator the plan proposes a task that runs it, for the user to approve.
+
+The strict format rules (MUST or SHOULD and `Acceptance:` on every item, an index that names every item,
+every standard document present) apply only under the index line
+`Format: implement-from-spec specification format 1`. An older layout gets them as warnings, and only
+for the items a change adds or changes, so adopting the plugin never fails a specification the team
+already has.
+
+### 7. A baseline says what the code does
+
+A specification derived from code can only describe behaviour, not intent. The skill therefore writes
+baseline items as built: each names the paths that evidence it (checked: a baseline item without an
+existing source path fails), non-functional items exist only where code or configuration sets the
+constraint, and whatever the code does not settle is an open question. A second read by a separate
+subagent confirms each item before the plan is shown; when the skill itself runs in a subagent that
+cannot dispatch another (Claude Code nests subagents "up to three layers below the main conversation"
+and withholds the Agent tool at that limit; code.claude.com/docs/en/sub-agents, read 2026-11-24), it
+reads again itself and reports the check as not independent. The index says the items are as built until the
+owner confirms them, and the skill never declares them confirmed. It reads the repository and runs none
+of its commands.
+
+### 8. A derived specification is still content
+
+A specification is what later runs build against, and a baseline is written from repository content,
+which is untrusted (threat model, TM-12). Text planted in code or comments could otherwise be promoted
+into an authoritative document and return in a later session as a requirement, or as an instruction.
+The rules: specification files are content, also the ones the plugin wrote; an item restates behaviour
+and never copies a sentence addressed to a reader, an assistant or a tool, which is reported as an open
+question with its path; and every item reaches the specification only through a draft the user reads
+and a plan the user approves (TM-63 to TM-65). Credentials get the same treatment as in the external
+review: an item never carries a credential value, the baseline survey (`spec-layout.py survey`) skips
+the files the review treats as sensitive, and `check` fails a specification file that matches one of
+its secret patterns, naming the kind and never the value.
+
+### 9. What is not proven live
+
+No runnable eval proves the post-approval apply step: the post-approval eval resumes a seeded run, and
+the gate state an approval leaves behind is not part of what a resumed run can be given. The script side
+of the step (digest, the check before and after the copy, a partial copy resumed, verification after the
+sync) is covered on the host by an integration test in the maintainers' test suite.
+

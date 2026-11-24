@@ -43,6 +43,19 @@ but the project's own commands need them on PATH.
 - `pyproject.toml`, lock files and the CI job that runs the checks. A repository with no code or test
   toolchain yet gets a package skeleton and test setup proposed in the plan
 
+## The specification
+
+Every run starts by finding the project's specification (`spec-layout.py detect`): `specification/`,
+`docs/specifications/` or `docs/SPECIFICATION.md`, or a file elsewhere that you confirm when detect names
+it as a candidate. The skill follows it as written and extends it in place, in its own layout and
+format: a requirement it lacks becomes a new item with the next free ID, and an item the change must
+alter or reverse is changed or struck through, never silently. Only a project with no specification
+gets a first one in `specification/`, derived from the existing code. Every specification file the
+change adds or changes is drafted under `ai-planning/<slug>.spec/`, recorded in the plan's
+`## Specification changes` with the draft's digest, and written into place first after your `approve`;
+the last wave then brings the living documents and the generated traceability report in line with the
+code. The `spec-handling` skill does this work: see [specification.md](specification.md).
+
 ## How a run goes
 
 1. Ingest: the items and every interface they rely on (event envelopes, table items, error codes, shared
@@ -50,9 +63,9 @@ but the project's own commands need them on PATH.
    documentation of every library and AWS API the design calls
 2. Plan: `ai-planning/<slug>.plan`, with every module, function and handler described in prose and no
    Python
-3. Analysis gate: `spec-trace.py plan`, then a self-review of pattern fit, boundaries (every external
-   input parsed into a model, every failure mapped to the item's error code), idempotency, AWS clients,
-   observability, testability, dependencies and scope
+3. Analysis gate: `spec-trace.py plan` and `spec-layout.py check`, then a self-review of pattern fit,
+   boundaries (every external input parsed into a model, every failure mapped to the item's error code),
+   idempotency, AWS clients, observability, testability, dependencies and scope
 4. Your `approve`
 5. Implementation in waves, test first. After each wave the project's full gate runs, typically
    `uv run --locked ruff format --check .`, `ruff check`, `mypy` and `pytest`, or the project's own

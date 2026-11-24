@@ -60,8 +60,8 @@ is merged only after a maintainer has reviewed every changed line and run all of
   Claude Code session that loads your copy with `claude --plugin-dir <your copy>`
 - **A change to a skill, an agent, the gate or the core:** describe how you exercised it: the skill run, the prompt
   or the command, and what you observed
-- **The plugin's own Python:** Python 3.9 or later, standard library only. Run your change on `python3` and, on
-  macOS, on the built-in Python (the plugin's minimum, 3.9)
+- **The plugin's own Python:** Python 3.9 or later, standard library only. Run the tests once, on the most recent
+  stable Python release
 - **Never commit credentials.** The maintainers' checks include a secrets scan; findings at or above MEDIUM fail
   the run
 

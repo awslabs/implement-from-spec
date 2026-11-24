@@ -3,8 +3,9 @@
 """ifs_paths.py: the one definition of the state locations the plugin's PreToolUse checks share.
 
 Owner: the implement-from-spec plugin; this file lives in the plugin's core/gate/ directory. Standard library
-only (Python 3.9+). It imports only os and sys, both loaded at interpreter start-up, so the PreToolUse
-dispatcher's fast path can use it before any other module loads. It is not an import location:
+only (Python 3.9+). It imports only os and sys at load time, both loaded at interpreter start-up, so the PreToolUse
+dispatcher's fast path can use it before any other module loads (fcntl and unicodedata load only where the spelling
+functions need them). It is not an import location:
 core/gate/ifs-pretool.py, core/gate/spec-approval-gate.py and core/gate/review-isolation.py load it by path
 through the same `load_paths` function (the dispatcher's tests check that the three copies are identical), so
 they compute every location with the same code and cannot disagree. Before this module the dispatcher kept its
@@ -37,6 +38,12 @@ state file to decide whether those checks can decide. The gate protects this fil
     write_timing(path, text)   one append to that log, through directory descriptors (no symlink from HOME down)
     load_source(name, path)    a module compiled from its source, with no bytecode read or written (the
                                dispatcher loads its checks this way)
+    ondisk(path)               path with every existing component spelled as the file system holds it, where the
+                               directory holding it finds it under another case or Unicode normalisation; unchanged
+                               on a case-sensitive volume. PathUnknown when such a spelling cannot be read
+    lookup_folds(dir, ...)     whether a directory finds an entry under another spelling (asked of the file system)
+    name_folds(dir)            lookup_folds of the deepest existing directory of dir: whether fixed names (.claude/,
+                               ai-planning/, .env) match in any case there
 
 No variable a repository can set moves any of these. A project's or a local settings env block cannot set HOME
 or the XDG_* family: "Project and local settings can't set variables that a checked-out repository shouldn't
@@ -310,3 +317,205 @@ def load_source(name, path):
         sys.modules.pop(name, None)
         raise
     return mod
+
+# ------------------------------------------------------------------------------------- spelling on disk
+# A directory on a case-insensitive volume (APFS and HFS+ as macOS formats them by default) finds an entry under any
+# case of its name, and APFS finds one under either Unicode normalisation too. The gate and the isolation hook compare
+# paths as strings, so they spell every path they compare the way the file system holds it first (ondisk). Whether a
+# directory folds is asked of the file system, per directory, by looking an entry up under another spelling and
+# comparing (st_dev, st_ino) (lookup_folds); the platform decides nothing, so on a case-sensitive volume every path
+# keeps its spelling. Where a directory folds, the spelling comes from the kernel (fcntl F_GETPATH on macOS, which also
+# names a firmlinked directory, /System/Volumes/Data/<path>, by its <path>) or from the directory's
+# entries. The caches are per process: in the dispatcher's process the gate and the isolation hook share them.
+
+_ONDISK = {}     # path -> its spelling on disk, for this process
+_FOLDS = {}      # (directory, "case" or "form") -> whether the directory finds an entry under that other spelling
+_ENTRIES = {}    # directory -> its entries, read once per process
+_KERNEL = {}     # directory -> the path the kernel gives it (F_GETPATH), or None
+_LSTAT = {}      # path -> its lstat, or None when it cannot be looked up: the roots share long prefixes
+
+
+def _lstat(path):
+    if path not in _LSTAT:
+        try:
+            _LSTAT[path] = os.lstat(path)
+        except OSError:
+            _LSTAT[path] = None
+    return _LSTAT[path]
+
+
+class PathUnknown(Exception):
+    """A path the file system finds under another spelling, whose own spelling cannot be read."""
+
+
+def _alias(name, kind):
+    """name with the first letter that has a one-letter other case flipped ("case"), or, for a non-ASCII name, in the
+    other Unicode normalisation ("form"); None when it has no such spelling."""
+    if kind == "case":
+        for i, ch in enumerate(name):
+            other = ch.swapcase()
+            if len(other) == 1 and other != ch:
+                return name[:i] + other + name[i + 1:]
+        return None
+    if name.isascii():
+        return None
+    import unicodedata
+    for form in ("NFD", "NFC"):
+        other = unicodedata.normalize(form, name)
+        if other != name:
+            return other
+    return None
+
+
+def _same_file(st, path):
+    try:
+        other = os.lstat(path)
+    except OSError:
+        return False
+    return (other.st_dev, other.st_ino) == (st.st_dev, st.st_ino)
+
+
+def lookup_folds(directory, name=None, st=None, kind="case"):
+    """Whether `directory` finds an entry under another spelling of `kind` (case, or Unicode normalisation): the file
+    system is asked by looking up an alias of `name` (an entry of it, whose lstat is st) and comparing (st_dev,
+    st_ino). Without a name, the directory's own name is looked up in its parent when both are on one volume (the
+    volume's rule), else the first entry of the directory that has an alias. None when it cannot be told (no name
+    has an alias, the directory cannot be listed). Cached per directory and kind for the process."""
+    key = (directory, kind)
+    if key in _FOLDS:
+        return _FOLDS[key]
+    answer = None
+    alias = _alias(name, kind) if name is not None else None
+    if alias:
+        answer = _same_file(st, os.path.join(directory, alias))
+    elif name is None:
+        parent, own = os.path.split(directory)
+        try:
+            mine, theirs = os.lstat(directory), os.lstat(parent)
+        except OSError:
+            mine = theirs = None
+        if mine is not None and own and theirs.st_dev == mine.st_dev and _alias(own, kind):
+            answer = _same_file(mine, os.path.join(parent, _alias(own, kind)))
+    if answer is None and name is None:
+        for entry in _entries(directory) or []:
+            alias = _alias(entry, kind)
+            if alias:
+                try:
+                    found = os.lstat(os.path.join(directory, entry))
+                except OSError:
+                    continue
+                answer = _same_file(found, os.path.join(directory, alias))
+                break
+    if answer is not None:
+        _FOLDS[key] = answer
+    return answer
+
+
+def _entries(directory):
+    """The directory's entries (listed once per process), or None when it cannot be listed."""
+    if directory not in _ENTRIES:
+        try:
+            _ENTRIES[directory] = os.listdir(directory)
+        except OSError:
+            _ENTRIES[directory] = None
+    return _ENTRIES[directory]
+
+
+def _entry(directory, name, st):
+    """The name under which `directory` holds the file whose lstat is st (found by looking up `name`)."""
+    entries = _entries(directory)
+    if entries is None:
+        raise PathUnknown(f"{os.path.join(directory, name)} exists under another spelling, and {directory} cannot "
+                          "be listed to read its own")
+    if name in entries:
+        return name
+
+    def key(text):
+        if not text.isascii():
+            import unicodedata
+            text = unicodedata.normalize("NFD", text)
+        return text.casefold()
+    wanted = key(name)
+    for candidate in [e for e in entries if key(e) == wanted] + entries:
+        if _same_file(st, os.path.join(directory, candidate)):
+            return candidate
+    raise PathUnknown(f"{os.path.join(directory, name)} exists, but {directory} lists no entry for it")
+
+
+def _kernel_path(directory, st):
+    """The path the kernel gives the directory whose lstat is st (macOS fcntl F_GETPATH), when it names that same
+    directory; else None (another system, a directory that cannot be opened)."""
+    if directory in _KERNEL:
+        return _KERNEL[directory]
+    import fcntl  # here, not at the top: the dispatcher's fast path loads this module and nothing else
+    found = None
+    if hasattr(fcntl, "F_GETPATH"):
+        try:
+            fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+        except OSError:
+            fd = -1
+        if fd >= 0:
+            try:
+                raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))  # MAXPATHLEN
+                path = os.fsdecode(raw.split(b"\0", 1)[0])
+                if os.path.isabs(path) and _same_file(st, path):
+                    found = path
+            except (OSError, ValueError):
+                pass
+            finally:
+                os.close(fd)
+    _KERNEL[directory] = found
+    return found
+
+
+def ondisk(path):
+    """path (absolute, without `..`, its directories resolved as realpath leaves them; its last component may be a
+    symlink, which is not followed) with every component that exists spelled the way the file system holds it, where
+    the directory holding it finds it under another spelling. Everywhere else it keeps its spelling: a component
+    that does not exist (and everything below it, which the write creates as spelled), a component in a directory
+    that does not fold (so on a case-sensitive volume the path is returned unchanged), and a component this user
+    cannot look up (EACCES on a directory above it), through which no process of this user reaches a file either.
+    Raises PathUnknown when a component exists under another spelling and its own cannot be read: the guards then
+    deny (fail closed)."""
+    known = _ONDISK.get(path)
+    if known is not None:
+        return known
+    parts = [p for p in path.split(os.sep) if p]
+    walked = []  # (directory, name, lstat, folds) of each component that exists
+    directory = os.sep
+    for part in parts:
+        here = os.path.join(directory, part)
+        st = _lstat(here)
+        if st is None:
+            break
+        folds = bool(lookup_folds(directory, part, st) or lookup_folds(directory, part, st, "form"))
+        walked.append((directory, part, st, folds))
+        directory = here
+    result = path
+    if any(folds for _d, _p, _s, folds in walked):
+        rest = parts[len(walked):]
+        leaf = None if (walked[-1][2].st_mode & 0o170000) == 0o040000 else walked.pop()  # a file or a symlink
+        base = os.path.join(os.sep, *(part for _d, part, _s, _f in walked))
+        if any(folds for _d, _p, _s, folds in walked):
+            # The directories: the kernel's path for the deepest one, else each folding one from its parent's entries.
+            base = _kernel_path(base, walked[-1][2]) or os.path.join(os.sep, *(
+                _entry(parent, part, st) if folds else part for parent, part, st, folds in walked))
+        if leaf:
+            parent, part, st, folds = leaf
+            rest = [_entry(parent, part, st) if folds else part] + rest
+        result = os.path.join(base, *rest)
+    _ONDISK[path] = result
+    return result
+
+
+def name_folds(directory):
+    """Whether the names the gate looks for under `directory` (a repository, the Claude configuration directory, an
+    ai-planning/ directory) match in any case: the deepest existing directory of it folds case (lookup_folds). An
+    answer that cannot be had counts as no; the callers that guard take it as yes (fail closed)."""
+    probe = directory
+    while not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return None
+        probe = parent
+    return lookup_folds(probe)

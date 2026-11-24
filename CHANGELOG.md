@@ -3,6 +3,133 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
+## Unreleased
+
+### Added
+
+- Specification handling (decided 2026-11-24, `docs/design-notes.md`): a new skill, `spec-handling`, and
+  a new read-only checker, `core/scripts/spec-layout.py`. Every implementing skill now finds the
+  project's specification first (`specification/`, `docs/specifications/` or `docs/SPECIFICATION.md`),
+  follows it as written and extends it in place, in its own layout and format; only a project that has
+  none gets a first specification derived from its code, in `specification/`: an index, functional and
+  non-functional item files, and architecture, deployment, feature-list, test-case, traceability
+  (generated) and open-question documents. Migration into `specification/` happens only on request.
+  The skill also runs on its own (`/implement-from-spec:spec-handling`). Guide:
+  `docs/user-guide/specification.md`
+- `spec-layout.py` subcommands `detect`, `check`, `digest`, `survey` and `traceability`, and the options
+  `--draft`, `--plan`, `--base`, `--spec` (repeatable: a specification kept elsewhere, layout `named`),
+  `--id-regex` and `--json`
+- `detect` names candidate specification files outside the recognised places; with layout `none` and a
+  candidate, the plan asks before any baseline, recommending the candidate as the existing specification
+- Plans carry a `## Specification changes` section: one record per item the change adds, changes or
+  strikes (or "none"), `deleted` records for a requested migration, and exactly one
+  `Draft digest: sha256 <hex>` line from `spec-layout.py digest`. Every specification file the change
+  adds or changes is drafted under `ai-planning/<slug>.spec/`, so approving the plan binds the exact
+  draft. After approval a first-wave task re-runs the check, copies the draft into place and runs the
+  check again; a resumed run after a partial copy passes. Verification, after the sync, runs
+  `check --plan --base`. Drafted files are frozen at approval; a last-wave sync task, planned
+  whenever the layout keeps a generated `TRACEABILITY.md`, updates only the generated report and the
+  living documents the draft does not contain
+- `spec-layout.py check` joins the analysis gate and the verification: it fails a draft that no longer
+  matches the plan's digest, a difference between the item delta and the plan's records, an ID that is
+  no longer defined, a drafted file not written byte for byte, a specification file that matches a
+  secret pattern (every text file of a draft is scanned), a draft file that is sensitive
+  (`draft-sensitive`) or binary and unnamed (`draft-binary`), a record that is duplicated
+  (`record-duplicate`) or names the wrong file (`record-file`), a format defect in the layout the skill
+  creates, and a generated traceability report that is out of date
+- A repository with more than one recognised specification place fails `layout-ambiguous` until
+  `--spec` or the plan's ``Specification root: `<place>` `` line names one. `detect` lists every item
+  with its file and line. `--spec` takes existing Markdown files only (exit 2 otherwise)
+- A symlink anywhere in the specification places, the traceability report's path and its parents
+  included, stops `detect`, `check` and `traceability` with exit 2. The draft digest is computed by
+  `core/gate/draft_digest.py`, shared with the approval gate; without it every `spec-layout.py` command
+  exits 2
+- A plan drafted before specification handling (no `## Specification changes`) still passes: each item
+  it changed is a WARN `change-legacy` for the user to confirm, as 0.2.0's contract section 10 required
+- Four eval cases for the new behaviour (a project without a specification, an extension in place, a
+  post-approval run, and the skill on its own)
+
+### Changed
+
+- A requirement with no specification item (a feature spec under `ai-planning/`, a request in plain
+  words) becomes a new item of the project's specification, with the next free ID. Plan-local
+  `SPEC-PLAN-n` IDs are superseded: plans drafted earlier still pass, and `spec-trace.py plan` fails
+  `plan-local-id` for one in a plan with `## Specification changes`
+- The strict format rules apply only to a specification whose index carries
+  `Format: implement-from-spec specification format 1`; older layouts get warnings, and only for new or
+  changed items
+- The traceability report is regenerated only when it carries the plugin's generated mark; a project's
+  own report is never overwritten. `traceability` prints to stdout only on a clean run, and the skill
+  writes it through a temporary file under `ai-planning/` that it moves into place on success
+- The approval gate (K22) binds a plan's specification draft: on `approve` it computes the draft's
+  digest and approves only when it equals the plan's `Draft digest:` line, refusing when they differ,
+  when one exists without the other, or when the draft cannot be digested ("Nothing was approved: have
+  the plan and its draft re-checked …"). While the approval holds, a write into the draft or naming
+  `ai-planning/` revokes it; before a write to a drafted path (or naming the repository root) the gate
+  re-checks the digest, and on a mismatch revokes the approval and denies the write. A missing
+  `core/gate/draft_digest.py` fails closed. Residuals: location-only writes (git, formatters, inline
+  code, unresolvable targets) revoke only inside the draft; changes behind the hook's back or between the
+  re-check and a copy's read are caught at the next drafted write or by the skill's check; written bytes
+  are judged only by `spec-layout.py check`. Plans without a draft behave as in 0.2.0, and the approval
+  grammar is unchanged; nothing outside `ai-planning/` and `.claude/` is written before approval,
+  specification files included
+- `spec-trace.py code` no longer prints the `unwired` hint for an owned Markdown file: a document is
+  never imported
+- The report has a `Specification:` line (contract section 11)
+
+### Fixed
+
+These also affect 0.2.0 users:
+
+- On a case-insensitive volume (the macOS default), a write through a differently cased path (for
+  example `PROJ/src/a.py` for `proj/src/a.py`) to a gated project, its `ai-planning/` folder, its plan,
+  its `.claude` settings or the plugin's own files was allowed before approval. The gate now compares
+  every path as the file system spells it; on a case-sensitive volume nothing changes
+- A firmlink alias of a project path (on macOS, `/System/Volumes/Data/<path>` for `<path>`) was allowed
+  before approval. The gate now resolves it to the project's own path
+- A shell command whose program name was in upper case (`RM`, `CP` and others, which a case-insensitive
+  volume runs as `rm` and `cp`) was not analysed as a write. Such a name is now read as the program the
+  shell finds on the hook's `PATH`; one found only on the Bash tool's `PATH` is not
+- `spec-external-review.py` took a quoted value of 16 or more characters made only of letters, digits
+  and underscores for an identifier and did not withhold it, so such a secret value was sent to the
+  reviewer. Only capital words joined by underscores (`API_TOKEN_NAME`) are now treated as identifiers
+- Repository file names in the external reviewer's terminal output, status lines and saved review
+  record are escaped (backslash doubled, controls, separators and bidi characters as `\n`, `\xNN`,
+  `\uNNNN`), so a file name can no longer forge or restyle a line
+- Inline interpreter code (`python3 -c`, a here-document fed to an interpreter) was not seen as a write
+  before approval when the interpreter's name was quoted, in upper case, an absolute path, versioned
+  (`python3.12`) or behind a wrapper (`env`, `nice`); it is now analysed like the plain name
+
+### Known limitations
+
+- No runnable eval proves the post-approval apply step live: the post-approval eval needs gate state a
+  resumed run lacks. The script side is covered by a host integration test in the maintainers' test
+  suite
+- On a case-insensitive volume (the macOS default), reviewer isolation's sensitive-file denylist
+  (`.env`, credential directories) compares names as text, so a differently cased name such as `.ENV`
+  is not refused. Running a gate script through a symlink has not been checked against the gate's rule
+  for its own scripts
+- The approved draft is guarded only as far as the gate sees each write: a shell or NotebookEdit write
+  into the draft that lands after approval gets no after-the-fact check, a symlink re-pointed after
+  approval escapes the paths the gate recorded, and `node -p` and `node --eval` are not recognised as
+  inline code
+- The gate's shell analysis is best effort: it does not catch inline interpreter code it cannot read
+  (strings split up, other languages' file APIs, code an interpreter reads from stdin), treats neither
+  `link` nor rsync's `--link-dest` as making hard links, and misparses the wrapper options `command -p`
+  and `exec -a`, besides the residuals above. Run the agent in a sandbox when you need a hard boundary
+
+### Security
+
+- Threat model: TM-63 (repository text promoted into a specification the plugin derives, and read back
+  by later runs), TM-64 (an existing item reworded, renumbered or dropped without the user's approval)
+  and TM-65 (`spec-layout.py` reading outside the repository through a symlink or a draft path), and
+  TM-66 to TM-70 (a written specification that is not the approved draft, the traceability report's
+  target and content, a new skill and the gate, specification files reaching the external reviewer, and
+  a specification kept where detect does not recognise it)
+- Credential values stay out of specification items: the baseline survey skips the files the external
+  review treats as sensitive, and `spec-layout.py check` fails a specification file that matches a
+  secret pattern
+
 ## 0.2.0 — 2026-11-13
 
 ### Changed

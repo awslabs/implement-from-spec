@@ -16,7 +16,11 @@ Plan format it reads (the skills' plan templates produce it):
   ## Scope                    the specification item IDs the plan implements
   ## Global constraints, ## Review focus
   ## Deferred                 records `- <ID> — <reason> (agreed YYYY-MM-DD)`; only records defer
-  ## 1. Restated requirements a plan-local ID (SPEC-PLAN-n, for an input without IDs) starts a line here
+  ## Specification changes    the specification items the change adds, changes or strikes (spec-layout.py
+                              checks them); a plan with this section uses specification IDs only
+  ## 1. Restated requirements one line per requirement; in a plan without `## Specification changes`
+                              (drafted before specification handling) a plan-local ID, SPEC-PLAN-n, starts
+                              a line here and is defined by it
   ### Task <n> — <title>      one per task, with these field lines (plain or bold labels):
     Implements: <item IDs>    Owns: `<path>`, `<path>` (deleted), ...   Depends: <task numbers> | none
     Wave: <n>                 Tests: `<test path>`, ... | none — <reason>   Verify: <command or observable>
@@ -45,14 +49,18 @@ Plan format it reads (the skills' plan templates produce it):
     must hold a file; owned files are readable, under 2 MB and not empty (package and typing markers,
     keep-files and fixtures excepted); `outside-repo` FAILs an owned path, file or test that resolves
     (through a symlink) outside the repository, and it is not read
-  - owned non-test files contain no stub markers (NotImplementedError, TODO, FIXME, "not implemented");
+  - owned non-test files contain no stub markers (NotImplementedError, TODO, FIXME, "not implemented"); in
+    a specification file (under specification/ or docs/specifications/, docs/SPECIFICATION.md and the
+    documents beside it, or a --specs file) only the lines the change added are judged, against --base,
+    else the ledger's baseline commit, else HEAD;
     tests are files under tests/, test/ or src/test/, test_*, *_test.py, *_test.go, *.test.*, *.spec.*,
     conftest.py and *Test, *Tests, *IT, *TestCase .java/.kt/.groovy/.scala
   - every Tests path exists; every item ID the task implements is cited (exact match: not SPEC-QUEUE-10 or
     SPEC-QUEUE-1-extra for SPEC-QUEUE-1) by at least one of the task's tests, and every test cites one
   - WARN when an owned non-test file's stem appears in no other source file (docs, plans and tests
-    excluded): a hint that it may be unwired, not a proof either way. Whether code is substantive and wired
-    remains the orchestrator's judgement
+    excluded): a hint that it may be unwired, not a proof either way. An owned Markdown file (a
+    specification file, a README) is a document, which nothing imports, so it gets no such hint. Whether
+    code is substantive and wired remains the orchestrator's judgement
   - `unowned-change`: every path changed in the working tree against HEAD (modified, staged, deleted,
     renamed or untracked; `git status --porcelain=v1 -z --untracked-files=all`, paths under --repo only),
     and every path changed between the approval baseline commit and HEAD (committed during the run), is
@@ -77,6 +85,7 @@ Exit codes: 0 no FAIL (WARN lines may print), 1 at least one FAIL, 2 a file coul
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import re
@@ -84,8 +93,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Matches SPEC-QUEUE-12, SPEC-API-3 (structured items) and SPEC-F001, SPEC-NF003 (demos kits). A plan
-# whose input has no IDs numbers its requirements SPEC-PLAN-1, SPEC-PLAN-2, ... (the contract, section 2).
+# Matches SPEC-QUEUE-12, SPEC-API-3 (structured items) and SPEC-F001, SPEC-NF003 (the specification/ layouts).
+# Plans drafted before specification handling numbered the requirements of an input without IDs SPEC-PLAN-1,
+# SPEC-PLAN-2, ...; a plan with `## Specification changes` gives them specification IDs (the contract, sections
+# 2 and 13), and `plan-local-id` fails a plan-local ID in it.
 DEFAULT_ID_RE = r"\bSPEC-(?:[A-Z][A-Z0-9]*-)+\d+\b|\bSPEC-[A-Z]+\d+\b"
 FIELDS = ("Implements", "Owns", "Depends", "Wave", "Tests", "Verify")
 REQUIRED_SECTIONS = ("scope", "global constraints", "review focus", "deferred")
@@ -101,6 +112,10 @@ TASK_RE = re.compile(r"^###\s+Task\s+(\S+?)\s*(?:—|-|:|$).*$", re.M)
 FIELD_RE = re.compile(r"^\s*[-*]?\s*\**(%s)\**\s*:\**\s*(.*)$" % "|".join(FIELDS), re.M)
 OWNS_ENTRY_RE = re.compile(r"`([^`]+)`(\s*\(deleted\))?")
 MAX_READ = 2_000_000
+# Specification files (contract section 13): their stub check judges only the lines the change adds, because a
+# specification keeps history ("kept as history, not implemented") that the change did not write.
+SPEC_FILE_RE = re.compile(r"^(?:specification|docs/specifications)/.*\.md$|^docs/(?:SPECIFICATION|ARCHITECTURE|"
+                          r"DEPLOYMENT|FEATURE-LIST|TEST-CASES|TRACEABILITY|open-questions)\.md$")
 # Files that are legitimately empty: package and typing markers, keep-files, fixtures.
 EMPTY_OK_RE = re.compile(r"(^|/)(__init__\.py|py\.typed|\.gitkeep|\.keep)$|(^|/)fixtures?/")
 # "no placeholder", "never a stub": a negated mention is a constraint, not a scope cut.
@@ -282,7 +297,12 @@ def check_plan(plan_path: str, specs: list[str], id_re: re.Pattern, rep: Report)
         rep.add("FAIL", "scope", "the Scope section names no specification item IDs")
     if not tasks:
         rep.add("FAIL", "tasks", "no '### Task <n> — <title>' sections")
-    # Plan-local IDs (an input without IDs) are defined in Restated requirements, not in the --specs files.
+    # A plan with `## Specification changes` gives every requirement a specification ID (contract section 13).
+    if section_body(text, "specification changes") is not None:
+        for local in sorted(set(re.findall(r"\bSPEC-PLAN-\d+\b", text))):
+            rep.add("FAIL", "plan-local-id", f"{local}: a plan with '## Specification changes' uses specification "
+                                             "IDs only; record the requirement as a new specification item instead")
+    # Plan-local IDs (plans drafted before specification handling) are defined in Restated requirements.
     restated = section_body(text, "1. restated requirements") or section_body(text, "restated requirements") or ""
     local = [i for i in scope if i.startswith("SPEC-PLAN-")]
     for item in local:
@@ -403,11 +423,13 @@ def check_plan(plan_path: str, specs: list[str], id_re: re.Pattern, rep: Report)
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess | None:
-    """Run git with REPO as the working directory, no shell; None when git cannot start."""
+    """Run git with REPO as the working directory, no shell; None when git cannot start. Output is decoded
+    with os.fsdecode, as file names are: a path that is not UTF-8 is carried, never a crash."""
     try:
-        return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, check=False)
+        proc = subprocess.run(["git", *args], cwd=str(repo), capture_output=True, check=False)
     except OSError:
         return None
+    return subprocess.CompletedProcess(proc.args, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
 
 
 def repo_files(repo: Path) -> list[Path]:
@@ -551,6 +573,33 @@ def is_test(rel: str) -> bool:
         or re.search(r"(Test|Tests|IT|TestCase)\.(java|kt|groovy|scala)$", name) is not None
 
 
+def added_lines(after: str, before: str) -> list[tuple[int, str]]:
+    """(line number, line) of the lines of `after` that `before` does not hold, counted, so a repeated line is
+    added only beyond the count it had. Shared with spec-layout.py."""
+    remaining = collections.Counter(line.strip() for line in before.splitlines())
+    out = []
+    for number, line in enumerate(after.splitlines(), 1):
+        key = line.strip()
+        if remaining[key]:
+            remaining[key] -= 1
+            continue
+        out.append((number, line))
+    return out
+
+
+def earlier_text(repo: Path, plan_path: str, base: str | None, rel: str) -> str:
+    """A file as it was before the change: at --base, else the ledger's baseline commit, else HEAD; '' when it
+    did not exist there or the repository has no commit."""
+    refs = ([base] if base else []) + re.findall(r"\b[0-9a-f]{7,40}\b", ledger_sections(plan_path)["baseline"]) + ["HEAD"]
+    for ref in refs:
+        proc = git(repo, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+        if proc is None or proc.returncode != 0 or not proc.stdout.strip():
+            continue
+        shown = git(repo, "show", f"{proc.stdout.strip()}:./{rel}")
+        return shown.stdout if shown is not None and shown.returncode == 0 else ""
+    return ""
+
+
 def is_source_corpus(rel: str) -> bool:
     """Files that count as 'wiring' evidence: code and configuration, not plans, docs or tests."""
     return not (rel.startswith(("ai-planning/", "docs/")) or rel.endswith((".md", ".lock", ".plan"))
@@ -561,6 +610,7 @@ def check_code(plan_path: str, repo: Path, id_re: re.Pattern, rep: Report, specs
                base: str | None = None) -> None:
     tasks = check_plan(plan_path, specs, id_re, rep)
     files = repo_files(repo)
+    spec_rels = {os.path.relpath(os.path.realpath(s), os.path.realpath(str(repo))).replace(os.sep, "/") for s in specs}
     cache: dict[Path, str | None] = {}
 
     def text_of(p: Path) -> str | None:
@@ -640,10 +690,14 @@ def check_code(plan_path: str, repo: Path, id_re: re.Pattern, rep: Report, specs
                     continue
                 if is_test(rel):
                     continue
-                for lineno, line in enumerate(body.splitlines(), 1):
+                judged = added_lines(body, earlier_text(repo, plan_path, base, rel)) \
+                    if SPEC_FILE_RE.match(rel) or rel in spec_rels else enumerate(body.splitlines(), 1)
+                for lineno, line in judged:
                     if STUB_RE.search(line):
                         rep.add("FAIL", "stub", f"Task {n}: {rel}:{lineno}: {line.strip()[:100]}")
                 stem = member.stem
+                if member.suffix.lower() == ".md":
+                    continue  # a document: nothing imports it, so "unwired" would be noise on every one
                 if stem not in {"__init__", "index", "main", "app", "handler"} and not any(
                         f != member and stem in (text_of(f) or "") for f in corpus):
                     rep.add("WARN", "unwired", f"Task {n}: no other source file mentions '{stem}' (check that "

@@ -22,12 +22,12 @@ rule and output format win, because the orchestrator merges the two reviewers' l
 
 Plan scope: what the approved plan explicitly leaves out is the agreed scope, not a finding against the
 change. That covers a stated exclusion ("the module creates no queue policy"), a `## Deferred` record,
-a check the plan or ledger hands to the operator (the full plan of the root, a pre-apply check), and the
-plan-local `SPEC-PLAN-n` items restated from an `ai-planning/` feature spec (contract section 2), which
-need no specification entry of their own. A hardening the plan excludes is at most a Nit or a question;
+and a check the plan or ledger hands to the operator (the full plan of the root, a pre-apply check). The plan's
+items are specification items, each new, changed or struck one listed under its
+`## Specification changes` (contract section 13). A hardening the plan excludes is at most a Nit or a question;
 an operator check is *needs runtime verification*. The one exception is a binding rule: when the
 project's CLAUDE.md, its specifications index or a specification item requires what the plan leaves out
-(for example a same-change specification update or the promotion of plan-local items), report it with
+(for example a same-change specification update), report it with
 that rule quoted and the file the change lacks, because a plan cannot waive a binding rule. Before
 reporting it, check that the change really lacks it.
 

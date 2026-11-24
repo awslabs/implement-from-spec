@@ -30,6 +30,7 @@ digraph threat_model {
       notice [label="SessionStart notice", fillcolor="#E6F4EA"];
       review [label="spec-external-review.py\ncore/scripts/bedrock-gpt", fillcolor="#E6F4EA"];
       revscripts [label="Review scripts: review-prepare.py,\nreview-snapshot.py, review-risk.py", fillcolor="#E6F4EA"];
+      speccheck [label="Specification checks:\nspec-trace.py, spec-layout.py\n(print, write nothing)", fillcolor="#E6F4EA"];
       installer [label="Setup: doctor.py,\ninstall.py", fillcolor="#E6F4EA"];
       gatestate [label="Gate state\n$CLAUDE_PLUGIN_DATA/\nspec-approval-gate", shape=cylinder, fillcolor="#E6F4EA"];
       isostate [label="Isolation state\n$CLAUDE_PLUGIN_DATA/\nreview-isolation", shape=cylinder, fillcolor="#E6F4EA"];
@@ -42,7 +43,7 @@ digraph threat_model {
 
     subgraph cluster_repo {
       label="B3  project repository (untrusted data)"; style="dashed"; color="#C5221F"; fontcolor="#C5221F";
-      repo [label="Specs, CLAUDE.md, code,\nfixtures, ai-planning/", shape=folder, fillcolor="#FCE8E6"];
+      repo [label="Specs, CLAUDE.md, code, fixtures,\nai-planning/ (plans, ledgers,\nspecification drafts)", shape=folder, fillcolor="#FCE8E6"];
     }
   }
 
@@ -62,7 +63,7 @@ digraph threat_model {
   }
 
   { rank=same; claude; subagents; }
-  { rank=same; gate; askhook; notice; review; revscripts; installer; }
+  { rank=same; gate; askhook; notice; review; revscripts; speccheck; installer; }
   { rank=same; gatestate; reviewhome; setupstate; snapshots; }
   { rank=same; inference; reviewer; aws; vendors; }
 
@@ -96,4 +97,7 @@ digraph threat_model {
   revscripts -> review [label="9", style=dotted];
   gate -> active [label="22"];
   gate -> timing [label="23 (opt-in)", style=dashed];
+  claude -> speccheck [label="24"];
+  speccheck -> repo [label="24", dir=back];
+  gate -> repo [label="25", dir=back];
 }
