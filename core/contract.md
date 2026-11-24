@@ -416,7 +416,14 @@ followed by `Runner: skill=implement-from-spec:running-external-review model=<mo
 policy=<optional|required|unknown> brief=<snapshot DIR>/briefs/external-review.md`, whose `policy` is the
 `external_review_policy` that `spec-external-review.py --show-config` resolves from the same settings the
 runner's script reads, `unknown` when the preparation could not read it (the external stage, below, acts
-on it). `--json` prints the same as JSON, `policy` included. Exit status: 0 done; 1 error; 3 the candidate changed during preparation, so run it once more;
+on it). For a stack whose manifest lists `required_gates` (Java lists `dependency-audit`), the
+preparation also runs each such gate's own script (`register --snapshot <snapshot DIR>`) and prints the
+line it returns: `Dependency audit: pending` when the gate is recorded as not run, pending, so that only
+the gate's own result replaces the record and a review in which it never ran is incomplete, never clean;
+the off line when the user switched it off, with nothing recorded. When the script cannot register the
+gate, the preparation records it as not run itself and prints `Required gate: <name> not run
+(registration failed: <why>)`.
+`--json` prints the same as JSON, `policy` included. Exit status: 0 done; 1 error; 3 the candidate changed during preparation, so run it once more;
 64 usage. On 1 or 64 read stderr and fix the arguments once; still failing, the review stops, because
 without a snapshot it has no state. The external-review script also prints a digest of the change
 payload; quote it too. Record `git -C <REPO> status --porcelain` and `git -C <REPO> diff` before
@@ -433,6 +440,23 @@ dispatch.
   so a result recorded by mistake is corrected by recording the right one after it. `record-gate` is
   refused (exit 3) once the candidate has changed, so a gate result never outlives its snapshot;
   `gates <snapshot DIR>` lists them for the report
+- **Java's dependency audit** is a gate that records itself. The main conversation runs
+  `python3 -I "<PLUGIN_ROOT>/core/scripts/dependency-audit.py" audit --snapshot <snapshot DIR>` after
+  the project's tests, because reviewers may not run commands or use the network; the script attaches
+  its reports (`gates/dependency-audit-<n>.txt`, `input/dependency-audit-<n>.json`) through `attach` and
+  then records `dependency-audit` as `pass`, `fail` (an occurrence the change introduced, or whose
+  attribution is unknown, at Blocker or Major and not accepted by the user) or `not-run` with a
+  category and its remedy. Each attempt first records the gate as pending, so one that dies leaves no
+  earlier result standing, and a pass or a fail first records `dependency-audit-coverage` (`pass` when
+  coverage is complete, `not-run` with `coverage partial: <category>: <remedy>` otherwise), so a fail
+  found in a partial inventory is red and leaves verification incomplete. The authoritative report is
+  the one the latest `dependency-audit` result names in its recorded command, never simply the highest
+  `<n>`. The main conversation records nothing for either gate and never repairs a not-run
+  audit with another tool or a web lookup. Only the user's saved plugin option (`dependency_audit`)
+  switches the audit off for a review: then nothing is recorded and the report carries the off line. A
+  request in the conversation to skip it is a skipped check (not run, named, verification incomplete),
+  and a repository cannot switch it off: an `off` from the environment, or from a settings file inside
+  the repository, is recorded as not run
 - **Snapshot records are the scripts' alone.** `manifest.json`, `risk.json`, `gates.json`, `findings.md`,
   `external.txt` and `briefs/` are written only by `review-prepare.py` and `review-snapshot.py`, and never
   edited, rewritten, trimmed or deleted by any other means (an editor tool, a shell redirect, a script of
@@ -504,7 +528,9 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
   the reviewers: each one's skill, `model` (`"lens"` takes the risk's `lens_model`), brief sections (a
   file and an exact heading, or the whole file) and assigned lens or check groups; an entry marked
   `"handoff": true` runs only when the risk names its skill; `runner` names the external stage's skill,
-  model and focus file. The preparation writes each brief from it: the brief template plus the
+  model and focus file; `required_gates`, in Java's manifest only, names each gate the preparation
+  registers and the plugin script that registers it. The preparation writes each brief from it: the
+  brief template plus the
   referenced sections verbatim, with the repository path, the change mode, the plan, the specification
   files, `<snapshot DIR>/policy/`, the precedence rule, the read-only rule and the findings format filled
   in; nothing is paraphrased. One subagent per `Dispatch:` line, all the Agent calls of both stages in
@@ -547,7 +573,11 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
   records made before dispatch; a change a reviewer made is undone and named in the report
 - **Claude stage**: the review files the stack's briefs reference, run by the reviewer skills its
   dispatch manifest names. Reviewers report every finding they see, in depth only inside their own lane
-  (findings, below); the orchestrator filters
+  (findings, below); the orchestrator filters. Java's manifest names two reviewers that run on every
+  review, both `code-reviewer` on `opus`: the code reviewer (`claude-stage`: six dimensions, contract
+  files and documentation fidelity) and the security reviewer (`security`: the Safety/security
+  dimension for every file of the change, the security consequence of a defect one of the code
+  reviewer's checks describes included), beside the hand-off reviewers the risk names
 - **External stage** (GPT stage): run on every review: by the preparation script when the setting is
   off, by the runner subagent otherwise. The script itself reads the plugin's settings and decides
   whether anything is sent. The preparation runs `spec-external-review.py --show-config` with the same
@@ -720,6 +750,12 @@ finding cites and look for counter-evidence (a guard, a caller that never passes
   and rule; a red gate still makes the recommendation Blocked); the disposition names the command.
   What the gate cannot see (a semantic type hole behind `Any`, a suppression, a file the gate's
   configuration excludes) stays a finding
+- **Dependency audit** (Java): every occurrence the audit's report lists becomes a finding with the
+  source `dependency audit` and the class the report gives, under Safety/security or, when the report
+  lists it as pre-existing, under *Pre-existing*; none is dropped and none is covered by gate. An advisory the
+  user accepts in the conversation is passed to the audit again (`--accept <advisory id>`): its new
+  result supersedes the failed one, which no deferral could lift, and the finding is deferred with the
+  user's agreement. The orchestrator never accepts one itself
 - **Pre-existing**: confirmed and `(pre-existing)` by the definition above; kept with its severity,
   outside the recommendation
 - **Needs runtime verification**: only a deployed system could settle it; listed in the report with
@@ -739,7 +775,8 @@ and `Fix:` clauses (the orchestrator writes them for a merged or traced finding,
     F<n> <the finding line> Disposition: <confirmed | rejected: <evidence> | covered by gate: <command> | needs runtime: <the check> | pre-existing | deferred: <the user's agreement>>. Source: <lenses or reviewers | GPT | both>.
 
 then one line per GPT open question, `Q<n> <question>: <answer | for the user>`, and the report's
-`Reviewers:` line. In a fix round the earlier F-numbers come first, each with its status (fix rounds,
+`Reviewers:` line. In a Java review `dependency audit` is a source as well (triage, above). In a fix
+round the earlier F-numbers come first, each with its status (fix rounds,
 below). It is written only through `save-findings`, which writes its standard input there byte for byte
 (atomically, mode 0600). The snapshot directory lies outside the project, so the Write tool is never used
 for it (it would prompt the user, or be denied); the text goes in one Bash call as a quoted heredoc, which
@@ -773,7 +810,11 @@ state, below), in this order, a section with nothing in it left out:
   note (who should know and why)
 - one check line (a line, not a list), the gate results as recorded: `Quality gate: <name> <pass |
   fail | not run (<reason>)>; ...` (`Read-only checks:` for the infrastructure stacks, the change-set or
-  plan check included)
+  plan check included). In a Java review its last entry is the dependency audit's status line,
+  character for character, the off line included (`Dependency audit: off (configuration: <source>)`), or
+  the gate as recorded (`dependency-audit not run (<reason>)`) when the audit printed none; the status
+  line's last field carries the coverage, so `dependency-audit-coverage` has no entry of its own, and the
+  report carries the audit's result nowhere else
 - one count line, in exactly this form: `Counts: Minor <n>, Nit <n>, Pre-existing <n>, Needs runtime <n>,
   Covered by gate <n>, Rejected <n>, Merged duplicates <n>; <m> Minor/Nit not shown; all saved in
   <snapshot DIR>/findings.md`: every field in this order with its number, 0 included, and nothing added
@@ -866,7 +907,9 @@ the ledger's *Implementation notes*.
   delta's files (`--files`: the runner's command with `--files <the delta's paths>` in place of the change
   arguments, its `--policy-dir` and `--snapshot-id` kept (the new snapshot's; `--files` with a policy
   directory needs its id), given in its prompt; with the stage off, the preparation's line in
-  `<new DIR>/external.txt`)
+  `<new DIR>/external.txt`). In a Java review the code reviewer and the security reviewer are both
+  dispatched in every round, and the dependency audit runs again on the new snapshot: a dependency
+  finding is closed only when the new report, with complete coverage, no longer lists it
 - The prompt adds the round's delta and points at the earlier findings, numbered F1, F2 and so on, in
   `<old DIR>/findings.md`. Each is reported `closed`
   (evidence), `open` or `regressed`; an open finding keeps its number and is not notified again as new.

@@ -48,6 +48,70 @@ specification input formats, a minor version adds a stack or a check, a patch fi
   it changed is a WARN `change-legacy` for the user to confirm, as 0.2.0's contract section 10 required
 - Four eval cases for the new behaviour (a project without a specification, an extension in place, a
   post-approval run, and the skill on its own)
+- Java security reviewer (decided 2026-11-24, `docs/design-notes.md`, "Java security review"): a second
+  Claude reviewer on every Java review and every fix round, the `code-reviewer` skill on Opus, which owns
+  the Safety/security dimension for every file of the change, including the security consequence of a
+  defect the code reviewer's checks describe. It works from a new catalogue,
+  `skills/reviewing-java-changes/references/security-dimensions.md` (Java 17, 21 and 25; Spring Boot 3.x
+  and 4.x; AWS Lambda and the SDK for Java 2.x; Maven and Gradle builds; facts read 2026-11-24): injection,
+  deserialisation and data binding, XML, cryptography and TLS, authentication and tokens, authorisation,
+  the Spring web surface, files and denial of service, logs and failure, platform mechanisms, AWS, the
+  code patterns behind named CVEs, and the `JAVA-DEP` rules for dependencies and the build supply chain.
+  It reads the groups whose trigger the change meets (five always apply, and a trigger it cannot rule out
+  counts as met), reports the others as `not applicable (<reason>)`, and gives every group's outcome on
+  its `Groups:` line; a group left unsure makes verification incomplete. It looks nothing up: a finding
+  that depends on a version, a default or a date is marked "verify against the docs" and checked by the
+  main conversation
+- Dependency audit for Java reviews, `core/scripts/dependency-audit.py`: the build tool lists the
+  project's dependencies offline (Maven `dependency:tree`; Gradle through the init script below), and
+  the script matches them against a local copy of the public OSV Maven export (GitHub Advisory
+  Database records, CC-BY 4.0), downloaded at most once a day; the plugin sends nothing about the project.
+  The preparation registers the gate `dependency-audit` as pending, and each attempt records it as pending
+  again before it starts, so a review without the audit's result is incomplete; a pass or a fail also
+  records its coverage as the gate `dependency-audit-coverage`, and its status line ends with `coverage
+  complete` or `coverage partial (...)`, so a fail found in a partial inventory is a red gate and an
+  incomplete verification. The base revision is always resolved from its own files, and each Maven profile
+  named is resolved in a run of its own, each dependency scope naming every build that resolved it. An
+  advisory range whose events can be read more than one way, or a SEMVER range, whose ordering is not
+  Maven's, is not matched and counts as a Major marked unsure, never by a guess; a reported fix checked
+  against every advisory for that artifact says so, else it is marked not checked against every advisory.
+  The report lists each vulnerable occurrence as introduced by the change, attribution
+  unknown, accepted by the user or pre-existing, with the advisory ids, the class and the fix the
+  advisories report; a Blocker or Major the change introduced fails the gate, and the review is Blocked
+  until the dependency is fixed or the user accepts the advisory. `refresh --from` imports a copy of the
+  export on a machine without internet access; `audit --repo` audits a project outside a review. A
+  build plugin, compiler-plugin processor path or Gradle buildscript dependency the change adds or
+  changes, which the inventory leaves out, is matched with `check`.
+  `--timeout` limits each build-tool run (default 120 seconds) and `--total-timeout` the whole audit, the
+  lock wait and the download included (default 480 seconds), so the audit ends with a result of its own
+  within one Bash tool command
+- Gradle projects in the dependency audit: Gradle itself resolves every resolvable configuration of every
+  project, offline, through the plugin's init script `core/scripts/dependency-audit-graph.init.gradle`
+  (Gradle 6.6 and later), with the distribution the project's wrapper names when it is in the Gradle user
+  home under that distribution's URL (and, with a `distributionSha256Sum`, from an archive with that
+  digest), never the `gradlew` script, and writes nothing in the project; for the run, the Maven and Ivy
+  repositories of the projects and of the settings' `dependencyResolutionManagement` are read without
+  their artefact-only metadata source, so a module without metadata counts as unresolved, while the
+  `buildscript` and `pluginManagement` repositories stay as declared; each entry's context is ship,
+  compile, test, build or other (other counts as shipping); the buildscript classpath, file dependencies,
+  shaded content and included builds are outside the inventory, and an included build, a flat-directory
+  repository or a dependency result of an unknown kind makes the result partial
+- Build tool selection in the dependency audit: a `pom.xml` is resolved by Maven, Gradle build files by
+  Gradle, and a project directory holding both by both, each occurrence labelled with its tool and
+  coverage complete only when both resolve; `--build-tool maven|gradle` names the one the project uses,
+  and the base revision follows the same rule on its own files
+- Setting `dependency_audit`: `on` (default) or `off`. Only the user's saved plugin options or a flag on
+  the script switch it off; an environment variable can only switch it on, and an `off` from the
+  environment, or from a settings file inside the repository under audit, is recorded as not run
+- `implementing-java-from-spec`: a dependency check at plan time (`dependency-audit.py check`). Every new
+  dependency and plugin the plan names is matched against the same advisory data before approval; a
+  match becomes an open question, or an approval line when the plan chose the version, with the reported
+  fix as the recommendation, and is never changed silently. When a specification item states the
+  version, the draft carries that item changed to the reported fix, recorded under
+  `## Specification changes`, so `approve` accepts both. The plan states where each version comes from,
+  and a version the plan chose itself is marked as such
+- `implementing-java-from-spec`: security defaults in `references/java-practices.md` for the implementing
+  subagents, the generation-time form of the catalogue's rules
 
 ### Changed
 
@@ -77,6 +141,23 @@ specification input formats, a minor version adds a stack or a check, a patch fi
   never imported
 - The report has a `Specification:` line (contract section 11)
 
+- `reviewing-java-changes`: the Claude stage is two reviewers, the code reviewer (correctness, design,
+  patterns, extensibility, maintainability, readability, contract files and documentation fidelity) and
+  the security reviewer, where one reviewer covered seven dimensions. The report's `Quality gate:` line
+  ends with the audit's status line (`Dependency audit: pass (...)`, `fail (...)`, `not run (<category>:
+  <what to do>)` or `off (configuration: <source>)`), `dependency audit` is a finding source, and the
+  `Reviewers:` line takes Safety/security from the security reviewer. "Skip security" leaves the security reviewer out and
+  makes verification incomplete; the audit still runs
+- `reviewing-java-changes/references/review-dimensions.md`: its security group is a pointer to the new
+  catalogue, whose rules `JAVA-SEC-01` to `JAVA-SEC-12` keep their numbers; JAVA-CTR-03 no longer counts
+  the AWS Encryption SDK for Java (`com.amazonaws:aws-encryption-sdk-java`) as the AWS SDK for Java 1.x
+- `core/scripts/review-prepare.py`: a dispatch manifest may name `required_gates`, each with the plugin
+  script that registers it; the preparation runs its `register` command and prints the line it returns,
+  and records the gate as not run ("registration failed") when the script cannot run. The schema id is
+  unchanged
+- `implementing-java-from-spec`: the report's `Checks:` line carries the review's `dependency-audit`
+  entry; the external stage's review focus follows the catalogue's groups
+
 ### Fixed
 
 These also affect 0.2.0 users:
@@ -99,16 +180,23 @@ These also affect 0.2.0 users:
 - Inline interpreter code (`python3 -c`, a here-document fed to an interpreter) was not seen as a write
   before approval when the interpreter's name was quoted, in upper case, an absolute path, versioned
   (`python3.12`) or behind a wrapper (`env`, `nice`); it is now analysed like the plain name
+- Reviewer isolation compared paths, roots and credential names as text, so on a case-insensitive volume
+  a reviewer could read a repository's `.env` as `.ENV`, and on macOS `~/.aws/credentials` through its
+  firmlink alias under `/System/Volumes/Data`. Every path and root it compares is now spelled as the file
+  system holds it, the gate's own way, and credential directories, `.env` names and the credential
+  patterns of Glob, Grep and the shell are compared in any letter case and normalisation
+- The setup ask hook matched `install.py` as typed, so `INSTALL.PY --apply`, which a case-insensitive
+  volume runs as `install.py`, installed without its permission prompt. The installer's name is now
+  matched in any letter case and with format characters dropped, and the dispatcher passes such a
+  command to the ask hook
 
 ### Known limitations
 
 - No runnable eval proves the post-approval apply step live: the post-approval eval needs gate state a
   resumed run lacks. The script side is covered by a host integration test in the maintainers' test
   suite
-- On a case-insensitive volume (the macOS default), reviewer isolation's sensitive-file denylist
-  (`.env`, credential directories) compares names as text, so a differently cased name such as `.ENV`
-  is not refused. Running a gate script through a symlink has not been checked against the gate's rule
-  for its own scripts
+- Running a gate script through a symlink has not been checked against the gate's rule for its own
+  scripts
 - The approved draft is guarded only as far as the gate sees each write: a shell or NotebookEdit write
   into the draft that lands after approval gets no after-the-fact check, a symlink re-pointed after
   approval escapes the paths the gate recorded, and `node -p` and `node --eval` are not recognised as
@@ -129,6 +217,32 @@ These also affect 0.2.0 users:
 - Credential values stay out of specification items: the baseline survey skips the files the external
   review treats as sensitive, and `spec-layout.py check` fails a specification file that matches a
   secret pattern
+
+- The audit's reports carry no advisory text and no line of the build tool's output: only advisory ids,
+  coordinates, versions, severity words, dates and counts that pass a grammar; the build tool's raw
+  output stays in a file only the user can read under `~/.local/state/implement-from-spec/dependency-audit/`
+- The advisory data lives in `~/.local/state/implement-from-spec/advisories/`, found from the home
+  directory alone, and is refused when it lies inside the repository under audit, is a link, belongs to
+  another user or can be written by others. Every dataset, downloaded or imported, must hold at least 5,000
+  usable advisories and no two different records under one id, its digest is checked on every load, and
+  data last checked more than 7 days ago is not used. The download
+  comes from one fixed HTTPS address, follows no redirect and is read within size and time limits
+- The build tool runs with the user's permissions, as the project's tests do: its offline switch is a
+  request, not a sandbox. It is started with an argument list, no shell and closed standard input, in
+  its own process group that is ended at the time limit, and never from a program inside the repository;
+  `PATH` reaches it absolute and without the repository's directories
+- The approval gate protects the dependency audit's directories: in a gated session it denies the tool
+  calls that would write, remove or replace the advisory cache or the build-output directory
+  (`~/.local/state/implement-from-spec/advisories/` and `.../dependency-audit/`, listed in
+  `core/gate/ifs_paths.py`); only the script writes them, and reads stay allowed. In that session an
+  import of advisory data (`dependency-audit.py refresh --from`) asks you first, before and after plan
+  approval, since the copy it publishes decides what the audit can find; a download, `check` and `audit`
+  do not ask. A review whose advisory data was imported says so in its section for the human reviewer
+- Threat model: TM-71 and TM-72 (the advisory download and the advisory cache), TM-73 to TM-77 (advisory
+  and build-tool text reaching a model, the project's build running at review time, a repository switching
+  the audit off, a revision written out from git, and a secret in the build tool's output), and TM-78 and
+  TM-79 (an audit that reads clean when it is not, and a review that reads complete without the audit),
+  with data flows 26 and 27
 
 ## 0.2.0 — 2026-11-13
 

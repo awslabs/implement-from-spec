@@ -27,9 +27,10 @@ own state, its directory (core/gate/), the plugin's hooks/, the skills' rules an
 tree (the plugin root, or its core/, hooks/, bin/, skills/, agents/ and .claude-plugin/ when it holds no
 manifest; in plugin mode also the plugin root above --skills-dir) are never writable while the gate is
 registered, and neither is the other hooks' state (core/gate/ifs_paths.py state_write_roots: the reviewer
-registrations, the activation records, the review snapshots and the timing log), so a tool call cannot lift a
-reviewer's isolation or rewrite a snapshot's records; a shell command may not even name the registrations or
-the records. An edit of an approved plan revokes the approval when the edit starts (PreToolUse), not only when
+registrations, the activation records, the review snapshots and the timing log) or the dependency audit's
+advisory cache and build output, which only the audit's own commands write, so a tool call cannot lift a
+reviewer's isolation, rewrite a snapshot's records or plant an advisory dataset that reads a vulnerable project
+as clean; a shell command may not even name the registrations or the records. An edit of an approved plan revokes the approval when the edit starts (PreToolUse), not only when
 it is recorded, and so does a write into its specification draft (Specification drafts, below).
 
 Activation records (plugin mode). Starting a gated skill also writes
@@ -278,9 +279,11 @@ SETUP_STATE_DIR = os.path.realpath(os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "implement-from-spec", "setup"))
 # Never writable while the gate is registered: its state, its code (the whole directory it runs from, where a
 # file could shadow a module it imports, ifs_paths.py included), the plugin's hook registrations, the skills'
-# rule files and setup's state (G6); and the other hooks' state (ifs_paths.state_write_roots: the isolation
-# hook's reviewer registrations, the activation records, the review snapshots and the timing log), so a tool
-# call cannot remove a reviewer's registration or rewrite a snapshot's records and their hashes.
+# rule files and setup's state (G6); the other hooks' state (ifs_paths.state_write_roots: the isolation hook's
+# reviewer registrations, the activation records, the review snapshots and the timing log), so a tool call cannot
+# remove a reviewer's registration or rewrite a snapshot's records and their hashes; and the dependency audit's
+# advisory cache and build output (ifs_paths.dependency_audit_dirs), which only the audit's own commands write, so a
+# tool call cannot plant an advisory dataset that reads a vulnerable project as clean.
 GATE_DIR = os.path.dirname(HOOK_FILE)
 STATE_WRITE_ROOTS = load_paths().state_write_roots()
 STATE_NAME_ROOTS = load_paths().state_name_roots()
@@ -1023,9 +1026,11 @@ def gated(abspath, rules, state, explicit=True):
             r["skills_dir"] and re.match(r"^%s/[^/]+/gate_rules\.json$" % re.escape(r["skills_dir"]), abspath)):
         return (f"spec-approval-gate (K22): '{abspath}' is the approval gate's own state, code or rules, the "
                 "plugin's other hook state (reviewer registrations, review snapshots, activation records, the "
-                "timing log) or a file of the installed plugin, which are never written while the gate is "
-                "registered. Ask the "
-                "user to change it in a session without the implementing skills.")
+                "timing log), the dependency audit's advisory cache or build output (which only the audit's own "
+                "commands write) or a file of the installed plugin, which are never written while the gate is "
+                "registered. Ask the user to change it in a session without the implementing skills; for the "
+                "advisory data, run the audit's own command instead (core/scripts/dependency-audit.py refresh, "
+                "check or audit).")
     if explicit:
         for root in protected_roots():
             if under(root, abspath) and root != abspath:

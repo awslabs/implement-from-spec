@@ -153,11 +153,9 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
     and a copy's read, is caught at the next drafted write or by the skill's check; and the bytes written
     into the specification, and that no item is reworded or dropped without a record, are judged only by
     `spec-layout.py check`, when the skill runs it
-  - Case and path spelling: on a case-insensitive volume (the macOS default), reviewer isolation's
-    sensitive-file denylist (`.env`, credential directories) compares names as text, so a differently
-    cased name such as `.ENV` is not refused; running a gate script through a symlink has not been
-    checked against the gate's rule for its own scripts; and a firmlink alias of a project path on a
-    case-sensitive system volume keeps its spelling, so the gate does not match it to the project
+  - Path spelling: running a gate script through a symlink has not been checked against the gate's rule
+    for its own scripts, and a firmlink alias of a project path on a case-sensitive system volume keeps
+    its spelling, so the gate does not match it to the project
   - Draft binding after approval: the approved draft is guarded only as far as the gate sees each write.
     A shell or NotebookEdit write into the draft that lands after approval gets no after-the-fact check;
     a symlink re-pointed after approval escapes the paths the gate recorded; and `node -p` and
@@ -168,6 +166,9 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
     `command -p` and `exec -a`, besides the residuals above. If you need a hard boundary, run the agent
     in a sandbox
   - Any process running as your user can change the plugin's state, plans and saved reviews
+  - The dependency audit's advisory dataset can reach the cache through a route the gate cannot see; its
+    build tool runs at review time with your own permissions, as the project's tests do; and nothing
+    authenticates the advisory export beyond HTTPS and its publisher
 
 ## Requirements
 
@@ -385,8 +386,9 @@ skill expects.
   list, test cases and a generated traceability report under `specification/`); for a project that has
   one it adds, changes or strikes items in the layout and format already there. The implementing skills
   call it, and you can start it on its own. Guide: [specification.md](docs/user-guide/specification.md)
-- `reviewing-java-changes`: a two-stage review of any Java change, with or without a plan; also the review
-  step of the Java skill
+- `reviewing-java-changes`: a two-stage review of any Java change, with or without a plan, with a Claude
+  code reviewer, a Claude security reviewer and a dependency audit against public advisory data; also the
+  review step of the Java skill
 - `reviewing-python-changes`: a two-stage review of any Python change, with five Claude lenses; also the
   review step of the Python skill
 - `reviewing-terraform-changes`, `reviewing-cloudformation-changes` and `reviewing-cdk-changes`: the same
@@ -489,6 +491,12 @@ CDK skills fetch `docs.aws.amazon.com` pages directly; the other skills expect t
   filtered change to GPT-6 Astra on Amazon Bedrock, in your AWS account. Without access the report says
   "External review: not run (<reason>)" and the Claude review still runs. Details:
   [docs/user-guide/external-review.md](docs/user-guide/external-review.md)
+- **Java reviews download public advisory data.** The dependency audit of every Java review, and the
+  Java skill's dependency check at plan time, match the project's dependencies against the public OSV
+  Maven export, downloaded anonymously at most once a day into
+  `~/.local/state/implement-from-spec/advisories/`; nothing about the project is sent. Only you can
+  switch it off (`dependency_audit = off` in `/config`). Details, and how to import the data on a machine
+  without internet access: [docs/user-guide/java.md](docs/user-guide/java.md)
 - **Cost.** On a subscription the skills spend plan usage; with an API key or on Amazon Bedrock they are
   billed per token. When enabled, the external review is billed to the AWS account it runs in, at the
   model's Bedrock price
@@ -498,8 +506,9 @@ CDK skills fetch `docs.aws.amazon.com` pages directly; the other skills expect t
   Setup keeps its doctor result and install journal in `~/.local/state/implement-from-spec/` (or under
   `$XDG_STATE_HOME`), and so do the review snapshots (`review-snapshots/`: what each review read, its
   briefs, gate results and findings) and the records of each session that started a gated skill or a
-  reviewer (`active/`, from your home directory alone, never `$XDG_STATE_HOME`); the reviewer
-  registrations are in the plugin's data directory
+  reviewer (`active/`, from your home directory alone, never `$XDG_STATE_HOME`), as do the Java
+  review's advisory data and build-tool output (`advisories/`, `dependency-audit/`, also from your home
+  directory alone); the reviewer registrations are in the plugin's data directory
   (`review-isolation/`). Nothing is written into the project except the files listed under "Use"
 
 ## Uninstall

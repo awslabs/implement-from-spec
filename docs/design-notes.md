@@ -453,6 +453,12 @@ rule the reviewer skills used to state only as an instruction:
     Any `>`, `>>`, `<(`, `$(`, backtick, `;`, `&` (background), leading variable assignment, `env`,
     `sudo` or test runner denies the line. Reviewers no longer run tests; the orchestrator's quality gate
     does
+- **Spelling** (decided 2026-11-24): every path the hook compares, and every root it compares one with,
+  is first spelled as the file system holds it, through the gate's own `ifs_paths.ondisk`, so a respelled
+  root or a firmlinked second name is the same place; credential directories, `.env` names and credential
+  patterns are compared folded (`ifs_paths.fold`), since a name that does not exist yet keeps the spelling
+  it was given, and a fold that also denies `.ENV` on a volume that tells case apart errs the safe way. The
+  setup ask hook matches `install.py` on the folded command for the same reason
 - Each denial is appended to the session's state file. Limitation, stated in the user guide: this is
   enforcement inside Claude Code's tool layer, not an operating-system sandbox; the external-review
   script still sends what it documents, and the before-and-after `git status` comparison stays
@@ -854,3 +860,309 @@ the gate state an approval leaves behind is not part of what a resumed run can b
 of the step (digest, the check before and after the copy, a partial copy resumed, verification after the
 sync) is covered on the host by an integration test in the maintainers' test suite.
 
+## Java security review: a second reviewer and a dependency audit (decided 2026-11-24)
+
+A Java review has a security reviewer of its own, working from a current rule catalogue, and a
+deterministic dependency audit that reports the known vulnerabilities of the project's resolved
+dependencies and the fix their advisories name. Why: a general reviewer that applies one security group
+among a dozen others spreads its attention over all of them, and a version an implementation plan takes
+from the model's memory is older than the advisories published since, so only a check against current
+advisory data can say whether it is vulnerable. What users see: [user-guide/java.md](user-guide/java.md).
+
+### The security reviewer
+
+- **Its own rule file.** `skills/reviewing-java-changes/references/security-dimensions.md` holds the
+  catalogue and the security reviewer's method; `review-dimensions.md` keeps a pointer where its
+  security group was. Why: each reviewer reads only its own rules, and the catalogue can grow without
+  lengthening what the code reviewer reads. Cost: two rule files whose identifiers must stay unique
+  across both, and whose cross-references (the ownership list in the catalogue's "How to apply") are
+  kept in step by hand
+- **A second entry on the existing `code-reviewer` skill, always on Opus.** The dispatch manifest names
+  it `security`, with the model fixed at `opus` rather than `lens`, so risk can never lower it. It owns
+  the Safety/security dimension for every file of the change, including the security consequence of a
+  defect that a group of `review-dimensions.md` describes; both briefs state the split, so nothing falls
+  between the two reviewers. Why: this is how Python's security lens works, and with no new reviewer
+  skill the isolation hook's list of reviewer skills and the component check stay as they are. Cost:
+  one more Opus reviewer on every Java review and every fix round; it runs in parallel with the code
+  reviewer, so it adds tokens, not wall-clock time
+- **Groups by trigger.** Each group of the catalogue names its trigger, and the reviewer reads only the
+  groups whose trigger the change, the build files, the configuration or the code the change reaches
+  meets; the others are `not applicable (<the trigger not met>)` on its `Groups:` line, which gives every
+  group's outcome. Five groups always apply (injection; cryptography, randomness, TLS and secrets; files,
+  resources and denial of service; input, outbound requests, logs and failure; dependencies and the build
+  supply chain), a trigger the reviewer cannot rule out counts as met, a skipped group a traced path
+  reaches is read after all, and a group left `unsure` makes verification incomplete. Why: the catalogue
+  is long, and a reviewer that reads groups the change cannot touch spends its attention there, while a
+  missing or doubtful trigger can only widen what is read. Cost: each trigger's wording is kept in step
+  with its group's rules by hand, so a rule added to a group must stay inside what the trigger names
+- **It looks nothing up.** The reviewer is read-only and may use no web tool, like every reviewer, so a
+  finding that depends on a version, a default or a date the repository does not show is marked
+  "verify against the docs" and the main conversation checks it in the documentation. The catalogue
+  keeps no list of minimum versions, which would be out of date within weeks; versions are the audit's.
+  Cost: the main conversation verifies those findings before it accepts them
+- **Stable identifiers.** JAVA-SEC-01 to 12 keep the numbers they had in `review-dimensions.md`; new code
+  and configuration rules continue the JAVA-SEC series; dependency and build rules are a JAVA-DEP series;
+  rules for known-vulnerable usage are JAVA-SEC rules that name the CVE. Why: earlier findings and eval
+  graders that cite an id still resolve. Cost: identifiers are not contiguous inside a group
+- **No change to the risk classifier.** The security reviewer is unconditional and the audit is
+  registered for every Java review, so neither needs a risk rule. Why: Python and infrastructure
+  reviews behave exactly as before. Cost: every Java review pays for both, a small change included
+
+### The dependency audit
+
+- **A gate the review cannot silently skip.** Reviewers are read-only and may not use the network, so
+  the audit belongs to the main conversation: it runs after the project's tests, and the main
+  conversation turns its entries into findings. The security reviewer never sees the report and applies
+  its usage rules on its own. The dispatch manifest's optional key `required_gates` names
+  `dependency-audit` and its script for Java; once the snapshot exists, `review-prepare.py` runs that
+  script's `register` command, which records the gate as not run ("pending: the audit has not run for
+  this snapshot"), and records "registration failed" itself when the script cannot start or fails. Only
+  the audit's own result replaces the record, and each attempt records the gate as pending again before
+  it starts. A pass or a fail records its coverage first, as a second gate `dependency-audit-coverage`
+  (pass when the inventory is complete, not run with the gap when it is partial), and the status line
+  ends with `coverage complete` or `coverage partial (...)`. Why: an audit that was forgotten, crashed or
+  stopped before recording leaves verification incomplete by construction, an earlier result on a reused
+  snapshot is superseded, and a fail found in a partial inventory has to be a red gate and an incomplete
+  verification at once, which one gate's single status cannot say. Cost: on a machine where the audit cannot run, no Java review ends complete
+  until the cause is fixed; and the preparation now starts a plugin script, which the threat model covers
+- **One script, standard library only: the build tool resolves, matching runs locally against the OSV
+  Maven export.** The alternatives, as their documentation and advisories stated them on 2026-11-24:
+  osv-scanner needs a binary install and resolves `pom.xml` through deps.dev by default, so coordinates
+  go to two Google services, and its offline mode switches transitive resolution off; OWASP
+  Dependency-Check needs an NVD API key in practice ("Without an NVD API Key dependency-check's updates
+  will be extremely slow", its README at https://github.com/dependency-check/DependencyCheck), says of its
+  first run that it "may take 5-20 minutes as it downloads and processes the data from the National
+  Vulnerability Database" (its Gradle plugin's page,
+  https://dependency-check.github.io/DependencyCheck/dependency-check-gradle/index.html), matches by
+  CPE with documented false positives, and depends on NVD enrichment that NIST has scaled back; Trivy's
+  own distribution was compromised in March 2026 (GHSA-69fq-xp46-6x23); the OSV API needs no install
+  but receives every coordinate. Why the export: one anonymous download of public data, nothing about the
+  project sent by the plugin's code, no install, and the project's mirrors and private repositories are
+  honoured because the build tool does the resolving. Cost: the script carries Maven's version ordering
+  (its reference is Maven's own `ComparableVersion`, checked against a committed corpus of pairs that
+  class ordered), because many advisories in the export give ranges with no enumerated version list; a
+  range whose events can be read more than one way, and a SEMVER range, whose ordering is not Maven's,
+  are not evaluated and count as a Major marked unsure rather than matched by a guess; and
+  the dataset is the GitHub Advisory Database's, so a CVE that exists only in the NVD is not reported.
+  Left out: a user-supplied SBOM, because a stale or selective inventory could manufacture a clean
+  result, and the CISA known-exploited catalogue, a second download and failure mode for little change
+  in class, since its entries are almost all critical or high already
+- **Offline resolution, with the trust of the tests.** The build tool, its wrapper and the project's
+  build configuration execute with the user's permissions, exactly as the tests do; an offline switch is
+  a request, not a sandbox, and the documentation claims no more. Why: the audit asks for no trust the
+  tests did not already have, and a failed offline resolution is reported as not run with a category
+  and the one command that provisions what is missing. Cost: no containment of the build's own code; an
+  operating-system sandbox is not built, because a standard-library script cannot provide one on macOS
+  and Linux alike. The build tool's path and version are recorded, a build tool inside the repository is
+  refused, and the child gets an argument list, closed standard input and its own process group, ended as
+  a group at the time limit; its environment is not reduced beyond `PATH`, made absolute and stripped of
+  every entry inside the repository, so that no program the build tool or its launcher looks up there
+  (`java`, for one) comes from the project, because the repository's build files already execute code and
+  removing other variables breaks legitimate local-repository settings
+- **Two time limits, both inside one Bash command.** Each build-tool run has its own limit (`--timeout`,
+  120 seconds) and the whole audit one more (`--total-timeout`, 480 seconds), the download included; a
+  run gets the smaller of its own limit and what is left, and once nothing is left no tool starts. Why: a
+  Bash tool command in the foreground may run 10 minutes by default, and one that outlives its timeout
+  moves to the background (https://code.claude.com/docs/en/tools-reference, "Timeout and output
+  limits", read 2026-11-24), where the review would report before the audit ends and the gate would stay
+  pending; an audit that stops itself records `not run (time limit: ...)` naming both options, and a base
+  the limit cuts short still leaves the candidate's result, every entry attribution unknown. Cost: a
+  build that needs longer is not audited until the user names a higher limit
+- **Attribution against the base, with a properly written-out candidate.** An occurrence is a module, a
+  coordinate, a version and whether its scope ships. The candidate is the working tree, or for a
+  commit-range review the range's end commit, written out byte for byte with `git ls-tree` and
+  `git cat-file` (so no attribute or filter applies) into a scratch directory, its links only when they
+  are relative and stay inside it (any other link, and a submodule, makes the result partial), and never
+  two entries that directory's file system would take for one; a pasted diff has no project and is not
+  audited, and a `--files` snapshot only when it holds every resolution input, since it verifies its own
+  files only. The base is always resolved, from the whole base revision written out the same way: no
+  list of file names covers everything a build reads to choose its dependencies (a script it applies, a
+  file a profile's activation tests), so equal resolution inputs prove nothing. Why: old
+  vulnerabilities in untouched dependencies are reported as pre-existing and never block a change that
+  neither added nor newly exposed them, while a usage finding by the security reviewer makes the
+  exposure the change's. Cost: a base that cannot be resolved leaves its entries "attribution unknown",
+  counted as the change's, so a change can fail for a dependency it did not touch until the base
+  resolves offline or the user accepts the advisory; and every audit resolves the build twice
+- **Severity, the gate and the user's acceptance.** The class comes from the GitHub advisory severity
+  word: CRITICAL, HIGH or a malicious-package record is Blocker, MODERATE (or MEDIUM) Major, LOW Minor,
+  anything else Major marked unsure; scope is reported and never lowers the class. The gate fails when
+  an occurrence that is the change's, or whose attribution is unknown, is Blocker or Major and not
+  accepted. Acceptance is the user's alone: the main conversation runs the audit again with the advisory
+  id as `--accept`, and the new result supersedes the old one. The fix named is the one the advisories
+  report, matched again against every advisory for that artifact, and worded "fix reported" or "no fixed
+  version in the advisory data", never "lowest safe release". Why: a failed gate forces the state
+  Blocked, which no deferral can lift, and some advisories have no publicly available fix, so acceptance
+  has to be an input of the audit itself; the state cannot read clean while an introduced vulnerability
+  is open, and the user still decides. Cost: no CVSS score is computed, so a test-scope Blocker stays a
+  Blocker; and an acceptance is an argument of one run, not a stored exception, so the next review asks
+  again
+- **No advisory text reaches a model.** The reports carry only values that pass a grammar (advisory
+  ids, coordinates, versions, severity words, dates, counts); summaries and details are never copied,
+  and every other string from a build file or the build tool is escaped and capped. The build tool's raw
+  output goes to a file only the user can read, and no line of it is copied into a report. Why: an
+  advisory or a build file cannot put instructions in front of a model or forge a report line, and a
+  credential in a repository URL or an error message is not attached to the review. Cost: a reader
+  opens the advisory itself to learn what it is about
+- **The advisory cache.** It lives under the user's state directory
+  (`~/.local/state/implement-from-spec/advisories/`, found from HOME alone), as the plugin's other state
+  does, and is refused when it resolves inside the repository under audit, is a link or belongs to
+  another user. Data checked with the server within 24 hours is used as it is; otherwise a conditional
+  request to one fixed HTTPS address, with no redirect followed and at most 128 MiB within 120 seconds;
+  when that fails, data checked within 7 days is used and the report says so, and older data is not used
+  at all. Every record is parsed in memory, never extracted to disk; refresh and import take a lock; a
+  dataset is published under its digest, which its metadata holds and every load checks again, and the
+  previous one is kept, because an audit reads the metadata and then the dataset without the lock; every
+  dataset, downloaded or imported, must hold at least 5,000 usable advisories and no two different
+  records under one id; and the cache's directories and files must be the user's own, writable by no one
+  else, never links, a file with one name only. The data line of
+  every report states where the data came from, its publication date and its advisory count. There is
+  no test knob in the environment: unit tests pass a dataset as a function argument, and evals import a
+  pinned copy of the real export into their own isolated home directory. Why: an emptied, truncated or
+  small test dataset never produces a clean result, and a stale one is never used silently. Cost,
+  accepted as residuals: the minimum does not stop a dataset built on purpose to pass it. In a gated
+  session the approval gate denies the tool calls that would write, remove or replace the cache or the
+  build-output directory directly (`core/gate/ifs_paths.py`, `dependency_audit_dirs`, among the roots no
+  tool call may write; reads stay allowed), and there the documented route for such a dataset, the
+  script's own `refresh --from`, asks the user before and after approval (the Java implementing skill's
+  command rule `java-advisory-data-import`); every report's `Data:` line shows an import, naming its
+  origin, and the review says so for the human reviewer. A download, `check` and `audit` are not asked:
+  the data they publish comes only from the one fixed address, while an import publishes whatever copy
+  it is given. The rule guards that route only: a renamed copy of the script, or a program whose writes
+  the gate cannot see, still writes the cache unasked. Outside a gated session, and
+  against another process of the same user, nothing protects the cache. Nothing authenticates the export
+  beyond HTTPS and its publisher. A repository's settings cannot move the cache, because Claude Code
+  drops `HOME` and the `XDG_*` variables from project and local settings
+  (https://code.claude.com/docs/en/settings-reference, "Variables Claude Code ignores in `env`", read
+  2026-11-24); a repository whose settings the user has trusted can still define hooks, which run its
+  own code, the trusted-folder class of the threat model (TM-45)
+- **Only the user switches it off.** `dependency_audit` (default `on`) is read from a flag or from the
+  user's saved plugin options; an environment variable can switch the audit on, never off, and an `off`
+  that arrives through the environment, or through a settings file inside the repository under audit,
+  is recorded as not run, naming its source. An environment `on` outranks a saved `off`, so a user can
+  switch the audit back on for one session. A request in the conversation to skip the audit for one
+  review is honoured as any skipped check is: not run, named, verification incomplete. Why: a repository
+  cannot remove the check through a committed `env` block (TM-45, TM-46). Cost: a user who wants the
+  audit off everywhere sets it in the saved options, not in a shell profile
+- **Coverage is counted apart from findings.** A result is complete only when every build tool that ran
+  ended successfully and every Maven module, or every Gradle project, reported its whole dependency
+  graph: for Maven, with no dependency whose POM it did not find offline or could not read; for Gradle,
+  with no unresolved dependency, no configuration whose resolution failed, no dependency result of a
+  kind the walk cannot follow, no component that is neither a module nor a project, no flat-directory
+  repository and no included build. A partial result keeps the vulnerabilities it found, and still
+  fails on them, and is otherwise not run. The report states what the inventory is and is not, and a
+  clean result is worded "no matching advisory in this dataset", never "no vulnerabilities". Why: a
+  partial or empty result never reads as clean. Cost: one module that does not resolve offline leaves
+  every review of the project incomplete
+- **The build files choose the build tool.** A `pom.xml` in the project directory means Maven, Gradle
+  build or settings files mean Gradle, and a directory holding both is resolved by both: each occurrence
+  names its tool, and coverage is complete only when both resolve. `--build-tool maven|gradle` names the
+  build the project uses, which then resolves alone; the review skill passes it only when the user
+  names the build tool in the conversation. The base revision's tools are chosen by the same rule from
+  its own build files, so a build the change adds has nothing to compare with at the base and its
+  occurrences count as the change's. Why: either build can be the one that ships (a migration in
+  progress, or a build left behind), and resolving one of them by a fixed preference would leave the
+  other unchecked without a word. Cost: a project with both builds runs both tools on every review, and
+  while one of them cannot resolve offline the review stays incomplete, until it can or the user names
+  the other; the not-run line of such a project says so, ending with the `--build-tool` option that
+  audits the other build alone
+- **Maven.** `dependency:tree` in batch and offline mode on one thread, its text read from standard
+  output, where each module's tree follows the goal's header line; each Maven profile the user names is
+  resolved in a run of its own after the default build, because activating one can switch off the
+  build's `activeByDefault` profiles ("This profile will automatically be active for all builds unless
+  another profile in the same POM is activated", Maven's Introduction to Build Profiles, read
+  2026-11-24). An option in `.mvn/maven.config` or `MAVEN_ARGS` that builds only part of the reactor
+  (`-N`, `-pl`, `-rf`, `-f`) stops the audit, and a tree goal the build configures to list less, or one
+  whose configuration Maven did not print, makes the result partial: the tree would then cover only part
+  of the build. Two logger properties on the command line make Maven print its POM warnings and the tree
+  goal's configuration whatever the build's own logging; the configuration check was verified on Maven
+  3.9, and a Maven release that does not honour those logger properties prints no configuration, so its
+  result is partial, never clean. A dependency both the default build and a named profile resolve is one
+  entry, whose scope names each run that held it after the Maven scope (`compile: default, profile-it`),
+  so a profile does not multiply an occurrence. The Maven distribution the project's
+  wrapper names is used when it is already on the machine, in the directory the Maven wrapper's own
+  launcher or script names after that distribution's URL, so a distribution of the same name downloaded
+  from another URL is not taken for it; else `mvn` from PATH; the wrapper script
+  itself is never run, because it would download a missing distribution and it is a program inside the
+  repository. Why by URL, not by name alone: the wrapper itself keeps distributions of one name apart by
+  the URL that downloaded them, and a name match alone would let a distribution from an untrusted mirror
+  stand in for the one the project pins. Why standard output: the goal's option to write the trees to a file does not keep every
+  module's tree of a multi-module build. Why the dependency plugin's version is recorded, not pinned: a
+  pinned version is less likely to be in the offline local repository. When Maven reads no dependency
+  information for a dependency, because its POM is not in the local repository or cannot be read, it
+  warns and the build still succeeds, with the dependency in the tree and nothing below it; the parser
+  takes those two warnings wherever they stand in a line and makes the result partial, naming each such
+  dependency. Why: what that POM declares would otherwise leave the inventory without a trace. Cost: a
+  line taken for such a warning by mistake makes a result partial, never clean
+- **Gradle through an init script the plugin ships.** Gradle itself resolves the build, offline, with no
+  daemon and no configuration cache
+  (`--offline --no-daemon --no-configuration-cache -q --console=plain`), and a short Groovy init script,
+  `core/scripts/dependency-audit-graph.init.gradle` (Groovy because a Groovy script compiles faster on
+  its first use than a Kotlin one). It adds one task
+  to every project, which walks the resolution result of every resolvable configuration and prints one
+  marked line per resolved module, project dependency, unresolved dependency, failed configuration and
+  dependency result of a kind Gradle does not document, with its path from the configuration's root;
+  each line carries a nonce of the run, so the parser
+  takes only that run's lines, and the script refuses to run without it. Gradle honours lockfiles
+  itself. The project cache directory and every project's build directory are redirected to scratch,
+  because Gradle's `.gradle/` and `build/` would otherwise appear in the working tree and invalidate
+  the review snapshot. The Gradle that runs is the distribution the project's wrapper names, when the
+  wrapper has already unpacked it into the Gradle user home, in the directory named after that
+  distribution's URL, from an archive checked against the `distributionSha256Sum` the wrapper's
+  properties give when they give one, and with no wrapper `gradle` from PATH;
+  the `gradlew` script is never run, because it would download a missing distribution and it is a
+  program inside the repository, and a wrapper whose distribution is not there stops the audit, because
+  another Gradle version may not configure the build. Supported: Gradle 6.6 and later, the first
+  release whose command line takes `--no-configuration-cache` (Gradle 6.6 user guide, "Configuration
+  cache"); the rest of what the script uses is public API older than 6.6 with no deprecation in the
+  current Javadoc (docs.gradle.org, read 2026-11-24). The inventory is every resolvable configuration
+  of every project; not the buildscript classpath, which is build plugins, not file dependencies (files
+  and file trees), which the resolution result does not hold, not shaded content and not included
+  builds. A configuration's context comes from its name as Gradle's Java plugins form it: ship for a
+  runtime classpath, compile for a compile classpath, test for a test configuration, build for an
+  annotation-processor path, other for anything else. Other counts as shipping when the base is
+  compared, as ship does, so a configuration the naming conventions do not place is never taken for
+  one that stays out of the product; the context never lowers the class. Every project must report its
+  whole graph with no unresolved dependency, no failed configuration and no dependency result of an
+  unknown kind, or the result is partial; an included build (a composite) is reported as not audited,
+  which makes it partial. Why: a
+  machine-readable export of the resolved graph covers custom source sets, test fixtures and
+  annotation-processor paths without parsing Gradle's human-readable report, and a lockfile alone is no
+  evidence that it covers the build. Cost: a script of the plugin's runs inside the user's Gradle, with
+  the build's own trust, and the build's code could print lines shaped like the script's; a project
+  whose wrapper's distribution was never downloaded is not audited until it is; composite builds and
+  `buildSrc` are not audited
+- **Gradle: no module resolves without its metadata.** A Maven or Ivy repository may resolve a module
+  from its artefact alone (`metadataSources { artifact() }`), and a module with no metadata then
+  resolves as one with no dependencies, which the resolution result does not show. For the audit's run
+  only, the init script takes that source away from every Maven and Ivy repository the build's projects
+  resolve from, those of each project and, from Gradle 6.8, those of the settings'
+  `dependencyResolutionManagement`, keeping the POM, Ivy descriptor, Gradle module metadata and
+  redirection settings each had; it does so when a repository is added and again before the walk, in
+  case the build changes the sources later. Such a module is then unresolved and the result partial, and
+  the not-run line names the repositories read that way. A flat-directory repository has no metadata at
+  all, so declaring one makes the result partial. The `buildscript` and `pluginManagement` repositories
+  stay as declared: they serve build plugins, which are outside the inventory, and without the
+  artefact-only source a plugin held as an artefact alone would stop the build. Why: a module counted as
+  having no dependencies shortens the inventory without a trace, the Gradle counterpart of a POM Maven
+  could not read. Cost: a build that relies on modules without metadata, or on a flat directory, is not
+  audited complete until they are published with a POM or Gradle module metadata
+- **Defaults.** The audit is on, and an audit the user switched off does not make verification
+  incomplete, while one that could not run does. With the audit on, a Java review downloads the public
+  export at most once a day. The alternative, off by default as the external reviewer is, would leave the
+  check doing nothing until a user turned it on; and an off that also made verification incomplete would
+  turn the user's own choice into a permanent gap in every review
+
+Evidence a maintainer needs:
+
+- Resolution needs project metadata only, so the audit downloads no artefact and builds nothing: a
+  multi-module Maven build resolves its sibling modules from the reactor without building them, and
+  Gradle's resolution result is computed from module metadata
+- `dependency:tree` writes nothing in the project; Gradle writes its project cache and build directories
+  there unless they are redirected
+- Maven's two warnings for a dependency it read no dependency information for, after which the build
+  still ends in success: "The POM for <artifact> is missing, no dependency information available" and
+  "The POM for <artifact> is invalid, transitive dependencies (if any) will not be available"
+- The export's Maven records come from the GitHub Advisory Database, licensed CC-BY 4.0
+  (https://github.com/github/advisory-database and https://google.github.io/osv.dev/data/, read
+  2026-11-24). The data is downloaded at run time and never vendored, and every report prints the
+  attribution "OSV, GitHub Advisory Database, CC-BY 4.0"

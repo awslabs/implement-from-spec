@@ -57,6 +57,16 @@
       ],
       "default": "optional"
     },
+    "dependency_audit": {
+      "type": "string",
+      "title": "Dependency audit",
+      "description": "On by default. on: a Java review has the build tool list the project's resolved dependencies offline and matches them against the public OSV advisory data. The data is refreshed at most once in 24 hours by one anonymous HTTPS download of the public OSV Maven export from Google's OSV bucket; nothing about the project is sent. off: the audit does not run and the review report shows Dependency audit: off (configuration: <source>). Only this option or a command flag switches it off; an environment variable cannot, so a repository's settings cannot",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
+    },
     "setup_session_notice": {
       "type": "boolean",
       "title": "Setup notice at session start",

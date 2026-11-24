@@ -40,8 +40,9 @@ them all):
     that module cannot load or raises, the selection falls back to the full one below: it fails closed.
       activate           runs for Skill when skills/<name>/gate_rules.json exists for the skill's name (or the
                          name is unusual); no other skill can start the gate.
-      install-ask-hook   runs for Bash when the payload contains "install.py": it asks only for install.py
-                         --apply.
+      install-ask-hook   runs for Bash when the payload contains "install.py" in any letter case, or holds text
+                         that is not ASCII (a volume that ignores case or skips format characters runs install.py
+                         for INSTALL.PY or inst<U+200C>all.py): it asks only for install.py --apply.
   - Otherwise the payload is parsed and the checks the old registrations would have started run: review-
     isolation on every tool, plus activate (Skill), guard-edit (the four edit tools) or guard-bash and
     install-ask (Bash). A payload that is not a JSON object runs review-isolation and guard-bash, whose own
@@ -260,7 +261,9 @@ def fast_plan(raw):
         steps.append("guard-edit")
     if tool == "Bash" and gate_may_decide(raw):
         steps.append("guard-bash")
-    if tool == "Bash" and "install.py" in raw:
+    if tool == "Bash" and ("install.py" in raw.lower() or not raw.isascii()):
+        # Any letter case, and any text that is not ASCII: a volume that ignores case or skips format characters
+        # runs install.py for INSTALL.PY or inst<U+200C>all.py, and the ask folds the command before it matches.
         steps.append("install-ask")
     return steps
 

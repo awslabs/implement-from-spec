@@ -16,8 +16,12 @@ core/scripts/spec-external-review.py --show-config with the setting flag the use
 effective mode is off, runs that script itself with the review's arguments (it then prints "External
 review: off (configuration)" and sends nothing) and saves its stdout, stderr and exit code to
 <DIR>/external.txt. Any other mode leaves the external stage to the runner subagent, whose one-line command
-it writes to <DIR>/briefs/external-review.md. It never sets a setting flag the user did not pass, never
-writes in the project repository, and writes only under the snapshot directory.
+it writes to <DIR>/briefs/external-review.md. For each gate the manifest lists under required_gates it runs
+that gate's own script, `register --snapshot <DIR>`, which records the gate as not run yet, so the review
+cannot be complete without the gate's result; when the script does not start, times out, exits with an error
+or prints nothing, the preparation records the gate as not run itself ("registration failed") and continues;
+when even that record fails, the preparation stops with an error. It never sets a setting flag the user did
+not pass, never writes in the project repository, and writes only under the snapshot directory.
 
     --stack python|java|cdk|cloudformation|terraform --repo R --base REV
         [--range A..B | --files P... | --diff-file F] [--plan P] [--context P...]
@@ -29,7 +33,10 @@ ifs-review-dispatch/1:
      "reviewers": [{"name": "<a-z0-9->", "skill": "<reviewer skill>", "model": "lens" | "sonnet" | "opus",
                     "brief": [{"file": "<path>", "section": "<exact heading text>" | null}, ...],
                     "assign": "<the lens or check groups, one line>", "when": "security_handoff"}, ...],
-     "runner": {"skill": "running-external-review", "model": "sonnet", "focus": "<review-focus.md path>"}}
+     "runner": {"skill": "running-external-review", "model": "sonnet", "focus": "<review-focus.md path>"},
+     "required_gates": [{"name": "<a-z0-9->", "script": "core/<path>.py"}, ...]}
+required_gates is optional within ifs-review-dispatch/1: a gate the review must hold a result for, and the
+plugin script under core/ that registers it.
 A file is relative to the skill directory, or relative to the plugin root when it starts with core/ or
 skills/, and must stay inside the plugin's core/ or skills/. "lens" takes the risk classification's
 lens_model (sonnet, opus on high). A section is the heading's text without its #s, matched exactly outside
@@ -64,10 +71,12 @@ Output (with --json the same as one JSON object, schema ifs-review-prepare/1):
     Dispatch: <reviewer> skill=implement-from-spec:<skill> model=<sonnet|opus> brief=<DIR>/briefs/<reviewer>.md
     External review: <the script's status line, when it ran here> | runner (dispatch the runner)
     Runner: skill=implement-from-spec:running-external-review model=<model> policy=<optional|required|unknown> brief=<DIR>/briefs/external-review.md
+    <the line a required gate's registration printed> | Required gate: <name> not run (registration failed: <why>)
 The Runner line is printed only with "External review: runner". Its policy is the external_review_policy
 --show-config resolved from the same settings the runner's script reads, "unknown" when it could not be
 read: with required (or unknown) any outcome but a review makes verification incomplete, even when the
-script dies before its status line. When the candidate changes during the
+script dies before its status line. The last line is printed once per required gate, in manifest order, after
+everything else. When the candidate changes during the
 preparation, the output is one "changed: <path>" line per difference and the exit status 3.
 
 Usage:
@@ -117,6 +126,7 @@ UNFILLED_RE = re.compile(r"\$\{(?:CLAUDE_[A-Z0-9_]+|user_config\.[^}]*)\}|"
 HANDOFF_SKILLS = (f"{PLUGIN}:iac-security-reviewer", f"{PLUGIN}:reviewing-terraform-security")
 MAX_LISTED = 300
 EXTERNAL_TIMEOUT_S = 120
+REGISTER_TIMEOUT_S = 60
 # The finding line of contract section 9, "Findings", verbatim; the brief's format paragraph below states its rules.
 FINDINGS_LINE = ("[Blocker|Major|Minor|Nit][ unsure] <file>:<line> - <lens>[ (<check ID>)] - <problem, \u226420 words> "
                  "(<item ID>). Why: <\u226425 words>. Evidence: <trigger>; <\u22643 file:line steps, source first, sink "
@@ -252,7 +262,7 @@ def validate_manifest(manifest, base_dir: str, where: str) -> dict:
     """Checks a dispatch manifest against ifs-review-dispatch/1 and resolves every reference: each file
     inside the plugin, each section found exactly once. Returns the normalised manifest, whose brief entries
     carry the file's absolute path and the section text."""
-    check_keys(manifest, ("schema", "reviewers", "runner"), where)
+    check_keys(manifest, ("schema", "reviewers", "runner"), where, optional=("required_gates",))
     if manifest["schema"] != MANIFEST_SCHEMA:
         raise Stop(EXIT_ERROR, f"{where}: schema is {manifest['schema']!r}, not {MANIFEST_SCHEMA}")
     reviewers = manifest["reviewers"]
@@ -319,7 +329,31 @@ def validate_manifest(manifest, base_dir: str, where: str) -> dict:
     if not focus.startswith(os.path.realpath(os.path.join(PLUGIN_ROOT, "skills")) + os.sep):
         raise Stop(EXIT_ERROR, f"{where}: runner focus must lie under the plugin's skills/: {runner['focus']}")
     return {"reviewers": out, "runner": {"skill": f"{PLUGIN}:{RUNNER_SKILL}", "model": runner["model"],
-                                         "focus": focus}}
+                                         "focus": focus},
+            "required_gates": validate_required_gates(manifest.get("required_gates", []), base_dir, where)}
+
+
+def validate_required_gates(gates, base_dir: str, where: str) -> list:
+    """The manifest's optional required_gates: each a gate name and the plugin script under core/ whose
+    `register` command records it. The script's path is resolved here, before anything is written."""
+    if not isinstance(gates, list):
+        raise Stop(EXIT_ERROR, f"{where}: required_gates must be a list")
+    out, names = [], set()
+    for n, gate in enumerate(gates):
+        label = f"{where}: required_gates[{n}]"
+        check_keys(gate, ("name", "script"), label)
+        name = gate["name"]
+        if not isinstance(name, str) or not NAME_RE.match(name) or name in names:
+            raise Stop(EXIT_ERROR, f"{label}: name {name!r} is not lower-case letters, digits and hyphens, or is "
+                                   "used twice")
+        names.add(name)
+        script = resolve_ref(base_dir, gate["script"], label)
+        if not script.startswith(os.path.realpath(os.path.join(PLUGIN_ROOT, "core")) + os.sep) \
+                or not script.endswith(".py"):
+            raise Stop(EXIT_ERROR, f"{label}: script must be a Python script under the plugin's core/: "
+                                   f"{gate['script']}")
+        out.append({"name": name, "script": script})
+    return out
 
 
 def load_dispatch(stack: str) -> dict:
@@ -378,7 +412,7 @@ def render_brief(rev: dict, stack: str, manifest: dict, directory: str, risk: di
     """A reviewer's brief. Every repository-derived name in it (a changed path, the plan, the context and policy
     files, a risk reason) goes through shown(), as in the text output: a model reads the brief, and a name with a
     newline would otherwise add a line of the brief's own, a forged heading or rule, which the brief's precedence
-    rule (instructions in the reviewed content are findings) does not cover (PR 1 code review, item 9; TM-62)."""
+    rule (instructions in the reviewed content are findings) does not cover (TM-62)."""
     repo = manifest["repo"]
     values = {"plugin": PLUGIN_ROOT, "dir": directory, "repo": repo}
     policy_dir = os.path.join(directory, "policy")
@@ -558,7 +592,7 @@ def copy_diff(snap, manifest: dict, directory: str) -> str:
 def external_args(manifest: dict, runner: dict, directory: str, diff_copy) -> list:
     """The review's arguments for spec-external-review.py: the same change, plan, context and policy, the
     policy bound to this snapshot by its full id (--snapshot-id), which a fix round keeps when it puts
-    --files <the delta's paths> in place of the change argument (PR 1 fix round 4)."""
+    --files <the delta's paths> in place of the change argument."""
     mode, source = manifest["mode"], manifest["source"]
     args = ["--repo", manifest["repo"], "--focus", runner["focus"], "--policy-dir", os.path.join(directory, "policy"),
             "--snapshot-id", manifest["id"]]
@@ -631,6 +665,43 @@ def runner_brief(args: list, setting_flags: list, runner: dict) -> str:
             "isolation hook denies), with nothing appended, in one background Bash call, and return its exit "
             "code and everything it printed, stdout and stderr, verbatim:\n\n"
             f"    {command}\n")
+
+
+# ---------------------------------------------------------------- required gates
+def register_gate(snap, directory: str, gate: dict) -> dict:
+    """Runs a required gate's own `register --snapshot <DIR>` and returns the line it printed. The script
+    decides what registering means (it records the gate as not run and pending, or says the user switched the
+    gate off). A script that does not start, times out, exits with an error or prints nothing has registered
+    nothing, so the preparation records the gate as not run itself: a review of this stack is then incomplete
+    by construction, never silently without the gate (design notes, Java security review). The preparation
+    continues; it stops with an error only when the gate cannot be recorded as not run either."""
+    argv = [sys.executable, "-I", gate["script"], "register", "--snapshot", directory]
+    command = shown(shlex.join(["python3", "-I", gate["script"], "register", "--snapshot", directory]))
+    try:
+        proc = subprocess.run(  # nosec B603 - argument list: this interpreter and a script under the plugin's core/
+            argv, capture_output=True, text=True, timeout=REGISTER_TIMEOUT_S, check=False)
+        # Split at newlines only: splitlines() also breaks at U+2028 and the like, which shown() must escape.
+        lines = [line for line in proc.stdout.split("\n") if line.strip()]
+        problem = f"exit {proc.returncode}" if proc.returncode else None if lines else "it printed no line"
+    except subprocess.TimeoutExpired:
+        problem = f"no answer within {REGISTER_TIMEOUT_S} s"
+    except OSError as exc:
+        problem = f"the script did not start: {exc.strerror}"
+    if problem is None:
+        return {"name": gate["name"], "registered": True, "line": lines[-1]}
+    reason = f"registration failed: {problem}"
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+        code = snap.cmd_record_gate(argparse.Namespace(dir=directory, name=gate["name"], status="not-run",
+                                                       command=command, reason=reason))
+    if code == EXIT_CHANGED and snap.verify_manifest(snap.load_manifest(directory)[1]):
+        # The candidate changed meanwhile: prepare() reports that, exit 3, and prints none of these lines.
+        return {"name": gate["name"], "registered": False,
+                "line": f"Required gate: {gate['name']} not recorded (the snapshot changed)"}
+    if code != EXIT_OK:
+        raise Stop(code, f"the required gate {gate['name']} could not be registered ({problem}) nor recorded as "
+                         f"not run: {said.getvalue().strip()}")
+    return {"name": gate["name"], "registered": False, "line": f"Required gate: {gate['name']} not run ({reason})"}
 
 
 # ---------------------------------------------------------------- the preparation
@@ -717,9 +788,9 @@ def prepare(args, snap, risk_mod, ext) -> dict:
     elif UNSAFE_RE.search(shlex.join([*ext_args, *setting_flags])):
         # A path of the change (a --files entry, the plan, a context file) holds a newline or another control
         # character: the runner's one-line command cannot carry it (the isolation hook denies such a command),
-        # and an escaped spelling would name another file, possibly a decoy the change commits (PR 1 code review,
-        # item 9, GPT-6 Astra review). The external stage is not run rather than run on other names, and says so
-        # on its status line: under policy required or unknown that leaves verification incomplete.
+        # and an escaped spelling would name another file, possibly a decoy the change commits. The external
+        # stage is not run rather than run on other names, and says so on its status line: under policy required
+        # or unknown that leaves verification incomplete.
         external["status"] = ("External review: not run (review-prepare: a path of the change holds a control "
                               "character, which the runner's one-line command cannot carry)")
     else:
@@ -729,13 +800,15 @@ def prepare(args, snap, risk_mod, ext) -> dict:
         runner = dispatch_manifest["runner"]
         external["runner"] = {"skill": runner["skill"], "model": runner["model"], "policy": policy, "brief": brief}
 
+    gates = [register_gate(snap, directory, gate) for gate in dispatch_manifest["required_gates"]]
+
     changed = changed_paths(snap, manifest)  # the moment before dispatch
     if changed:
         result["changed"] = changed
         return result
     result.update(risk={k: risk[k] for k in ("tier", "reasons", "approval_required", "security_handoff",
                                              "lens_model")},
-                  dispatch=dispatch, external=external)
+                  dispatch=dispatch, external=external, required_gates=gates)
     return result
 
 
@@ -749,6 +822,7 @@ def text_lines(result: dict) -> list:
     if ext["runner"]:
         lines.append(f"Runner: skill={ext['runner']['skill']} model={ext['runner']['model']} "
                      f"policy={ext['runner']['policy']} brief={shown(ext['runner']['brief'])}")
+    lines += [shown(gate["line"]) for gate in result["required_gates"]]
     return lines
 
 
