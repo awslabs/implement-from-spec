@@ -994,7 +994,7 @@ def check_binding(snap: PolicySnapshot, root: str, args: argparse.Namespace, cha
 
 def new_run_dir(root: str) -> str:
     label = re.sub(r"[^a-z0-9-]+", "-", os.path.basename(root).lower()).strip("-")[:30] or "repo"
-    run = os.path.join(REVIEW_HOME, f"{datetime.datetime.now():%Y%m%d-%H%M%S}-{label}-{os.urandom(3).hex()}")
+    run = os.path.join(REVIEW_HOME, f"{datetime.datetime.now():%Y%m%d-%H%M%S}-{label}-{secrets.token_hex(3)}")
     try:
         # makedirs applies its mode only to the leaf, so the review home is created 0700 explicitly (an
         # existing directory keeps its mode); the run directory is 0700 and every saved file 0600.
