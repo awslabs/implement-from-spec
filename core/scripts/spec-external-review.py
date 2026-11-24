@@ -497,7 +497,7 @@ def content_block(rel: str, data: bytes, skip) -> str:
     text = data.decode("utf-8", errors="replace")
     kind = secret_kind(text)
     if kind:
-        return skip(f"content looks like a secret: {kind}, never sent")
+        return skip("content looks like a secret, never sent")
     SENT["files"] += 1
     return f"--- {escaped(rel)} (full content)\n{text}\n"
 
