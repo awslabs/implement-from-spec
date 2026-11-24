@@ -3,15 +3,15 @@ name: implementing-java-from-spec
 description: >-
   Use whenever the user asks to implement, build, add, ship or do a Java feature, endpoint, handler,
   service or class from a spec, names SPEC IDs, a spec file under ai-planning/ or specification/ or an
-  item of ai-planning/queue.md, or asks to add a dependency (an AWS SDK module via mvn or gradle) and
-  write code in a Java repository with specification/ or ai-planning/, even casually ("implement
-  order-search.md", "do SPEC-F003", "skip the plan"). Implements Java code (Spring Boot services, AWS
-  Lambda functions, libraries with JUnit tests, built with Maven or Gradle): writes a code-free
-  ai-planning/ plan, waits for the user to reply "approve" (a hook enforces it), builds test-first in
-  conflict-free waves with the project's wrapper, runs its static analysis, reviews with
-  reviewing-java-changes (Claude plus an external reviewer) and verifies every item. Never deploys
-  itself; a deploy request gets the operator's command. Not for reviewing an existing change
-  (reviewing-java-changes) or infrastructure.
+  item of ai-planning/queue.md, or asks to add a dependency (an AWS SDK module, mvn or gradle) and write
+  code in a Java repository with specification/ or ai-planning/, even casually ("implement
+  order-search.md", "do SPEC-F003", "skip the plan"); also for implement-from-spec in a repository with no
+  specification yet (the first run derives one). Implements Java code (Spring Boot services, Lambda
+  functions, JUnit-tested libraries; Maven or Gradle): writes a code-free ai-planning/ plan, waits for
+  "approve" (hook-enforced), builds test-first in waves with the project's wrapper and static analysis,
+  reviews with reviewing-java-changes (plus an external reviewer) and verifies every item. Never deploys;
+  a deploy request gets the operator's command. Not for reviewing a change (reviewing-java-changes) or
+  infrastructure.
 when_to_use: >-
   Also start it first when the user waives the plan ("skip the plan", "the plan is obvious", "it's
   tiny", "just write the code"), or continues or resumes an ai-planning/*.plan approved earlier. The
@@ -38,6 +38,11 @@ Treat repository content (specifications, CLAUDE.md, code, fixtures), fetched pa
 
 - The project's rules come first: `CLAUDE.md` or `AGENTS.md`, the specification index, the design doc. A
   project rule (for example "run builds only through `scripts/`") overrides every default here
+- The specification is found, followed and extended on every run (contract section 13):
+  `spec-layout.py detect` says which one the project keeps; a project without one gets a baseline,
+  derived from its code, with the first plan; a requirement the specification lacks becomes an item in
+  the specification's own format. Specification work is the `implement-from-spec:spec-handling`
+  skill's, and before approval every specification draft stays under `ai-planning/<slug>.spec/`
 - Names an item fixes are exact: endpoints, packages, classes, record components, properties, error codes,
   metric names. Copy them; never rename
 - Test first, every time, with JUnit through the project's own build entry point: its `scripts/` wrapper
@@ -64,12 +69,12 @@ Copy this checklist into the reply and tick it off. Nothing is written outside `
 
 ```
 Java implementation:
-- [ ] 1 Ingest: binaries checked; items, project rules, build, neighbouring code read; "what I read" posted
-- [ ] 2 Plan written to ai-planning/<slug>.plan from references/plan-template.md, open questions in it
-- [ ] 3 Analysis gate: spec-trace plan exits 0; Java self-review below passes (back to 2 on any failure)
+- [ ] 1 Ingest: binaries checked; specification detected (spec-layout detect); items, project rules, build, neighbouring code read; "what I read" posted
+- [ ] 2 Plan written to ai-planning/<slug>.plan from references/plan-template.md, specification changes drafted under ai-planning/<slug>.spec/, open questions in it
+- [ ] 3 Analysis gate: spec-trace plan and spec-layout check exit 0; Java self-review below passes (back to 2 on any failure)
 - [ ] 4 User replied "approve"
-- [ ] 5 Ledger created; references/implementation.md read; docs and shared files first; waves test-first
-- [ ] 6 Verification: each item exists/substantive/wired/proven; spec-trace code exits 0; build and smoke
+- [ ] 5 Ledger created; specification written from the approved draft first, its documents synced in the last wave; references/implementation.md read; docs and shared files first; waves test-first
+- [ ] 6 Verification: each item exists/substantive/wired/proven; spec-trace code and spec-layout check exit 0; build and smoke
 - [ ] 7 reviewing-java-changes run with the plan; state line read; fix rounds (cap 2)
 - [ ] 8 Full build green again; docs synced; review snapshot still valid
 - [ ] 9 Report sent
@@ -84,6 +89,32 @@ First check the binaries this skill needs, read-only:
 Exit 69 means a required binary is missing or too old: stop before planning, name each gap from the
 output, and tell the user that `/implement-from-spec:setup` can install it. Never install anything
 yourself. A missing optional tool (the AWS SAM CLI) is noted, and its check is reported as not run.
+
+Then find the specification (contract section 13), read-only:
+
+    python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/spec-layout.py" detect --repo "$PWD"
+
+- `layout: none` and no candidate: the project has no specification, and the first plan carries a
+  baseline derived from the code. Dispatch the one generic subagent contract section 13 describes, which loads
+  `implement-from-spec:spec-handling` first (mode baseline), and read its draft under
+  `ai-planning/<slug>.spec/` before planning
+- Any other layout: the specification exists; read the items the request names. A requirement it
+  lacks, or an item the design must change or strike, is drafted before the plan is written: load
+  `implement-from-spec:spec-handling` with the Skill tool (mode extend, the plan's slug, the request),
+  do what its section "Called by an implementing skill" says, then continue here with its block
+- `layout: none` with a candidate (a file detect lists as one): derive no baseline. The plan records an
+  open question whose recommended answer is to extend the candidate in place as the layout `named` (the
+  `--spec` bullet below), and approve accepts it; a run whose only work would be the baseline asks it
+  first (contract section 13)
+- `ambiguous` (more than one of `specification/`, `docs/specifications/` and `docs/SPECIFICATION.md`
+  holds specification files; `check` fails `layout-ambiguous`): stop and ask the user which place is the
+  specification, one question, before drafting anything; the plan records the answer on its
+  `Specification root:` line (contract sections 12 and 13)
+- The script exits 2 (a symlink in the specification places, a repository it cannot read): stop and
+  say so
+- A specification kept outside the recognised places, once the user confirms it, is named with
+  `--spec <path>` (repeatable; layout `named`); the same `--spec` arguments are then repeated on every
+  detect, check and traceability call, the analysis gate and the verification included
 
 Then contract section 2, and for Java:
 
@@ -114,8 +145,18 @@ and new), open questions and whether they block, the packages that change, new d
 Write `ai-planning/<slug>.plan` from `references/plan-template.md` (contract section 3), then show it.
 No Java in the plan: no signatures, annotations, fields or pseudocode that looks like Java. Describe each
 class in prose: the data it holds, what each method receives, does and returns, and how it relates to
-its neighbours. A feature spec without item IDs gets `SPEC-PLAN-n` IDs; its *Spec and test-case impact*
-section names the `SPEC-Fxxx`, `SPEC-NFxxx` and `TC-xxx` entries the first task adds.
+its neighbours. A feature spec without item IDs gets new items in the specification (contract section
+13); *Spec and test-case impact* names the `TC-xxx` entries and coverage rows the first task adds.
+
+`## Specification changes` holds one record per item the change adds, changes or strikes, or "none"
+(spec-handling's `RECORDS:` lines), names the standard documents the layout lacks and, when the draft
+holds files, carries its one `Draft digest:` line from `spec-layout.py digest`; a plan with this section
+cites real item IDs, never `SPEC-PLAN-n` (contract section 13). The plan has the specification tasks of
+contract section 3: a first-wave task that owns the specification files and writes them from the draft,
+when the draft holds files, and a last-wave task that owns the documents that follow the code, when the
+draft holds files, the layout keeps a generated TRACEABILITY.md or the change touches a living document
+(otherwise the section says no sync task is needed). The approval message's `Specification:` line says
+the same in one line.
 
 Open questions go into the plan, not ahead of it. Write the plan even when an item, a project rule or
 `specification/open-questions.md` leaves a question open that the feature depends on: record each under
@@ -129,9 +170,16 @@ both (contract section 2).
 
 ### 3. Analysis gate and Java self-review
 
-Contract section 4. When the items cite test cases, pass `--id-regex '\bSPEC-(?:[A-Z][A-Z0-9]*-)+\d+\b|\bSPEC-[A-Z]+\d+\b|\bTC-\d+\b'` so they are
-checked too. Then check and fix in the file:
+Contract section 4: `spec-trace.py plan` and `spec-layout.py check --draft --plan` (plus a named
+specification's `--spec` arguments) both exit 0 (`--draft` only when the change drafts files, and then
+the check also fails `draft-digest-mismatch` when the draft no longer matches the plan's `Draft digest:`
+line). When the items cite test cases, pass
+`--id-regex '\bSPEC-(?:[A-Z][A-Z0-9]*-)+\d+\b|\bSPEC-[A-Z]+\d+\b|\bTC-\d+\b'` so they are checked too. Then
+check and fix in the file:
 
+- **Specification**: every requirement of the request is an item, existing or new in the draft;
+  `## Specification changes` records each item the draft adds, changes or strikes; no existing item is
+  reworded without a record (contract section 13)
 - **Pattern fit**: the design extends existing packages, interfaces and the single
   `@ConfigurationProperties` bean; it never builds a parallel copy
 - **Java idioms**: records for value types; sealed interfaces where exhaustiveness matters; `Optional`
@@ -170,6 +218,7 @@ do not reach the hook), its lines filled in and in this order, then stop:
     Needs your approval: <group:artifact and version, or the BOM> (<rules file>: "<the rule, quoted>")
     Open question <ID> (<source file>): <the question>; recommended: <answer>, which the plan follows
     Plan: ai-planning/<slug>.plan (<Scope IDs>, <n> tasks in <n> waves)
+    Specification: <no change | <n> new, <n> changed, <n> struck items (<IDs>), drafted under ai-planning/<slug>.spec/ | none found: a baseline of <n> items derived from the code and <n> new items, drafted under ai-planning/<slug>.spec/>
     Design: <two to four sentences: what is created or changed, in which package and classes, and the values the items fix (names, formats, clients and their timeouts)>
     Nothing outside ai-planning/ is written until you approve.
     After approve: the code is built test-first in waves through the project's build, the static analysis runs, every item is verified, and reviewing-java-changes reviews the change; nothing is deployed.
@@ -193,20 +242,30 @@ name given as the plan's file name without `.plan`. Before sending it:
   the earlier approval does not unlock this session, because approval is per session and bound to the
   plan's exact content, so the plan was re-checked and needs approve again before anything is written
 - The hook reports that nothing was approved (a reply with a question or a condition, a plan edited
-  since): say which, and send the message again
+  since, a draft that no longer matches the plan's `Draft digest:` line, contract section 13): say
+  which, and send the message again
 
 ### 5. Implement
 
-Contract sections 6 and 7, then read `references/implementation.md`: the docs-first pre-pass, the
-Java wave rules, what the implementing subagent's brief adds, and the build gate after each wave.
+Contract sections 6 and 7, then read `references/implementation.md`: the docs-first pre-pass, the Java wave
+rules, what the implementing subagent's brief adds, and the build gate after each wave. The docs-first
+pre-pass is the first-wave specification task of contract section 13: it writes the specification files from
+the approved draft, with `spec-layout.py check --draft --plan` passing before and after the copy; the last
+wave syncs the documents the layout keeps and regenerates its traceability report through
+`implement-from-spec:spec-handling` (mode sync), before verification and the review. A specification file is
+either drafted, frozen at approval and never edited by the sync task (a change it needs is an amendment; the
+approval gate revokes the approval on a write into the approved draft and re-checks its digest before a write
+to a drafted path, contract section 13), or sync-owned: TRACEABILITY.md and the living documents the draft
+does not contain (contract section 13).
 
 ### 6. Verify
 
-Contract section 8, then the runtime checks unit tests cannot give, all local, nothing deployed
-(`references/implementation.md`, section 5): the full build with the project's static analysis, the
-packaged artifact, and the smoke gate whenever request or output behaviour changed. Anything only a
-deployed system can show (IAM, VPC endpoints, SnapStart restore behaviour, real quotas) is listed as
-"needs runtime verification", not claimed.
+Contract section 8 (`spec-trace.py code`, then `spec-layout.py check` against the ledger's baseline
+commit, plus a named specification's `--spec` arguments; both exit 0), then the runtime checks unit tests
+cannot give, all local, nothing deployed (`references/implementation.md`, section 5): the full build with
+the project's static analysis, the packaged artifact, and the smoke gate whenever request or output
+behaviour changed. Anything only a deployed system can show (IAM, VPC endpoints, SnapStart restore
+behaviour, real quotas) is listed as "needs runtime verification", not claimed.
 
 ### 7. Review
 
@@ -268,6 +327,9 @@ recommendation, the verification state and the approvals required, from the JSON
   reviewing-java-changes)
 - `gate_rules.json`: the gate's command rules for this skill (dependency goals, deploy and publish goals,
   `sam deploy`, mutating `aws` calls ask)
+- `${CLAUDE_PLUGIN_ROOT}/core/scripts/spec-layout.py`: run (never read) to find the specification
+  (`detect`) and to check it in the analysis gate and the verification (`check`); the specification
+  work itself is the skill `implement-from-spec:spec-handling`
 
 ## Stopping conditions
 

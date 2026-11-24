@@ -23,16 +23,22 @@ standards, as well as the laws, rules, and regulations that govern you and your 
 
 ## What the skills do
 
-1. Read the specification items in scope, the project's `CLAUDE.md` or `AGENTS.md`, the neighbouring code
-   and the documentation of every resource, construct or library the design uses
+1. Find the project's specification and read the items in scope, the project's `CLAUDE.md` or
+   `AGENTS.md`, the neighbouring code and the documentation of every resource, construct or library the
+   design uses. A project that has no specification yet gets a first one, derived from its code and
+   drafted with the first plan
 2. Write the plan to `ai-planning/<slug>.plan` in your repository: scope, constraints, tasks with the files
-   each one owns, tests and waves. No code in the plan
-3. Check the plan with `spec-trace.py plan`, a traceability check, and stop for your approval
-4. After `approve`, keep a ledger (`ai-planning/<slug>.ledger.md`) and build the tasks in waves of
-   subagents, each test-first
+   each one owns, tests and waves. No code in the plan. A requirement the specification lacks becomes a
+   new item in the specification's own format, drafted under `ai-planning/<slug>.spec/` and recorded in
+   the plan
+3. Check the plan with `spec-trace.py plan`, a traceability check, and the specification draft with
+   `spec-layout.py check`, and stop for your approval
+4. After `approve`, keep a ledger (`ai-planning/<slug>.ledger.md`), write the approved specification
+   draft into place first, and build the tasks in waves of subagents, each test-first
 5. Run the stack's checks after every wave (for example `terraform validate` and a targeted plan,
    `cdk synth` and a change-set diff, `cfn-lint` and `cfn-guard`, the project's build or test gate)
-6. Verify each item backwards from its acceptance criteria, then run `spec-trace.py code`
+6. Verify each item backwards from its acceptance criteria, bring the specification's documents and its
+   traceability report in line with the code, then run `spec-trace.py code` and `spec-layout.py check`
 7. Review the change with Claude reviewer subagents and, when you enable it, an external reviewer in
    parallel (GPT-6 Astra on Amazon Bedrock or your own reviewer command; off by default)
 8. Report what was built, every check with its result, the review outcome, and the exact command you run
@@ -52,7 +58,9 @@ standards, as well as the laws, rules, and regulations that govern you and your 
   - every mutating `aws` CLI call
 - Install a dependency or rewrite a lock file without asking. A package the plan does not name is a
   question for you, and a failed install never gets a substitute
-- Write anything outside `ai-planning/` and `.claude/` before you approve the plan
+- Write anything outside `ai-planning/` and `.claude/` before you approve the plan, specification
+  files included
+- Reword, renumber or remove a specification item without a record in the plan you approve
 - Write a review themselves when the external reviewer cannot run
 - Send secret files (`.env*`, keys, certificates, `credentials*`), Terraform state or real `*.tfvars` to
   the external reviewer. The filter goes by file name: see "Security model"
@@ -65,7 +73,8 @@ One command is refused outright: `aws cloudformation ... --use-previous-template
 
 The plugin registers one gate for every session, in `hooks/hooks.json`.
 
-- It is inert until the session starts one of the gated skills (the five `implementing-*` skills): Claude
+- It is inert until the session starts one of the gated skills (the five `implementing-*` skills and
+  `spec-handling`): Claude
   calling the skill, or you typing its slash command
 - From then on it gates the repository the session was in when the skill started, plus any repository
   whose `ai-planning/*.plan` the session writes. Every other repository stays writable
@@ -76,6 +85,14 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
   condition approves nothing. When plans of several repositories are pending, the name is required
 - The approval is bound to the plan's sha256. Editing the plan, writing a newer plan, or changing it
   behind the hook's back revokes it. Changes after approval go through an amendment you approve again
+- A plan with a specification draft (`ai-planning/<slug>.spec/` and a `Draft digest:` line under
+  `## Specification changes`) binds the draft too. On `approve` the gate computes the draft's digest and
+  approves only when it equals the plan's line; it refuses when they differ, when one exists without the
+  other, or when the draft cannot be digested, and nothing is approved. While the approval holds, a
+  write into the draft, or one naming `ai-planning/`, revokes it, as an edit of the plan does; before a
+  write to a drafted path (or one naming the repository root) the gate computes the digest again, and on
+  a mismatch revokes the approval and denies the write. Without `core/gate/draft_digest.py` it fails
+  closed. Plans without a draft behave as in 0.2.0
 - Plans are written only with Write and Edit; the gate denies shell writes to them, so it sees every
   version
 - The command rules above apply before and after approval. In a gated session the rules of all five
@@ -128,6 +145,28 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
     `~/.local/state/implement-from-spec/hook-timing/`
   - The Terraform review asks you before any `terraform init` whenever a root may hold a `module` block or
     JSON configuration; that is an instruction the skill follows, not a control the gate enforces
+  - A specification the plugin derives from your code says what the model read there. Text planted in
+    code or comments could reach the draft as a requirement; reading the draft before you approve it is
+    the control. The gate binds the approval to the draft's digest, with residuals: a write it sees only
+    as a location (git, formatters, inline code, an unresolvable target) revokes only when that location
+    is inside the draft; a change behind the hook's back, or one made in parallel between the re-check
+    and a copy's read, is caught at the next drafted write or by the skill's check; and the bytes written
+    into the specification, and that no item is reworded or dropped without a record, are judged only by
+    `spec-layout.py check`, when the skill runs it
+  - Case and path spelling: on a case-insensitive volume (the macOS default), reviewer isolation's
+    sensitive-file denylist (`.env`, credential directories) compares names as text, so a differently
+    cased name such as `.ENV` is not refused; running a gate script through a symlink has not been
+    checked against the gate's rule for its own scripts; and a firmlink alias of a project path on a
+    case-sensitive system volume keeps its spelling, so the gate does not match it to the project
+  - Draft binding after approval: the approved draft is guarded only as far as the gate sees each write.
+    A shell or NotebookEdit write into the draft that lands after approval gets no after-the-fact check;
+    a symlink re-pointed after approval escapes the paths the gate recorded; and `node -p` and
+    `node --eval` are not recognised as inline code
+  - The gate's shell analysis is best effort: it does not catch inline interpreter code it cannot read
+    (strings split up, other languages' file APIs, code an interpreter reads from stdin), treats neither
+    `link` nor rsync's `--link-dest` as making hard links, and misparses the wrapper options
+    `command -p` and `exec -a`, besides the residuals above. If you need a hard boundary, run the agent
+    in a sandbox
   - Any process running as your user can change the plugin's state, plans and saved reviews
 
 ## Requirements
@@ -341,6 +380,11 @@ skill expects.
   project's Maven or Gradle wrapper. Guide: [java.md](docs/user-guide/java.md)
 - `implementing-python-from-spec`: Python Lambda handlers, Strands agents on AgentCore, libraries and
   scripts with their tests. Guide: [python.md](docs/user-guide/python.md)
+- `spec-handling`: creates and maintains the specification itself. For a project without one it derives a
+  baseline from the existing code (functional and non-functional items, architecture, deployment, feature
+  list, test cases and a generated traceability report under `specification/`); for a project that has
+  one it adds, changes or strikes items in the layout and format already there. The implementing skills
+  call it, and you can start it on its own. Guide: [specification.md](docs/user-guide/specification.md)
 - `reviewing-java-changes`: a two-stage review of any Java change, with or without a plan; also the review
   step of the Java skill
 - `reviewing-python-changes`: a two-stage review of any Python change, with five Claude lenses; also the
@@ -382,20 +426,26 @@ From a session inside the project repository:
 ```
 
 The arguments are the repository and the input: SPEC IDs, a specification file, or a feature spec under
-`ai-planning/`. Plain words work too. The skills accept three input forms:
+`ai-planning/`. Plain words work too. The skills accept these input forms:
 
 - Structured items `SPEC-<SVC>-n` under `docs/specifications/`
 - `SPEC-Fxxx` (functional) and `SPEC-NFxxx` (non-functional) items under `specification/`, optionally
   with `TC-xxx` test cases
-- A feature spec, `ai-planning/<feature>.md`, which says what to build, not how. The plan gives its
-  requirements `SPEC-PLAN-n` IDs
+- A feature spec, `ai-planning/<feature>.md`, or a request in plain words, which says what to build, not
+  how. Its requirements become new items of the project's specification, with the next free IDs
+
+A project with no specification at all works too: the first run derives one from the code and asks you
+to approve it together with the plan ([specification.md](docs/user-guide/specification.md)).
 
 Review the plan, reply `approve`, and the skill implements. Deploying stays yours: the report ends with
 the exact command.
 
 What a skill writes in your repository besides the change: `ai-planning/<slug>.plan`,
-`ai-planning/<slug>.ledger.md`, and for an amendment `ai-planning/<slug>.r<N>.approved.md`, a snapshot of
-the plan you approved before.
+`ai-planning/<slug>.ledger.md`, the specification draft `ai-planning/<slug>.spec/` when the change adds or
+changes specification files, and for an amendment `ai-planning/<slug>.r<N>.approved.md`, a snapshot of
+the plan you approved before. After approval the drafted files are written into place unchanged, and
+the generated traceability report and the documents the draft does not contain follow the code in the
+same change.
 
 ## MCP servers
 
@@ -473,6 +523,8 @@ review snapshots and the activation records.
 - Per-stack guides: [Terraform](docs/user-guide/terraform.md), [CDK](docs/user-guide/cdk.md),
   [CloudFormation](docs/user-guide/cloudformation.md), [Java](docs/user-guide/java.md),
   [Python](docs/user-guide/python.md)
+- [Specification handling](docs/user-guide/specification.md): how a specification is found, created
+  from existing code and extended; [specification input formats](docs/spec-format.md)
 - [External review](docs/user-guide/external-review.md): settings, states, credentials, what is sent
 - [Model providers](docs/user-guide/providers.md): subscription, API key, Amazon Bedrock
 - [Customer hand-off](docs/customer-handoff.md): one page for teams adopting the plugin

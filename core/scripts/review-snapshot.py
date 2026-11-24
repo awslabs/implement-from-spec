@@ -1074,8 +1074,8 @@ def cmd_gates(args) -> int:
 
 # ---------------------------------------------------------------- the review state block
 def one_line(text: str) -> str:
-    """Text for a state line: control, separator and bidirectional characters escaped, never interpreted."""
-    return STATE_CONTROL_RE.sub(lambda m: "\\u%04x" % ord(m.group(0)), text)
+    """Text for a state line: backslashes doubled, then control, separator and bidi characters as \\uNNNN."""
+    return STATE_CONTROL_RE.sub(lambda m: "\\u%04x" % ord(m.group(0)), text.replace("\\", "\\\\"))
 
 
 def state_text(value: str, label: str) -> str:

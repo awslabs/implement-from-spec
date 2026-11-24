@@ -9,13 +9,16 @@ Claude Code skills that implement Terraform, AWS CDK (Python and Java apps), Clo
 Python from your specification items. Each skill writes a code-free plan to `ai-planning/` in your
 repository and waits until you reply `approve`. Then it builds the change test-first, runs the stack's
 checks, has the change reviewed by Claude and, if you enable it, by an external model, and reports with
-the exact deploy command.
+the exact deploy command. The skills also keep the specification itself: a requirement it lacks becomes
+a new item in the plan you approve, and a project without a specification gets a first one, derived
+from its code ([user-guide/specification.md](user-guide/specification.md)).
 
 ## What it never does
 
 - Deploy or change live state on its own. Deploys, stack and change-set operations, `terraform apply`,
   state edits and mutating `aws` calls always ask you first, before and after plan approval
-- Write product code before you approve the plan
+- Write product code or specification files before you approve the plan, or reword, renumber or remove
+  a specification item without a record in that plan
 - Install a dependency the plan does not name without asking
 - Configure credentials or store keys
 - Send secrets, Terraform state or real `*.tfvars` to the external reviewer
@@ -25,10 +28,11 @@ the exact deploy command.
 A model coding straight from a spec takes the first plausible design. The plan is where you redirect it
 cheaply, so the gate holds the repository until you approve.
 
-- Inert until a session starts one of the five implementing skills; then it gates that repository, and
+- Inert until a session starts one of the five implementing skills or the spec-handling skill; then it gates that repository, and
   any other whose plan the session writes. Every other repository stays writable
 - Before approval, only `ai-planning/` and `.claude/` are writable, through file tools and the shell
-- The approval is your whole reply, `approve`, and it is bound to the plan's content: editing the plan
+- The approval is your whole reply, `approve`, and it is bound to the plan's content and, when the plan
+  has one, to its specification draft through the draft's digest: editing the plan or the draft
   revokes it
 - The plugin needs `python3`. Without it (or with one that is broken), Claude Code
   2.1.295 or later blocks every tool call of every session with the plugin enabled, reads included, until

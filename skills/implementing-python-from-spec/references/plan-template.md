@@ -13,6 +13,30 @@ Items: <specification files> · Drafted: YYYY-MM-DD
 ## Scope
 The specification item IDs this plan implements.
 
+## Specification changes
+One record per specification item this change adds, changes or strikes (contract sections 3 and 13),
+the file in backticks:
+- <ID> — new — `<specification file>` — <one-line reason, or the request it comes from>
+- <ID> — changed — `<specification file>` — <what changed and why>
+- <ID> — struck — `<specification file>` — <why it no longer holds>
+The full text of every specification file that is new or changes is drafted under
+`ai-planning/<slug>.spec/`. For a project that had no specification, one record covers the items
+derived from the code:
+- baseline — <n> items derived from the code at commit <hash> — `specification/`
+Then, as plain notes, the layout found and the standard documents it lacks (not created). "none" when
+no item is added, changed or struck.
+When the draft holds files, the section also carries exactly one line
+`Draft digest: sha256 <64 lowercase hex>`, computed once the draft is final with
+`python3 -I "<PLUGIN_ROOT>/core/scripts/spec-layout.py" digest <REPO>/ai-planning/<slug>.spec`; the
+analysis gate fails `draft-digest-mismatch`, and the approval gate refuses approval, when the draft
+changes after it (contract section 13). A plan with this section
+uses real specification item IDs throughout, never `SPEC-PLAN-n` (`plan-local-id`).
+A specification file the change removes (a move into another layout) is recorded as
+``- deleted — `<path>` — <reason>``, and a task owns it as `` `<path>` (deleted) ``.
+When more than one specification place holds files, the user's answer is one line
+`` Specification root: `<place>` ``, for example `` Specification root: `docs/SPECIFICATION.md` ``. A draft
+file that is binary or over 2 MB is named here in backticks, or `check` fails `draft-binary`.
+
 ## Binding rules
 CLAUDE.md or AGENTS.md, the specification index, the architecture sections the items realise.
 
@@ -72,6 +96,14 @@ Owns lists every file the task creates or changes, the small ones too: each new 
 `__init__.py` (`unittest discover -s <dir> -t .` needs the start directory to be a package),
 `conftest.py`, `pyproject.toml` and lock files. A file found missing after approval is an
 amendment, which revokes the approval.
+
+Specification tasks (contract section 13): when `ai-planning/<slug>.spec/` holds files, a first-wave
+task owns the specification files and writes them from the draft; when the draft holds files, the
+layout keeps a generated TRACEABILITY.md or the change touches a living document, a last-wave task owns the documents that follow the code (the
+traceability report, the test-case document, the feature list and the others the layout keeps), never a
+file the draft holds, which is frozen at approval. Each names the Scope IDs it writes or documents and
+carries `Tests: none — <reason>` with `spec-layout.py check` as its `Verify:`. When no last-wave task
+is needed, `## Specification changes` says so.
 
 ## Deferred
 One record per Scope item the user agreed to leave out: `- <ID> — <reason> (agreed YYYY-MM-DD)`. Otherwise "none".

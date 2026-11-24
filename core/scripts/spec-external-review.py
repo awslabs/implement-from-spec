@@ -77,8 +77,8 @@ A command from the user's or the managed settings file, or from a flag, is not r
 Change modes (pick one; the Claude stage must review the same one):
     (default)          working tree against HEAD: `git diff HEAD` plus untracked files
     --base REF         working tree against REF: `git diff REF` plus untracked files
-                       (untracked: what git could add, by review-snapshot.py's rule, so a FIFO, socket or
-                       device, such as a sandbox-masked dotfile, is not part of the change)
+                       (untracked: what git could add, by review-snapshot.py's rule, so no FIFO, socket or device;
+                       never under ai-planning/, where an untracked <slug>.spec/ draft is listed under "not sent")
     --range A..B       committed changes only: `git diff A..B`
     --files F ...      exactly these files, in full
     --diff-file F      a unified diff, e.g. one the user pasted
@@ -255,8 +255,8 @@ SENSITIVE_RE = re.compile(
     re.I)
 # What a file or diff chunk would send is checked too (credentials in files, ATT&CK T1552): text that looks like
 # a secret withholds the whole file or chunk. Likely secrets only, never a proof of absence; a value is matched,
-# never printed. A quoted assignment value counts when it is 16 or more characters with no space and is not a
-# placeholder (${...}, {{...}}, <...>, %...) or an all-capital identifier such as an environment variable name.
+# never printed. A quoted assignment value of 16 or more characters with no space counts unless it is a placeholder
+# (${...}, {{...}}, <...>, %...) or an identifier: capital words joined by underscores (API_TOKEN_NAME), case-sensitive.
 SECRET_PATTERNS = (
     ("an AWS access key ID", re.compile(r"(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}(?![A-Z0-9])")),
     ("an AWS secret access key", re.compile(
@@ -264,7 +264,7 @@ SECRET_PATTERNS = (
     ("a private key block", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
     ("a password, secret, token or API key assignment", re.compile(
         r"(?i)[\w.-]*(?:password|passwd|secret|token|api[_-]?key)[\w.-]*[\"']?\s*[:=]\s*"
-        r"[\"'](?![$<%]|\{\{)(?![A-Z0-9_]+[\"'])[^\"'\s]{16,}[\"']")),
+        r"[\"'](?![$<%]|\{\{)(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)[\"'])[^\"'\s]{16,}[\"']")),
     ("a GitHub token", re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,}")),
     ("a Slack token", re.compile(r"(?<![A-Za-z0-9])(?:xox[bp]|xapp|xwfp)-[A-Za-z0-9-]{10,}")),
     ("a JSON Web Token", re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
@@ -373,10 +373,24 @@ RANGE_RE = re.compile(r"^([^\s.][^\s]*?)\.\.([^\s.][^\s]*)$")
 VERDICT_RE = re.compile(r"^\s*\**VERDICT:?\**:?\s*\**(approve|approve-with-comments|request-changes|block)\**\s*$",
                         re.M | re.I)
 MAX_DIFF_BYTES = MAX_PROMPT_BYTES * 2  # a diff larger than this cannot fit the prompt even after filtering
+# What a repository-derived name must never carry into the terminal, a status line or a line of the saved review:
+# C0 and C1 controls, DEL, the line and paragraph separators and the bidi controls (review-prepare.py's UNSAFE_RE).
+UNSAFE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
+NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def escaped(text) -> str:
+    """text as this script prints or saves a name: the backslash doubled first, so an escape in a file name cannot
+    pass for one made here, then every UNSAFE_RE character as \\n, \\r, \\t, \\xNN or \\uNNNN (as review-prepare.py
+    shown()), so each name stays on its line and nothing in it reaches the terminal as a control."""
+    def esc(m):
+        ch = m.group(0)
+        return NAMED_ESCAPES.get(ch) or ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
+    return UNSAFE_RE.sub(esc, str(text).replace("\\", "\\\\"))
 
 
 def fail(code: int, message: str) -> None:
-    print(f"spec-external-review: {message}", file=sys.stderr)
+    print(f"spec-external-review: {escaped(message)}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -439,7 +453,7 @@ def file_block(root: str, rel: str, required: bool) -> str:
         if required:
             fail(64, f"{rel} is required but cannot be sent ({why}); review without it is not a review")
         OMITTED.append(f"{rel} ({why})")
-        return f"--- {rel}: {why}\n"
+        return f"--- {escaped(rel)}: {why}\n"
 
     reason = skip_reason(rel)
     if reason:
@@ -449,7 +463,7 @@ def file_block(root: str, rel: str, required: bool) -> str:
     except (FileNotFoundError, NotADirectoryError):
         if required:
             fail(64, f"file not found: {rel}")
-        return f"--- {rel}: DELETED\n"
+        return f"--- {escaped(rel)}: DELETED\n"
     except OSError as exc:
         return skip(unreadable(exc))
     if stat.S_ISLNK(st.st_mode):
@@ -485,7 +499,7 @@ def content_block(rel: str, data: bytes, skip) -> str:
     if kind:
         return skip(f"content looks like a secret: {kind}, never sent")
     SENT["files"] += 1
-    return f"--- {rel} (full content)\n{text}\n"
+    return f"--- {escaped(rel)} (full content)\n{text}\n"
 
 
 def unquote_git_path(raw: str) -> str:
@@ -676,13 +690,13 @@ def collect_change(root: str, args: argparse.Namespace) -> tuple[str, list[str]]
     changed = [n for n in names.split("\0") if n]  # -z: names unquoted, whatever characters they hold
     new_files: list[str] = []
     if not args.range:
-        # git lists an untracked FIFO, socket or device but can never add one, and Claude Code's sandbox masks
-        # dotfiles in the working directory with such entries: they are not part of the change, by the rule
-        # the review snapshot uses (review-snapshot.py's trackable), so both stages leave out the same paths.
+        # Untracked: what git could add (review-snapshot.py's trackable says why); ai-planning/ is never sent (TM-69)
         trackable = load_sibling("review-snapshot.py", "ifs_review_snapshot").trackable
         _, untracked = git(root, "ls-files", "-z", "--others", "--exclude-standard")
-        new_files = [f for f in (u.rstrip("/") for u in untracked.split("\0"))
-                     if f and not f.startswith("ai-planning/") and trackable(root, f)]
+        listed = [f for f in (u.rstrip("/") for u in untracked.split("\0")) if f and trackable(root, f)]
+        new_files = [f for f in listed if not f.startswith("ai-planning/")]
+        OMITTED.extend(f"{f} (specification draft, untracked; the applied files are reviewed)" for f in listed
+                       if re.match(r"ai-planning/[^/]+\.spec/", f))  # the snapshot holds it: named, not sent
     label = f"{refs[0]}..{refs[1]} ({shas[0][:12]}..{shas[1][:12]})" if args.range else \
         f"working tree against {refs[0]} ({shas[0][:12]})"
     kept = filter_diff(diff) if diff.strip() else ""
@@ -1199,7 +1213,7 @@ def show_config(cfg: Config) -> int:
 # ---------------------------------------------------------------- outcomes
 def report(state: str, reason: str, cfg: Config) -> None:
     tail = "; required by policy" if cfg["external_review_policy"] == "required" and state != "passed" else ""
-    print(f"External review: {state} ({reason}){tail}")
+    print(f"External review: {state} ({escaped(reason)}){tail}")
 
 
 def not_run(cfg: Config, reason: str) -> None:
@@ -1354,7 +1368,7 @@ def unexpected(exc: Exception, cfg: Config | None) -> int:
     print("spec-external-review: unexpected error:", file=sys.stderr)
     traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
     if cfg is None:
-        print(f"External review: failed ({detail}; the policy was not read yet and counts as required); "
+        print(f"External review: failed ({escaped(detail)}; the policy was not read yet and counts as required); "
               "required by policy")
     else:
         report("failed", detail, cfg)
@@ -1457,7 +1471,7 @@ def review(resolved: list) -> int:
         check_binding(snap, root, args, changed)
     sent_change = (SENT["chunks"] - before["chunks"]) + (SENT["files"] - before["files"])
     if OMITTED:
-        print("[spec-external-review] not sent: " + "; ".join(OMITTED), file=sys.stderr)
+        print("[spec-external-review] not sent: " + escaped("; ".join(OMITTED)), file=sys.stderr)
     if not sent_change:
         fail(64, "nothing reviewable would be sent: the change is empty in this mode, or every part of it "
                  "was withheld (see 'not sent' above)")
@@ -1474,7 +1488,7 @@ def review(resolved: list) -> int:
         print(prompt)
         print(f"[spec-external-review] dry run: the {size} bytes above would go to {cfg.label()}; change "
               f"digest {digest}; prompt digest {prompt_digest}; files in the change ({len(changed)}): "
-              f"{', '.join(changed)}")
+              f"{escaped(', '.join(changed))}")
         return 0
     if cfg["external_review"] == "command":
         answer = call_command(prompt, cfg)
@@ -1492,10 +1506,10 @@ def review(resolved: list) -> int:
     prompt_file = out[:-3] + ".prompt.md" if out.endswith(".md") else out + ".prompt.md"
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     write_new(prompt_file, prompt)
-    policy_line = f"Policy: {snap.shown} (snapshot {snap.manifest['id']})\n" if snap is not None else ""
-    write_new(out, f"# External review via {cfg.label()}, {stamp}\n\nRepository: {root}\n{policy_line}Plan: "
-                   f"{plan_rel or 'none'}\nChange digest: {digest}\nPrompt digest: {prompt_digest}\n"
-                   f"Files: {', '.join(changed)}\nNot sent: {'; '.join(OMITTED) or 'none'}\n"
+    policy_line = f"Policy: {escaped(snap.shown)} (snapshot {snap.manifest['id']})\n" if snap is not None else ""
+    write_new(out, f"# External review via {cfg.label()}, {stamp}\n\nRepository: {escaped(root)}\n{policy_line}Plan: "
+                   f"{escaped(plan_rel or 'none')}\nChange digest: {digest}\nPrompt digest: {prompt_digest}\n"
+                   f"Files: {escaped(', '.join(changed))}\nNot sent: {escaped('; '.join(OMITTED) or 'none')}\n"
                    f"Valid: {'yes' if valid else 'no'}\n\n{answer}")
     if not valid:
         failed(cfg, f"the answer is not a valid review; saved for inspection to {out}",

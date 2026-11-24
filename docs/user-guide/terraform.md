@@ -42,6 +42,19 @@ but the project's own commands need them on PATH.
   changed or untracked file must belong to a task (see "How a run goes", step 7)
 - Optional: a cost baseline, for example `ai-planning/costs.md`. The report gives the cost delta against it
 
+## The specification
+
+Every run starts by finding the project's specification (`spec-layout.py detect`): `specification/`,
+`docs/specifications/` or `docs/SPECIFICATION.md`, or a file elsewhere that you confirm when detect names
+it as a candidate. The skill follows it as written and extends it in place, in its own layout and
+format: a requirement it lacks becomes a new item with the next free ID, and an item the change must
+alter or reverse is changed or struck through, never silently. Only a project with no specification
+gets a first one in `specification/`, derived from the existing code. Every specification file the
+change adds or changes is drafted under `ai-planning/<slug>.spec/`, recorded in the plan's
+`## Specification changes` with the draft's digest, and written into place first after your `approve`;
+the last wave then brings the living documents and the generated traceability report in line with the
+code. The `spec-handling` skill does this work: see [specification.md](specification.md).
+
 ## How a run goes
 
 1. Ingest: the spec, the invariants, the pattern module, `versions.tf` in every root, the environment
@@ -49,9 +62,9 @@ but the project's own commands need them on PATH.
    live account state become pre-apply manual checks in the plan; the skill does not query AWS while
    planning. It posts a short "what I read"
 2. Plan: `ai-planning/<slug>.plan`, with no HCL, policy JSON or pseudocode
-3. Analysis gate: `spec-trace.py plan`, then a self-review of the module pattern, naming, IAM least
-   privilege, safety invariants (public access blocks, `prevent_destroy` where data lives, no existing
-   `lifecycle` block touched) and scope
+3. Analysis gate: `spec-trace.py plan` and `spec-layout.py check`, then a self-review of the module pattern,
+   naming, IAM least privilege, safety invariants (public access blocks, `prevent_destroy` where data lives,
+   no existing `lifecycle` block touched) and scope
 4. Your `approve`
 5. Implementation in waves. Test first means a `terraform test` run with `command = plan` or mock
    providers, or a `check` or `validation` block, that fails before the resource exists. `terraform fmt`

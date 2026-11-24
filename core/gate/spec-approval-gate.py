@@ -30,7 +30,7 @@ registered, and neither is the other hooks' state (core/gate/ifs_paths.py state_
 registrations, the activation records, the review snapshots and the timing log), so a tool call cannot lift a
 reviewer's isolation or rewrite a snapshot's records; a shell command may not even name the registrations or
 the records. An edit of an approved plan revokes the approval when the edit starts (PreToolUse), not only when
-it is recorded.
+it is recorded, and so does a write into its specification draft (Specification drafts, below).
 
 Activation records (plugin mode). Starting a gated skill also writes
 ~/.local/state/implement-from-spec/active/gate-<session>.json, which names the session's state file and is
@@ -58,6 +58,74 @@ and is still its repository's current plan; any change revokes it for good (a la
 bytes does not bring it back). A deleted plan revokes it too. Approval belongs to the session that gave
 it; another session stays denied.
 
+Specification drafts. A plan's draft is `<repo>/ai-planning/<slug>.spec/` beside `<slug>.plan`, and the plan binds
+it with one `Draft digest: sha256 <hex>` line under `## Specification changes`; core/gate/draft_digest.py defines
+the line and the digest, for this file and the skill's spec-layout.py alike, and is loaded only on an approval reply
+(bind_draft) and before a write to a drafted path of an approved draft (draft_problem). The other draft checks run
+only for approvals that bind a draft (string comparisons, and an lstat for a write inside such a repository), so a
+call in a session without one costs what it did before. On the reply the gate reads the line from the same bytes
+whose sha256 it checks and computes the draft's digest: it approves only when the two are equal, and refuses,
+naming the reason and asking for the plan and its draft to be re-checked, a line it cannot read (two lines, a
+malformed one, a label outside `## Specification changes`; a line inside a code fence is no line), a line whose draft
+is missing, cannot be digested (a symlink or special file in it or as it, an unsafe name, an unreadable entry) or has
+another digest, and a draft directory whose plan has no line (an unbound draft). A plan with neither is approved as
+before, and nothing about it changes. The approval records the digest, the draft's file list and, for each drafted
+path whose canonical form (resolved through symlinks, spelled on disk) is not the path its name spells in the
+repository (a symlinked specification/), that canonical form (draft_aliases). While it holds:
+  - a write into the draft, or one that names ai-planning/, the directory holding it (a rename or deletion of the
+    draft included), revokes the approval when the write starts, through revoke(), the path an edit of the approved
+    plan takes. It covers Write, Edit, MultiEdit and NotebookEdit and every shell target the analysis resolves (rm,
+    mv's sources, a cp or ln onto a draft file, a hard link's source, cp -l's included), paths resolved through `..`
+    and symlinks and checked by the name they were reached by too. The revocation holds even when the write never
+    runs (another part of the command is denied, the user declines the permission prompt), and it holds for the whole
+    command: every other write of the command, before the draft write or after it, is judged without the approval.
+    The write itself is allowed, like any write under ai-planning/; plan-changed reports the revocation after a
+    Write/Edit/MultiEdit, and makes it then when the approval was recorded after the write was let through (the user
+    approved while it ran: draft_changed), and later denials say why (approval_status). Before approval the draft
+    stays writable
+  - before a write to a repository path for which the approved draft holds a file, or a directory of one, the
+    repository itself, or a path the draft holds now (a file added since), by its name or through a canonical form
+    the approval recorded (inside the repository or outside it), the gate computes the draft's digest again; when it
+    differs, cannot be computed, or the path is the draft's own file under another name (a hard link), the approval
+    is revoked and the write denied. So a copy reads the approved bytes at the moment it starts. The gate does not
+    compare what is written: the bytes that reach the drafted path are judged only by the skill's later byte-for-byte
+    comparison with the draft (spec-layout.py check)
+Residuals: a write the analysis sees only as somewhere under a directory (git, formatters, inline code, a target it
+cannot resolve) is checked as a location and revokes only when that location is in the draft; a write that names the
+repository itself (rm -r ., a copy into .) re-checks the draft but does not revoke; a change made behind the
+hook's back (a script file, a hard link made outside the session) revokes nothing; a change between the re-check
+and the copy's read (a tool call running in parallel, whose own check revokes the approval) is not seen by that copy;
+a shell or NotebookEdit write into the draft that lands after the approval has no plan-changed event, so it does not
+end the approval when it lands; and a symlink re-pointed after the approval moves a drafted path out of the forms the
+approval recorded. Each is caught at the next write to a drafted path, or, after the last one, by the skill's check.
+Without
+core/gate/draft_digest.py (missing or broken) no draft can be checked: a plan with any trace of one (its folder, a
+`Draft digest` label) is refused, a write to a drafted path is denied, and a plan without a draft is approved as
+before.
+
+Spelling. A directory on a case-insensitive volume (APFS and HFS+ as macOS formats them by default) finds an entry
+under any case of its name, and APFS finds one under either Unicode normalisation: there /r/PROJ/src/a.py is
+/r/proj/src/a.py, and RM runs /bin/rm. So every path the gate compares, from Write/Edit/NotebookEdit and from the
+shell analysis alike, and every root it compares them with (registered repositories, plans and drafts, the gate's
+and the other hooks' state, the plugin tree, the Claude configuration directory), is first spelled the way the file
+system holds it (ondisk, after realpath): each existing component is looked up under another case (or, non-ASCII,
+another normalisation) in its directory and, where that finds the same (st_dev, st_ino), spelled from the kernel's
+path for the directory (fcntl F_GETPATH on macOS, which also gives a firmlinked /System/Volumes/Data/<path> its
+<path>) or from the directory's entries. Components that do not exist yet keep their spelling. The names
+the gate looks for itself match in any case where the directory they are looked up in folds: ai-planning/ and the
+other writable prefixes, .plan, .claude/settings*.json and .claude/hooks/, the user's settings and hooks, and in a
+shell command the gate's state directories and its script (a guard also folds when folding cannot be told). A
+program word with a capital letter is spelled as the file system holds the program the shell finds for it on PATH
+(RM is rm; CD stays CD, since /usr/bin/cd does not change the shell's directory). Folding is asked of the file
+system per directory, never inferred from the platform: on a case-sensitive volume every path keeps its spelling and
+every name matches exactly. A name whose directory folds but whose spelling cannot be read (a directory
+this user may search but not list) denies the call (PathUnknown); a path this user cannot look up at all keeps its
+spelling, since no process of this user reaches a file through it. The cost falls on calls that compare paths: an
+lstat or two per directory and, where it folds, one F_GETPATH or listing, once per process; an ungated session's
+prompt, and the PostToolUse record of a Write outside ai-planning/, compare none. Residuals: a program found only on
+the Bash tool's PATH and not the hook's is not respelled, and a firmlink alias on a case-sensitive system volume
+keeps its spelling.
+
 Bash. Every segment is analysed and the decisions are aggregated: deny beats ask beats nothing, so a
 command rule that asks never lets an unapproved write in the same command through. The shell analysis
 covers redirections (>&FILE and <> included), the usual writers (rm, cp, mv sources and destinations, tee,
@@ -66,12 +134,13 @@ after its global options, tar -x and unzip, formatters, Maven and Gradle goals t
 tree, dependency tools, curl -o, aws s3 cp), the writes a skill's `write` command rules declare (tools that
 write into the directory they work in as a side effect: terraform init writes .terraform/, cdk synth cdk.out/,
 a Maven build target/; -chdir, -f, -p and --prefix resolved), a copy into an existing directory through a
-symlink in it, a hard link (its source counts as written; a hard-linked file under ai-planning/ stays
+symlink in it, a hard link (ln, cp -l: its source counts as written; a hard-linked file under ai-planning/ stays
 read-only), reserved words (then, do, {, function NAME), `bash -c` strings (-lc and other clusters), eval, env -S, here-documents
 and here-strings fed to a shell, find -exec bodies, `$(...)` and backtick command substitutions (in unquoted
 here-document bodies too), and inline interpreter code that writes files or runs commands, including a
 here-document fed to `python3 -` (its path literals and its working directory; the literal command strings
-it runs are analysed like a shell command). Quoted operator characters are words, not operators; options
+it runs are analysed like a shell command), the interpreter known by the program word the shell runs, so a quoted,
+respelled or wrapped one ('python3', PYTHON3, env python3.12) and a quoted or attached -c are inline code too. Quoted operator characters are words, not operators; options
 after `--` are operands and one-letter options take attached values (cp -tDIR, tar -xf/ARCHIVE). cd, pushd,
 popd and env -C are followed; a cd that may fail or may not run (after && or ||, inside if), cd -, an
 unexpanded directory, and cd's logical and physical directory all stay in play. Variables assigned earlier in
@@ -106,11 +175,15 @@ Subcommands, one per hook event:
                                   /<plugin>:<skill> command also registers the repository)
   guard-edit    PreToolUse        Write/Edit/MultiEdit/NotebookEdit
   guard-bash    PreToolUse        Bash
-  plan-changed  PostToolUse       a Write/Edit of <repo>/ai-planning/*.plan
+  plan-changed  PostToolUse       a Write/Edit of <repo>/ai-planning/*.plan (in a plan's draft: reports the
+                                  revocation the write made, or makes it when the approval came after the
+                                  write was let through)
 
 Failure policy. A guard that fails (a malformed payload, a hook error, a rules file that is not of the
 documented shape in skill mode, a lost state of an activated session) denies in a gated session; in plugin
-mode a session that never started a gated skill is never blocked. When the payload is not valid JSON, its
+mode a session that never started a gated skill is never blocked; a path whose spelling on disk cannot be read and a
+draft that cannot be checked (draft_digest.py missing) deny like any other guard failure. When the payload is not
+valid JSON, its
 session is read from the raw text so a gated session still fails closed. Starting a gated skill when the gate cannot record the session (its
 state directory unwritable) is refused: the Skill call is denied, the /<plugin>:<skill> prompt blocked.
 In plugin mode a skill's unreadable or malformed gate_rules.json (or one that has gone after its skill
@@ -515,10 +588,12 @@ def current_plan(repo, state):
 
 
 def approval_status(repo, state):
-    """Return (approved, why_not). A failed check latches: the approval entry is removed."""
+    """Return (approved, why_not). A failed check latches: the approval entry is removed. Without an entry, why_not
+    is the reason a draft check recorded when it revoked the approval (revoke), else that none was given."""
     entry = state["approvals"].get(repo)
     if not entry:
-        return False, "no plan of this project has been approved in this session"
+        return False, (state.get("revoked") or {}).get(repo) or \
+            "no plan of this project has been approved in this session"
     plan, why = entry["plan"], None
     if not os.path.isfile(plan):
         why = f"the approved plan {os.path.relpath(plan, repo)} no longer exists"
@@ -533,14 +608,331 @@ def approval_status(repo, state):
     return True, ""
 
 
+def revoke(state, repo, why=None):
+    """End repo's approval now, when the write that ends it starts (PreToolUse), not when PostToolUse records it: a
+    write running alongside an amendment of the plan or of its draft must not pass under the approval it is ending.
+    plan-changed reports it after a Write/Edit (state["revoking"]). `why` is what later denials say (approval_status)
+    until the next approval of the repository."""
+    if repo in state["approvals"]:
+        del state["approvals"][repo]
+        state.setdefault("revoking", [])
+        if repo not in state["revoking"]:
+            state["revoking"].append(repo)
+        if why:
+            state.setdefault("revoked", {})[repo] = why
+
+
+# ------------------------------------------------------------------------------------------- drafts
+# A plan's specification draft is <repo>/ai-planning/<slug>.spec/ beside <slug>.plan: the full text of every
+# specification file the change adds or changes, at the path it will have in the repository. The plan binds it
+# with one `Draft digest: sha256 <hex>` line; core/gate/draft_digest.py defines that line and the digest, for this
+# file and for core/scripts/spec-layout.py alike, so the gate and the skill's check cannot compute different ones.
+
+DRAFT_MODULE = os.path.join(GATE_DIR, "draft_digest.py")
+DRAFT_SUFFIX = ".spec"
+# Appended to every refusal of an approval that a draft causes: what the user has to have done before asking again.
+DRAFT_RECHECK = ("Nothing was approved: have the plan and its draft re-checked (spec-layout.py check --draft --plan) "
+                 "so that the plan's Draft digest line is the digest of the draft the user reviews, then present the "
+                 "plan again and ask.")
+
+
+def load_drafts():
+    """core/gate/draft_digest.py, loaded by path from the gate's directory and compiled from its source
+    (ifs_paths.load_source: no bytecode read or written), once per process. Only the calls that involve a draft
+    load it: an approval reply (bind_draft), and a write to a drafted path of an approved draft (draft_problem); every
+    other call never does, so it costs them nothing."""
+    mod = sys.modules.get("ifs_draft_digest")
+    if mod is not None and getattr(mod, "__file__", None) == DRAFT_MODULE:
+        return mod
+    try:
+        return load_paths().load_source("ifs_draft_digest", DRAFT_MODULE)
+    except Exception as exc:  # noqa: BLE001 - missing, unreadable or broken: the callers refuse or deny
+        raise DraftsUnavailable(f"core/gate/draft_digest.py cannot be loaded ({type(exc).__name__}: "
+                                f"{describe(exc)})") from exc
+
+
+class DraftsUnavailable(Exception):
+    """core/gate/draft_digest.py cannot be loaded, so no draft can be checked."""
+
+
+def draft_dir(plan):
+    """The draft of <repo>/ai-planning/<slug>.plan: <repo>/ai-planning/<slug>.spec, spelled as on disk."""
+    return ondisk(plan[:-len(".plan")] + DRAFT_SUFFIX)
+
+
+def draft_holding(abspath):
+    """The draft directory (<dir>/ai-planning/<slug>.spec) that abspath is or lies in, or None. Text only."""
+    probe = abspath
+    while True:
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return None
+        name, planning = os.path.basename(probe), os.path.basename(parent)
+        if len(name) > len(DRAFT_SUFFIX) and (
+                (name.endswith(DRAFT_SUFFIX) and planning == "ai-planning") or
+                (name.casefold().endswith(DRAFT_SUFFIX) and planning.casefold() == "ai-planning" and
+                 name_folds(os.path.dirname(parent)) is True)):
+            return probe
+        probe = parent
+
+
+def draft_files(draft):
+    """The draft's files, as paths relative to it (POSIX), sorted. A directory that cannot be read raises OSError."""
+    def fail(exc):
+        raise exc
+    files = []
+    for top, _dirs, names in os.walk(draft, onerror=fail):
+        files += [os.path.relpath(os.path.join(top, n), draft).replace(os.sep, "/") for n in names]
+    return sorted(files)
+
+
+def bind_draft(repo, plan, text):
+    """On the approval reply: (record, refusal) for the plan whose bytes, the ones whose sha256 was just checked, are
+    `text`. A plan with no Draft digest line and no draft directory gives (None, None) and is approved on its sha256; a
+    plan whose line equals the draft's digest gives {"digest", "files"}, which the approval records. Anything else
+    gives the notice that refuses the approval: a line that cannot be read (two lines, a malformed one), a line
+    whose draft is missing, cannot be digested (draft_digest.DraftError) or has another digest, and a draft directory
+    whose plan has no line (an unbound draft)."""
+    draft = draft_dir(plan)
+    plan_rel, draft_rel = os.path.relpath(plan, repo), os.path.relpath(draft, repo) + "/"
+    try:
+        drafts = load_drafts()
+    except DraftsUnavailable as exc:
+        # Without the module no draft can be checked: a plan with any trace of one (its folder, a line's label, in
+        # any case) is refused, and a plan with none is approved on its sha256 alone.
+        if load_paths().may_exist(draft) or "draft digest" in text.decode("utf-8", "replace").casefold():
+            return None, (f"[spec-approval-gate K22] The gate cannot check the draft of {plan_rel}: {exc}. Nothing "
+                          "was approved: tell the user, who can reinstall the plugin. A plan without a draft can "
+                          "still be approved.")
+        return None, None
+    try:
+        line = drafts.plan_digest(text.decode("utf-8", "replace"))
+    except drafts.DraftError as exc:
+        return None, (f"[spec-approval-gate K22] The Draft digest line of {plan_rel} cannot be read ({exc}). "
+                      + DRAFT_RECHECK)
+    present = load_paths().may_exist(draft)  # one that cannot be checked counts as present: digest() then refuses
+    if line is None:
+        if not present:
+            return None, None
+        return None, (f"[spec-approval-gate K22] {draft_rel} exists, but {plan_rel} records no Draft digest line under "
+                      "## Specification changes, so the approval would not bind the draft. Record the draft's "
+                      "digest in the plan (spec-layout.py digest) or remove the draft. " + DRAFT_RECHECK)
+    if not present:
+        return None, (f"[spec-approval-gate K22] {plan_rel} records Draft digest sha256 {line[:12]}, but its draft "
+                      f"{draft_rel} does not exist. " + DRAFT_RECHECK)
+    try:
+        current = drafts.digest(draft)
+        files = draft_files(draft)
+        aliases = draft_aliases(repo, files)
+    except (drafts.DraftError, OSError, load_paths().PathUnknown) as exc:
+        return None, (f"[spec-approval-gate K22] The draft {draft_rel} of {plan_rel} cannot be digested ({exc}). "
+                      + DRAFT_RECHECK)
+    if current != line:
+        return None, (f"[spec-approval-gate K22] {plan_rel} records Draft digest sha256 {line[:12]}, but its draft "
+                      f"{draft_rel} has the digest sha256 {current[:12]}: the draft is not the one the plan recorded. "
+                      + DRAFT_RECHECK)
+    record = {"digest": line, "files": files}
+    if aliases:
+        record["aliases"] = aliases
+    return record, None
+
+
+def draft_aliases(repo, files):
+    """On the approval reply: {canonical path: draft-relative name} for each drafted path (a file of the draft or a
+    directory of one) whose canonical form, resolved through symlinks and spelled as on disk like every path the gate
+    compares, is not the path its name spells in the repository (a symlinked specification/, a directory there
+    spelled in another case). Only the component where the two part is recorded; the names below it follow from it
+    (draft_target). A repository without such a component records none, and its writes are compared by path."""
+    aliases, canonical = {}, {"": repo}
+    for name in files:
+        parts = name.split("/")
+        for k in range(1, len(parts) + 1):
+            rel = "/".join(parts[:k])
+            if rel not in canonical:
+                canonical[rel] = ondisk(os.path.realpath(os.path.join(repo, rel)))
+                if canonical[rel] != os.path.join(canonical["/".join(parts[:k - 1])], parts[k - 1]):
+                    aliases[canonical[rel]] = rel
+    return aliases
+
+
+def drafted(rel, record, draft):
+    """Whether a write to <repo>/<rel> may write a file of the approved draft: rel is the repository itself, a file
+    the approved draft holds or a directory of one, or a path the draft holds now (a file added since)."""
+    if rel == ".":
+        return True
+    prefix = rel + "/"
+    return any(f == rel or f.startswith(prefix) for f in record["files"]) or \
+        load_paths().may_exist(os.path.join(draft, rel))
+
+
+def draft_target(target, repo, record, draft):
+    """The draft-relative name of the drafted path a write to `target` (resolved, spelled on disk) may write, or None:
+    the target's own name in the repository (drafted), or the name it has through a canonical form the approval
+    recorded (draft_aliases), so a write through a symlinked directory, or to where that directory really is, inside
+    the repository or outside it, is a write to the drafted path it reaches. A directory holding such a canonical
+    form counts as a directory of a drafted path."""
+    if under(target, repo):
+        rel = "." if target == repo else os.path.relpath(target, repo)
+        if drafted(rel, record, draft):
+            return rel
+    for canon, rel in sorted((record.get("aliases") or {}).items(), key=lambda alias: -len(alias[0])):
+        if under(target, canon):
+            inner = rel + target[len(canon):]
+            if drafted(inner, record, draft):
+                return inner
+        elif under(canon, target):
+            return rel
+    return None
+
+
+def draft_problem(draft, record, target, rel):
+    """None when the draft is still the approved one, else why not: its digest differs or cannot be computed, or the
+    target is the draft's own file under another name (a hard link), which a write would change with it."""
+    drafts = load_drafts()
+    try:
+        current = drafts.digest(draft)
+    except drafts.DraftError as exc:
+        return str(exc)
+    if current != record["digest"]:
+        return f"its digest is now sha256 {current[:12]}, the approval bound sha256 {record['digest'][:12]}"
+    try:
+        same = rel != "." and os.path.samestat(os.stat(target), os.lstat(os.path.join(draft, rel)))
+    except OSError:
+        same = False  # one of the two does not exist, so they are not one file
+    if same:
+        return f"{rel} is the draft's own file under another name (a hard link), so writing it would change the draft"
+    return None
+
+
+def draft_guard(paths, state, explicit=True):
+    """The draft side of a write that gated() allows; `paths` are the resolved target and the name it was reached by.
+    For each approval that binds a draft:
+      - a write into the draft, or (an explicit target) to ai-planning/, the directory holding it (rm -rf, mv), revokes
+        the approval (revoke(), the path an edit of the approved plan takes) and is allowed, like any write under
+        ai-planning/. A directory above the repository is denied before this (gated: it holds a gated project)
+      - a write to a path for which the draft holds a file (drafted), the repository itself included (a copy into .),
+        by its name or through a canonical form the approval recorded (draft_target), first computes the draft's
+        digest again; when the draft is no longer the approved one (draft_problem) the
+        approval is revoked and the denial returned. This binds the bytes a copy reads, at the moment the copy starts;
+        what is written is not compared here (the skill's spec-layout.py check compares the files with the draft
+        afterwards). The repository is re-checked rather than revoking, so copying an unrelated file into it, or
+        deleting it with the plan in it (which revokes through approval_status), never revokes for the draft alone
+    Returns a denial reason or None. Approvals without a draft are skipped without a file system call."""
+    for repo, entry in list(state["approvals"].items()):
+        record = entry.get("draft")
+        if not record:
+            continue
+        plan = entry["plan"]
+        draft = draft_dir(plan)
+        plan_rel, draft_rel = os.path.relpath(plan, repo), os.path.relpath(draft, repo) + "/"
+        inside = next((p for p in paths if under(p, draft)), None)
+        holder = None if inside or not explicit else next(
+            (p for p in paths if under(draft, p) and under(p, repo) and p != repo), None)
+        if inside or holder:
+            named = holder and (os.path.relpath(holder, repo) if under(holder, repo) else holder)
+            what = f"its draft {draft_rel}" if inside else f"'{named}', which holds its draft {draft_rel},"
+            revoke(state, repo, f"{what} was written after {plan_rel} was approved, which revoked the approval (the "
+                                "draft is frozen at approval: an amendment redrafts it, records the new digest in the "
+                                "plan and asks again)")
+            continue
+        for target in dict.fromkeys(paths):
+            rel = draft_target(target, repo, record, draft)
+            if rel is None:
+                continue
+            problem = draft_problem(draft, record, target, rel)
+            if not problem:
+                break
+            revoke(state, repo, f"the draft {draft_rel} was no longer the approved one when '{rel}' was about to be "
+                                f"written ({problem}), which revoked the approval")
+            return (f"spec-approval-gate (K22): '{rel}' in {repo} has a counterpart in the approved draft {draft_rel}, "
+                    f"and the draft is no longer the one the user approved ({problem}), so the approval of {plan_rel} "
+                    "is revoked and the write is denied. Have the plan and its draft re-checked (spec-layout.py check "
+                    "--draft --plan), record the draft's digest in the plan's Draft digest line, present the plan "
+                    "again and ask the user to approve it.")
+    return None
+
+
+# ------------------------------------------------------------------------------------- spelling on disk
+# A directory on a case-insensitive volume (APFS and HFS+ as macOS formats them by default) finds an entry under any
+# case of its name, and APFS finds one under either Unicode normalisation too: there /r/PROJ/src/a.py is
+# /r/proj/src/a.py. The gate compares paths as strings, so every path it compares and every root it compares them
+# with is first spelled the way the file system holds it (ondisk), and the names the gate itself looks for
+# (ai-planning/, .claude/, settings.json, hooks/, .plan) match in any case where the directory they are looked up in
+# folds case (name_folds). Whether a directory folds is asked of the file system, per directory, by looking an entry
+# up under another spelling and comparing (st_dev, st_ino) (lookup_folds); the platform decides nothing, so on a
+# case-sensitive volume every path keeps its spelling and every name matches exactly. Where a directory
+# folds, the spelling comes from the kernel (fcntl F_GETPATH on macOS, which also names a firmlinked directory,
+# /System/Volumes/Data/<path>, by the path it is known by, <path>) or from the directory's own entries.
+# ondisk, lookup_folds and name_folds live in core/gate/ifs_paths.py, shared with review-isolation.py.
+
+def ondisk(path):
+    """The path spelled as the file system holds it (ifs_paths.ondisk, shared with review-isolation.py)."""
+    return load_paths().ondisk(path)
+
+
+def name_folds(directory):
+    """Whether names looked up under the directory match in any case (ifs_paths.name_folds)."""
+    return load_paths().name_folds(directory)
+
+
+def guard_match(pattern, text, folds):
+    """A guard pattern (GUARD_FILES_RE, USER_GUARD_RE) matched exactly, and also in any case unless the directory is
+    known not to fold (folds is False): an unknown answer guards."""
+    return bool(pattern.match(text) or (folds is not False and re.match(pattern.pattern, text, re.I)))
+
+
+def guard_rel(rel, repo):
+    """Whether rel, a path in repo, is one of the project files that could switch the gate off (GUARD_FILES_RE): in
+    any case unless the repository is known not to fold (guard_match), since Claude Code reads .claude/settings.json
+    from whatever entry the directory finds under that name."""
+    return guard_match(GUARD_FILES_RE, rel, name_folds(repo))
+
+
+def is_plan(abspath):
+    """Whether abspath is <repo>/ai-planning/<name>.plan; in any case where the repository folds case."""
+    planning = os.path.dirname(abspath)
+    if abspath.endswith(".plan") and os.path.basename(planning) == "ai-planning":
+        return True
+    return abspath.casefold().endswith(".plan") and os.path.basename(planning).casefold() == "ai-planning" and \
+        name_folds(os.path.dirname(planning)) is True
+
+
+_ROOTS = {}
+
+
+def roots():
+    """The roots every comparison uses, spelled as on disk (ondisk), computed once per process, by the first
+    comparison: the gate's state, its directory and the dispatcher, the plugin's hooks/ and skills/, setup's state,
+    the other hooks' state, the Claude configuration directory, the exempt work trees and --skills-dir. Computed on
+    demand, so a call that compares nothing (an ungated session's prompt) does not pay for it."""
+    if not _ROOTS:
+        plugin_root = ondisk(PLUGIN_ROOT)
+        gate_dir = ondisk(GATE_DIR)
+        skills_root, hooks_dir = ondisk(SKILLS_ROOT), ondisk(PLUGIN_HOOKS_DIR)
+        state_dir, setup_dir, config_dir = ondisk(STATE_DIR), ondisk(SETUP_STATE_DIR), ondisk(CONFIG_DIR)
+        _ROOTS.update(
+            plugin_root=plugin_root, gate_dir=gate_dir, skills_root=skills_root, hooks_dir=hooks_dir,
+            state_dir=state_dir, setup_dir=setup_dir, config_dir=config_dir,
+            hook_file=ondisk(HOOK_FILE), dispatcher_file=ondisk(DISPATCHER_FILE),
+            write_roots=[ondisk(r) for r in STATE_WRITE_ROOTS], name_roots=[ondisk(r) for r in STATE_NAME_ROOTS],
+            exempt={ondisk(r) for r in EXEMPT_ROOTS},
+            skills_dir=ondisk(PLUGIN_MODE["skills_dir"]) if PLUGIN_MODE["skills_dir"] else "",
+            protected_re=re.compile(r"^(%s|%s|%s|%s)(/|$)|^%s/[^/]+/gate_rules\.json$" % tuple(
+                re.escape(r) for r in (state_dir, gate_dir, hooks_dir, setup_dir, skills_root))),
+            user_guard_re=re.compile(r"^%s(/settings(\.local)?\.json|/hooks(/.*)?)?$" % re.escape(config_dir)),
+            config_folds=name_folds(config_dir))
+    return _ROOTS
+
+
 # --------------------------------------------------------------------------------------- locating
 
 def resolve(path, cwd):
-    # realpath before any `..` is folded: link/.. is the link target's parent, as the kernel sees it.
+    # realpath before any `..` is folded: link/.. is the link target's parent, as the kernel sees it. Then the
+    # spelling on disk, so a path in another case names the same repository (ondisk).
     expanded = os.path.expanduser(path)
     if not os.path.isabs(expanded):
         expanded = os.path.join(cwd, expanded)
-    return os.path.realpath(expanded)
+    return ondisk(os.path.realpath(expanded))
 
 
 def lexical(path, cwd, shell_word=False):
@@ -552,8 +944,8 @@ def lexical(path, cwd, shell_word=False):
         expanded = os.path.join(cwd, expanded)
     head, tail = os.path.split(expanded.rstrip("/") or "/")
     if tail in ("", ".", ".."):
-        return os.path.realpath(expanded)
-    return os.path.join(os.path.realpath(head), tail)
+        return ondisk(os.path.realpath(expanded))
+    return ondisk(os.path.join(os.path.realpath(head), tail))
 
 
 def lexical_guard(name, abspath, rules, state):
@@ -563,7 +955,7 @@ def lexical_guard(name, abspath, rules, state):
         return None
     repo = project_repo(name, state)
     rel = repo and ("." if name == repo else os.path.relpath(name, repo))
-    if user_guarded(name, explicit=False) or (rel and GUARD_FILES_RE.match(rel)):
+    if user_guarded(name, explicit=False) or (rel and guard_rel(rel, repo)):
         return gated(name, rules, state, explicit=False)
     return None
 
@@ -592,7 +984,7 @@ def git_tree(abspath):
     probe = probe if os.path.isdir(probe) else os.path.dirname(probe)
     while True:
         if os.path.exists(os.path.join(probe, ".git")):
-            return None if probe in EXEMPT_ROOTS else probe
+            return None if probe in roots()["exempt"] else probe
         parent = os.path.dirname(probe)
         if parent == probe:
             return None
@@ -604,20 +996,21 @@ def plugin_trees():
     mode, the parent of --skills-dir when it is a plugin root. A root holding the manifest is protected whole;
     the gate's own root without one keeps its component directories protected; a bare skills directory (not
     inside a plugin root) adds nothing beyond its rules files."""
-    trees = []
-    for root in (PLUGIN_ROOT, os.path.dirname(PLUGIN_MODE["skills_dir"]) if PLUGIN_MODE["skills_dir"] else ""):
+    trees, plugin_root, skills_dir = [], roots()["plugin_root"], roots()["skills_dir"]
+    for root in (plugin_root, os.path.dirname(skills_dir) if skills_dir else ""):
         if not root or root in trees:
             continue
         if os.path.isfile(os.path.join(root, PLUGIN_MANIFEST)):
             trees.append(root)
-        elif root == PLUGIN_ROOT:
-            trees.extend(os.path.join(root, d) for d in PLUGIN_DIRS)
+        elif root == plugin_root:
+            trees.extend(ondisk(os.path.join(root, d)) for d in PLUGIN_DIRS)
     return trees
 
 
 def protected_roots():
-    return [STATE_DIR, GATE_DIR, PLUGIN_HOOKS_DIR, SETUP_STATE_DIR] + STATE_WRITE_ROOTS + plugin_trees() + \
-        sorted(glob.glob(os.path.join(SKILLS_ROOT, "*", "gate_rules.json")))
+    r = roots()
+    return [r["state_dir"], r["gate_dir"], r["hooks_dir"], r["setup_dir"]] + r["write_roots"] + plugin_trees() + \
+        sorted(glob.glob(os.path.join(glob.escape(r["skills_root"]), "*", "gate_rules.json")))
 
 
 def gated(abspath, rules, state, explicit=True):
@@ -625,9 +1018,9 @@ def gated(abspath, rules, state, explicit=True):
 
     `explicit` is false for the synthetic 'somewhere under the working directory' target of formatters,
     git and inline code: such a target is checked as a location, not as a directory being replaced."""
-    if PROTECTED_RE.search(abspath) or any(under(abspath, root) for root in plugin_trees() + STATE_WRITE_ROOTS) or (
-            PLUGIN_MODE["skills_dir"] and re.match(
-                r"^%s/[^/]+/gate_rules\.json$" % re.escape(PLUGIN_MODE["skills_dir"]), abspath)):
+    r = roots()
+    if r["protected_re"].search(abspath) or any(under(abspath, root) for root in plugin_trees() + r["write_roots"]) or (
+            r["skills_dir"] and re.match(r"^%s/[^/]+/gate_rules\.json$" % re.escape(r["skills_dir"]), abspath)):
         return (f"spec-approval-gate (K22): '{abspath}' is the approval gate's own state, code or rules, the "
                 "plugin's other hook state (reviewer registrations, review snapshots, activation records, the "
                 "timing log) or a file of the installed plugin, which are never written while the gate is "
@@ -655,16 +1048,18 @@ def gated(abspath, rules, state, explicit=True):
         return None
     rel = ".claude/settings (through a symlink)" if linked else "." if abspath == repo else \
         os.path.relpath(abspath, repo)
-    if linked or GUARD_FILES_RE.match(rel):
+    if linked or guard_rel(rel, repo):
         approved, why_not = approval_status(repo, state)
         if approved:
             return None  # guard_ask() asks instead
         return (f"spec-approval-gate (K22): '{rel}' in {repo} can switch the approval gate off (project "
                 f"settings or hooks), so it stays read-only until the plan is approved, and {why_not}. "
                 "Other files under .claude/ stay writable.")
+    folds = name_folds(repo) is True  # a planning directory spelled in another case is the one the skill reads
     for prefix in rules["writable_before_approval"]:
         bare = prefix.rstrip("/")
-        if rel == bare or rel.startswith(bare + "/"):
+        named, bare = (rel.casefold(), bare.casefold()) if folds else (rel, bare)
+        if named == bare or named.startswith(bare + "/"):
             if hard_linked(abspath) and not approval_status(repo, state)[0]:
                 # realpath() sees through symlinks, not hard links: this name may be another project file.
                 return (f"spec-approval-gate (K22): '{rel}' in {repo} is a hard-linked file, so writing it may "
@@ -683,8 +1078,9 @@ def gated(abspath, rules, state, explicit=True):
 def user_guarded(abspath, explicit=True):
     """Whether abspath is the user's Claude settings or hooks, or (an explicit target) a directory holding
     them."""
-    return bool(USER_GUARD_RE.match(abspath)) or (explicit and under(CONFIG_DIR, abspath)) or \
-        behind_link(abspath, CONFIG_DIR)
+    r = roots()
+    return guard_match(r["user_guard_re"], abspath, r["config_folds"]) or \
+        (explicit and under(r["config_dir"], abspath)) or behind_link(abspath, r["config_dir"])
 
 
 def behind_link(abspath, base):
@@ -692,13 +1088,13 @@ def behind_link(abspath, base):
     when they are symlinks (a dotfiles checkout): abspath is already resolved, so the name it was reached by
     is gone, and the file is guarded by its identity instead."""
     for name in ("settings.json", "settings.local.json"):
-        real = os.path.realpath(os.path.join(base, name))
-        if real != os.path.join(base, name) and abspath == real:
+        real = ondisk(os.path.realpath(os.path.join(base, name)))
+        if real != ondisk(os.path.join(base, name)) and abspath == real:
             return True
-    hooks = os.path.join(base, "hooks")
-    real = os.path.realpath(hooks)
-    return (real != hooks and under(abspath, real)) or (os.path.realpath(base) != base and
-                                                         abspath == os.path.realpath(base))
+    hooks = ondisk(os.path.join(base, "hooks"))
+    real = ondisk(os.path.realpath(hooks))
+    base_real = ondisk(os.path.realpath(base))
+    return (real != hooks and under(abspath, real)) or (base_real != base and abspath == base_real)
 
 
 def guard_files_repo(abspath, state):
@@ -734,7 +1130,7 @@ def guard_ask(abspath, state):
         return None
     rel = ".claude/settings (through a symlink)" if linked else "." if abspath == repo else \
         os.path.relpath(abspath, repo)
-    if not linked and not GUARD_FILES_RE.match(rel):
+    if not linked and not guard_rel(rel, repo):
         return None
     return (f"spec-approval-gate (K22): '{rel}' in {repo} holds project settings or hooks that can switch "
             "the approval gate off. Approve only if you asked for this change.")
@@ -843,16 +1239,34 @@ def cmd_record(data, rules):
                 "Write/Edit here). Nothing was approved.")
             return
         repo, plan = pending[0]
-        if not os.path.isfile(plan) or sha256(plan) != state["plans"][plan]["sha256"]:
+        # One read: the Draft digest line is taken from the bytes whose sha256 is checked.
+        text = None
+        if os.path.isfile(plan):
+            with open(plan, "rb") as fh:
+                text = fh.read()
+        if text is None or hashlib.sha256(text).hexdigest() != state["plans"][plan]["sha256"]:
             say(f"[spec-approval-gate K22] {os.path.relpath(plan, repo)} changed since it was last written "
                 "through Write/Edit, so the user has not seen this version. Nothing was approved: re-read "
                 "it, present it again and ask.")
             return
+        draft, refusal = bind_draft(repo, plan, text)
+        if refusal:
+            say(refusal)
+            return
         state["approvals"][repo] = {"plan": plan, "sha256": state["plans"][plan]["sha256"]}
+        state.get("revoked", {}).pop(repo, None)
         # Plain stdout on UserPromptSubmit is added to Claude's context.
+        if not draft:
+            say(f"[spec-approval-gate K22] Approved {os.path.relpath(plan, repo)} (sha256 "
+                f"{state['plans'][plan]['sha256'][:12]}) for {repo}. The plan is frozen from here: editing it, "
+                "or writing a newer plan, revokes approval.")
+            return
+        state["approvals"][repo]["draft"] = draft
         say(f"[spec-approval-gate K22] Approved {os.path.relpath(plan, repo)} (sha256 "
-            f"{state['plans'][plan]['sha256'][:12]}) for {repo}. The plan is frozen from here: editing it, "
-            "or writing a newer plan, revokes approval.")
+            f"{state['plans'][plan]['sha256'][:12]}) and its draft {os.path.relpath(draft_dir(plan), repo)}/ "
+            f"(digest sha256 {draft['digest'][:12]}, {len(draft['files'])} files) for {repo}. The plan and the "
+            "draft are frozen from here: editing either, or writing a newer plan, revokes approval; copy each "
+            "draft file to its path with Write or a plain cp.")
 
 
 def cmd_guard_edit(data, rules):
@@ -868,17 +1282,13 @@ def cmd_guard_edit(data, rules):
     cwd = data.get("cwd") or os.getcwd()
     abspath, name = resolve(path, cwd), lexical(path, cwd)
     with state_txn(data, write=True) as state:
-        reason = gated(abspath, rules, state) or lexical_guard(name, abspath, rules, state)
+        reason = gated(abspath, rules, state) or lexical_guard(name, abspath, rules, state) or \
+            draft_guard([abspath, name], state)
         ask = None if reason else (guard_ask(abspath, state) or (name != abspath and guard_ask(name, state)))
-        if not reason and abspath.endswith(".plan") and os.path.basename(os.path.dirname(abspath)) == "ai-planning":
+        if not reason and is_plan(abspath):
             # An edit of a plan revokes its repository's approval now, not when PostToolUse records it: a
             # write running alongside the amendment must not pass under the approval it is ending.
-            repo = os.path.dirname(os.path.dirname(abspath))
-            if repo in state["approvals"]:
-                del state["approvals"][repo]
-                state.setdefault("revoking", [])
-                if repo not in state["revoking"]:
-                    state["revoking"].append(repo)
+            revoke(state, os.path.dirname(os.path.dirname(abspath)))
     if reason:
         emit_pre_tool("deny", reason)
     elif ask:
@@ -910,75 +1320,104 @@ def cmd_guard_bash(data, rules):
                         + "; ".join(broken) + "), so the gate cannot tell whether this command deploys, "
                         "changes live state or installs a dependency. Every shell command asks until the file is "
                         "fixed. Approve only if you know what this command does.")
-        # Paths an earlier segment of this command may turn into a link (ln, cp -P, mv, tar -x, ...) inside a
-        # project that is not approved: the analysis sees the file system before the command runs, so a later
-        # write through such a path cannot be resolved now.
-        made = []
-        for words, targets, cwd in segments:
-            notes, before = [], len(denials)
-            for rule in rules["command_rules"]:
-                if rule_matches(rule, words):
-                    msg = f"spec-approval-gate rule '{rule['id']}': {rule['message']}"
-                    # A write rule decides nothing itself: analyse() added what it writes to the targets, which
-                    # are judged like any write below; its message explains a denial they cause.
-                    (notes if rule["decision"] == "write" else denials if rule["decision"] == "deny"
-                     else asks).append(msg)
-            prog = os.path.basename(words[0]) if words else ""
-            link = symlink_reason(prog, words, cwd, rules, state)
-            if link:
-                denials.append(link)
-            later = []
-            for target in targets:
-                if target.startswith(UNRESOLVED):
-                    # Where it writes is unknown: count it as a write at the working directory, and at the
-                    # repository holding it (an exempt working directory does not make `../x` exempt).
-                    here = resolve(cwd, cwd)
-                    home = project_repo(here, state)
-                    reason = gated(here, rules, state) or (home and gated(home, rules, state, explicit=False))
-                    if reason:
-                        denials.append(reason + f" (the shell command writes {target[len(UNRESOLVED):]}, which "
-                                                "the gate cannot resolve, so it counts as a write at the "
-                                                "working directory and its repository)")
-                    continue
-                explicit = not target.startswith(SYNTHETIC)
-                word = target if explicit else target[len(SYNTHETIC):]
-                abspath, name = resolve_shell(word, cwd), lexical(word, cwd, shell_word=True)
-                through = [m for m in made if under(name, m) or under(abspath, m)]
-                if through:
-                    denials.append(f"spec-approval-gate (K22): '{literal(word)}' lies under {through[0]}, which an "
-                                   "earlier part of this command may turn into a link, and the project's plan is not "
-                                   "approved. Run the commands as separate Bash calls so each write is checked "
-                                   "against the file system it really meets.")
-                    continue
-                if explicit and abspath.endswith(".plan") and \
-                        os.path.basename(os.path.dirname(abspath)) == "ai-planning" and project_repo(abspath, state):
-                    denials.append(f"spec-approval-gate (K22): write plans with Write/Edit, not the shell, so the "
-                                   f"gate records the version the user sees ('{target}')")
-                    continue
-                reason = gated(abspath, rules, state, explicit) or lexical_guard(name, abspath, rules, state)
-                if reason:
-                    denials.append(reason + f" (the shell command writes '{literal(target.lstrip(SYNTHETIC))}')")
-                elif explicit and (guard_ask(abspath, state) or (name != abspath and guard_ask(name, state))):
-                    asks.append(guard_ask(abspath, state) or guard_ask(name, state))
-                if prog in LINK_MAKERS:
-                    repo = project_repo(abspath, state)
-                    if repo and not approval_status(repo, state)[0]:
-                        later += [name, abspath]
-            made += later
-            if len(denials) > before:
-                denials.extend(notes)
+        # A write that ends an approval (one into its draft, draft_guard) ends it for the whole command, not only for
+        # the writes judged after it: when a pass ends an approval, the command is judged again from its first
+        # segment without it, and every pass's denials stand (a drafted path outside the project is denied only
+        # while the approval that binds it holds). A further pass happens only when the one before ended an approval,
+        # so the loop ends; a command that ends none, every ordinary one, is judged once.
+        while True:
+            held = len(state["approvals"])
+            found = judge_segments(segments, rules, state)
+            denials += found[0]
+            asks += found[1]
+            if len(state["approvals"]) == held:
+                break
     if denials:
         emit_pre_tool("deny", " | ".join(dict.fromkeys(denials)))
     elif asks:
         emit_pre_tool("ask", " | ".join(dict.fromkeys(asks)))
 
 
+def judge_segments(segments, rules, state):
+    """(denials, asks) of every segment of a shell command, against the approvals `state` holds: the command rules
+    that match each segment, and each write target (gated, lexical_guard, draft_guard, guard_ask)."""
+    denials, asks = [], []
+    # Paths an earlier segment of this command may turn into a link (ln, cp -P, mv, tar -x, ...) inside a project
+    # that is not approved: the analysis sees the file system before the command runs, so a later write through such
+    # a path cannot be resolved now.
+    made = []
+    for words, targets, cwd in segments:
+        notes, before = [], len(denials)
+        for rule in rules["command_rules"]:
+            if rule_matches(rule, words):
+                msg = f"spec-approval-gate rule '{rule['id']}': {rule['message']}"
+                # A write rule decides nothing itself: analyse() added what it writes to the targets, which are
+                # judged like any write below; its message explains a denial they cause.
+                (notes if rule["decision"] == "write" else denials if rule["decision"] == "deny"
+                 else asks).append(msg)
+        prog = os.path.basename(words[0]) if words else ""
+        link = symlink_reason(prog, words, cwd, rules, state)
+        if link:
+            denials.append(link)
+        later = []
+        for target in targets:
+            if target.startswith(UNRESOLVED):
+                # Where it writes is unknown: count it as a write at the working directory, and at the repository
+                # holding it (an exempt working directory does not make `../x` exempt).
+                here = resolve(cwd, cwd)
+                home = project_repo(here, state)
+                reason = gated(here, rules, state) or (home and gated(home, rules, state, explicit=False)) or \
+                    draft_guard([here], state, explicit=False)
+                if reason:
+                    denials.append(reason + f" (the shell command writes {target[len(UNRESOLVED):]}, which the gate "
+                                            "cannot resolve, so it counts as a write at the working directory and "
+                                            "its repository)")
+                continue
+            explicit = not target.startswith(SYNTHETIC)
+            word = target if explicit else target[len(SYNTHETIC):]
+            abspath, name = resolve_shell(word, cwd), lexical(word, cwd, shell_word=True)
+            through = [m for m in made if under(name, m) or under(abspath, m)]
+            if through:
+                denials.append(f"spec-approval-gate (K22): '{literal(word)}' lies under {through[0]}, which an "
+                               "earlier part of this command may turn into a link, and the project's plan is not "
+                               "approved. Run the commands as separate Bash calls so each write is checked against "
+                               "the file system it really meets.")
+                continue
+            if explicit and is_plan(abspath) and project_repo(abspath, state):
+                denials.append(f"spec-approval-gate (K22): write plans with Write/Edit, not the shell, so the gate "
+                               f"records the version the user sees ('{target}')")
+                continue
+            reason = gated(abspath, rules, state, explicit) or lexical_guard(name, abspath, rules, state) or \
+                draft_guard([abspath, name], state, explicit)
+            if reason:
+                denials.append(reason + f" (the shell command writes '{literal(target.lstrip(SYNTHETIC))}')")
+            elif explicit and (guard_ask(abspath, state) or (name != abspath and guard_ask(name, state))):
+                asks.append(guard_ask(abspath, state) or guard_ask(name, state))
+            if prog in LINK_MAKERS:
+                repo = project_repo(abspath, state)
+                if repo and not approval_status(repo, state)[0]:
+                    later += [name, abspath]
+        made += later
+        if len(denials) > before:
+            denials.extend(notes)
+    return denials, asks
+
+
 def cmd_plan_changed(data, rules):
     path = (data.get("tool_input") or {}).get("file_path")
     if not path:
         return
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(data.get("cwd") or os.getcwd(), expanded)
+    if "/ai-planning/" not in os.path.realpath(expanded).casefold():
+        return  # neither a plan nor a draft, in any case: every other Write/Edit returns without a file system walk
     abspath = resolve(path, data.get("cwd") or os.getcwd())
-    if not abspath.endswith(".plan") or os.path.basename(os.path.dirname(abspath)) != "ai-planning":
+    draft = draft_holding(abspath)
+    if draft:
+        draft_changed(data, abspath, draft)
+        return
+    if not is_plan(abspath):
         return
     repo = os.path.dirname(os.path.dirname(abspath))
     if git_tree(abspath) != repo or not os.path.isfile(abspath):
@@ -1001,6 +1440,46 @@ def cmd_plan_changed(data, rules):
                      "(new files, a dependency, a scope change), present the revised plan and ask for "
                      "approval again. A judgment call that changes none of those belongs in the ledger, "
                      "not the plan.")
+
+
+def draft_changed(data, abspath, draft):
+    """PostToolUse, a Write/Edit in a plan's draft: report the revocation draft_guard made when the write started, or
+    make it now (revoke) when the approval was recorded after that decision. PreToolUse revokes every approval that
+    binds the draft (draft_guard), so an approval still binding it here was given after this write was let through:
+    the user approved while it ran, and the digest the approval holds may be of the draft before this write landed."""
+    repo = os.path.dirname(os.path.dirname(draft))
+    if PLUGIN_MODE["on"] and not session_active(data):
+        return
+    with state_txn(data, write=True) as state:
+        entry = state["approvals"].get(repo)
+        if binds_draft(entry, draft):
+            plan_rel, draft_rel = os.path.relpath(entry["plan"], repo), os.path.relpath(draft, repo) + "/"
+            revoke(state, repo, f"its draft {draft_rel} was written by a call let through before {plan_rel} was "
+                                "approved and recorded after the approval, which revoked it (the draft is frozen at "
+                                "approval: an amendment redrafts it, records the new digest in the plan and asks "
+                                "again)")
+        revoking = state.get("revoking", [])
+        if repo not in revoking:
+            return
+        state["revoking"] = [r for r in revoking if r != repo]
+    plan_rel = os.path.relpath(draft[:-len(DRAFT_SUFFIX)] + ".plan", repo)
+    emit_context("PostToolUse",
+                 f"[spec-approval-gate K22] {os.path.relpath(abspath, repo)} is part of the draft of {plan_rel} and "
+                 "changed after approval, so approval is revoked. If this is an amendment the user asked for, or one "
+                 "the work needs, have the plan and its draft re-checked (spec-layout.py check --draft --plan), record "
+                 "the draft's new digest in the plan's Draft digest line, present the amendment and ask for approval "
+                 "again.")
+
+
+def binds_draft(entry, draft):
+    """Whether an approval entry binds the draft directory `draft` (spelled on disk): it records a draft, and its plan's
+    draft is that directory. A plan whose draft's spelling cannot be read counts as binding it (fail closed)."""
+    if not (entry and entry.get("draft")):
+        return False
+    try:
+        return draft_dir(entry["plan"]) == draft
+    except load_paths().PathUnknown:
+        return True
 
 
 # --------------------------------------------------------------------------------- shell analysis
@@ -1121,7 +1600,7 @@ def resolve_shell(path, cwd):
     expanded = literal(os.path.expanduser(path))
     if not os.path.isabs(expanded):
         expanded = os.path.join(cwd, expanded)
-    return os.path.realpath(expanded)
+    return ondisk(os.path.realpath(expanded))
 
 
 def protect(text):
@@ -1462,8 +1941,7 @@ def analyse(command, cwd, depth=0, variables=None, unknown_dirs=None, side_rules
     variables = dict(variables or {})
     unknown_dirs = list(unknown_dirs or [cwd])
     _stripped, bodies = scan_heredocs(command)
-    inline = inline_targets(command)
-    inline_runs = inline_commands(command)
+    inline_runs = None  # the command strings inline interpreter code runs, read once, at the first interpreter
     # An unparsable command (an unterminated quote) is still split conservatively, and every one of its
     # segments also counts as a write at its working directory.
     unparsed = [] if parses(command) else [UNRESOLVED + "a command the shell lexer cannot parse"]
@@ -1499,7 +1977,7 @@ def analyse(command, cwd, depth=0, variables=None, unknown_dirs=None, side_rules
             continue
         guarded_by_keyword = bool(words) and words[0] in {"then", "else", "elif", "do"}
         words = [expand(w, cwds[0], variables) for w in words]
-        layers = program_layers(words)
+        layers = program_layers(words, cwds[0])
         if not layers:  # only assignments (f=src/a.py): later words of the command can expand them
             for word in words:
                 match = ASSIGNMENT_RE.match(word)
@@ -1567,7 +2045,11 @@ def analyse(command, cwd, depth=0, variables=None, unknown_dirs=None, side_rules
             for body in find_exec_bodies(shown[1:]):
                 yield from nested(" ".join(shlex.quote(w) for w in body), here)
         if is_interpreter(prog):
-            extra += inline
+            # The interpreter is known by the program word the shell runs (quotes removed, respelled, wrappers
+            # unwrapped: 'python3', PYTHON3, env python3.12), never by the command's raw text, which a quote or
+            # another case hid from a name pattern.
+            extra += inline_targets(command, shown[1:])
+            inline_runs = inline_commands(command) if inline_runs is None else inline_runs
             for text in inline_runs:
                 yield from nested(text, here)
         if any(os.path.basename(layer[0]) == "xargs" for layer in layers[:-1]) and writes_files(words):
@@ -1648,9 +2130,8 @@ QUOTED_RE = re.compile(r"'([^'\n]*)'|\"([^\"\n]*)\"")
 
 def inline_commands(command):
     """The command lines inline interpreter code runs, when they are literal strings or lists of strings, so
-    command rules see them (python3 -c 'import os; os.system("terraform apply")')."""
-    if not re.search(r"(?:^|[;&|(]\s*|\s)(?:\S*/)?(python[23]?(\.\d+)?|node|ruby|perl)\b", command):
-        return []
+    command rules see them (python3 -c 'import os; os.system("terraform apply")'). Called for a command one of
+    whose programs is an interpreter (analyse)."""
     out = []
     for m in INLINE_RUN_RE.finditer(command):
         arg = m.group(1)
@@ -1679,7 +2160,7 @@ def in_place(prog, args):
 def writes_files(words):
     """Whether the program writes the files named by its arguments (so arguments from xargs or find
     -exec are written)."""
-    prog = os.path.basename(words[0]) if words else ""
+    prog = os.path.basename(program_spelling(words[0])) if words else ""
     if prog in WRITE_ALL_ARGS | WRITE_AFTER_FIRST_ARG | WRITE_LAST_ARG:
         return True
     if prog in IN_PLACE_EDITORS:
@@ -1689,12 +2170,14 @@ def writes_files(words):
     return False
 
 
-def inline_targets(command):
+def inline_targets(command, args=()):
     """Targets of inline interpreter code (-c, -e or a here-document) that writes files or runs commands:
-    its path literals, and its working directory."""
-    if not re.search(r"(?:^|[;&|(]\s*|\s)(?:\S*/)?(python[23]?(\.\d+)?|node|ruby|perl)\b", command):
+    its path literals, and its working directory. Called for a segment whose program is an interpreter (analyse);
+    `args` are that program's words as the shell passes them, so a quoted or attached option (python3 '-c' ...,
+    python3 -c'...') counts like one the raw text shows."""
+    if not (re.search(r"\s-[A-Za-z]*(c|e)\s|<<", command) or any(re.match(r"-[A-Za-z]*[ce]", a) for a in args)):
         return []
-    if not re.search(r"\s-[A-Za-z]*(c|e)\s|<<", command) or not INLINE_WRITE_RE.search(command):
+    if not INLINE_WRITE_RE.search(command):
         return []
     return [loc()] + [m for m in PATH_LITERAL_RE.findall(command) if not re.match(r"^[\w.+-]+://", m)]
 
@@ -1702,44 +2185,88 @@ def inline_targets(command):
 def touches_gate(command, segments):
     """A denial when the command runs the gate's own entrypoint (which could record a forged approval) or
     names its state directory; else None. The gate's code may still be read (cat, git diff)."""
+    r = roots()
     data_root = os.environ.get("CLAUDE_PLUGIN_DATA") or "\0"
     state_dirs = {STATE_DIR, os.path.join(data_root, "spec-approval-gate"),
                   os.path.join(data_root, "review-isolation")}
-    state_dirs |= set(STATE_NAME_ROOTS)
+    state_dirs |= set(STATE_NAME_ROOTS) | {r["state_dir"]} | set(r["name_roots"])
     texts = [command] + [" ".join(w) for w, _t, _c in segments] + [t for _w, ts, _c in segments for t in ts]
-    if any(d in text for d in state_dirs for text in texts) or STATE_ENV_RE.search(command) or any(
-            STATE_ENV_RE.search(w) for ws, _t, _c in segments for w in ws):
+    folded = [t.casefold() for t in texts]
+    # A state directory on a volume that folds case is named by its name in any case (name_folds; unknown folds).
+    if any(d in text for d in state_dirs for text in texts) or any(
+            d.casefold() in text for d in state_dirs if name_folds(d) is not False for text in folded) or \
+            STATE_ENV_RE.search(command) or any(STATE_ENV_RE.search(w) for ws, _t, _c in segments for w in ws):
         return (f"spec-approval-gate (K22): the command names the gate's state directory ({STATE_DIR}), the "
                 "isolation hook's reviewer registrations or the activation records, or sets the variable that "
                 "locates them, which only the hooks themselves read and write.")
     runners = SHELLS | {"source", ".", "exec", HOOK_BASENAME, DISPATCHER_BASENAME}
     names = (HOOK_BASENAME, HOOK_FILE, DISPATCHER_BASENAME, DISPATCHER_FILE)
+    scripts = (HOOK_FILE, DISPATCHER_FILE, r["hook_file"], r["dispatcher_file"])
     named = any(n in command for n in names)
     for words, _targets, cwd in segments:
         # The words as the shell passes them on (quotes joined, variables expanded), and what each names on
-        # disk: spec-approval-''gate.py, "$g-gate.py" and a symlink to the script are all the script.
+        # disk: spec-approval-''gate.py, "$g-gate.py", a symlink to the script and, where the volume folds case,
+        # SPEC-APPROVAL-GATE.PY are all the script.
         named = named or any(any(n in w for n in names) or (
-            ("/" in w or w.endswith(".py")) and resolve_shell(w, cwd) in (HOOK_FILE, DISPATCHER_FILE))
+            ("/" in w or w.casefold().endswith(".py")) and resolve_shell(w, cwd) in scripts)
             for w in words)
     if named:
+        # Where the gate's directory folds case (the volume the system's programs are usually on too),
+        # SPEC-APPROVAL-GATE.PY and PYTHON3 run the script as well.
+        folding = name_folds(r["gate_dir"]) is not False
+        folded_runners = {n.casefold() for n in runners} if folding else set()
         for words, _targets, _cwd in segments:
             prog = os.path.basename(words[0]) if words else ""
-            if prog in runners or is_interpreter(prog):
+            if prog in runners or is_interpreter(prog) or (
+                    folding and (prog.casefold() in folded_runners or is_interpreter(prog.casefold()))):
                 return ("spec-approval-gate (K22): the command runs the approval gate's own script, whose "
                         "events only Claude Code may send; an approval comes only from the user's reply.")
     return None
 
 
-def program_layers(words):
+# Shell builtins whose external namesakes change nothing in the shell (macOS ships /usr/bin/cd): a program word
+# that the file system finds as one of these only under another case runs the external, never the builtin.
+SHELL_STATE_BUILTINS = {"cd", "pushd", "popd", "export"}
+
+
+def program_spelling(word, cwd=None):
+    """A program word spelled as the file system holds the program the shell runs for it, when the shell finds it
+    only under another case (RM runs /bin/rm where the volume folds case), so the analysis classifies it as that
+    program; any other word unchanged. Only a word holding a capital letter is looked up, so an ordinary command
+    costs nothing: a bare name on the hook's PATH (the first directory holding it, as the shell searches), a path
+    from cwd (without one, a relative path stays as it is). A name the shell would take as a builtin
+    (SHELL_STATE_BUILTINS) is kept."""
+    if not word or word == word.lower() or DYNAMIC_RE.search(word):
+        return word
+    text = literal(os.path.expanduser(word))
+    if "/" in text:
+        if not os.path.isabs(text) and cwd is None:
+            return word
+        where = text if os.path.isabs(text) else os.path.join(cwd, text)
+        head, tail = os.path.split(where)
+        if not tail or not os.path.lexists(where):
+            return word
+        spelled = os.path.basename(ondisk(os.path.join(os.path.realpath(head), tail)))
+        return word if spelled == tail else os.path.join(os.path.dirname(text), spelled)
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory and os.path.isabs(directory) and os.path.lexists(os.path.join(directory, text)):
+            spelled = os.path.basename(ondisk(os.path.join(os.path.realpath(directory), text)))
+            return word if spelled == text or spelled in SHELL_STATE_BUILTINS else spelled
+    return word
+
+
+def program_layers(words, cwd=None):
     """Every execution layer of a command: after assignments, after each wrapper (env -S splits its
     string), after each runner (npx, uvx, uv run, npm exec, pnpm dlx) and after python -m. The last layer is
-    the real program."""
+    the real program. Each layer's program word is spelled as the file system holds it (program_spelling)."""
     def drop_assignments(seq):
         # Leading assignments, the reserved words that precede a command (then rm ..., do touch ...), and a
         # function definition's `function NAME` (its body is the command analysed here).
         while seq and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seq[0]) or seq[0] in RESERVED_WORDS or
                        seq[0] == "function"):
             seq = seq[2:] if seq[0] == "function" else seq[1:]
+        if seq:
+            seq = [program_spelling(seq[0], cwd)] + seq[1:]
         return seq
 
     out = drop_assignments(list(words))
@@ -1930,7 +2457,8 @@ def copy_targets(prog, args, sub, cwd):
     """cp, mv, ln, install, rsync: the destination, and when it is an existing directory, each source's
     name inside it (and, for a recursive copy into an existing subdirectory, every symlink under it, which
     the copy would write through). mv also writes its sources (removed from where they were); a hard link
-    (ln without -s) makes its source writable under another name, so it counts as a write to the source."""
+    (ln without -s, cp -l or --link, GNU's abbreviations of it included) makes its source writable under another
+    name, so it counts as a write to the source."""
     target_dir = option_value(args, "-t", "--target-directory") if prog != "rsync" else None
     if target_dir:
         sources = list(sub)
@@ -1941,7 +2469,9 @@ def copy_targets(prog, args, sub, cwd):
         sources, dest = sub[:-1], sub[-1]
     else:
         sources, dest = sub, None
-    hard = prog == "ln" and not any(a == "--symbolic" or re.match(r"^-[A-Za-z]*s", a) for a in args)
+    hard = (prog == "ln" and not any(a == "--symbolic" or re.match(r"^-[A-Za-z]*s", a) for a in args)) or \
+        (prog == "cp" and any(re.fullmatch(r"--l(i(nk?)?)?", a) or re.match(r"^-(?:(?![tS])[A-Za-z])*l", a)
+                              for a in args))  # in a cluster before -t DIR or -S SUFFIX, whose value may hold an l
     out = []
     if dest is None:
         if prog == "ln" and sources:  # ln TARGET: a link named after it in the working directory
@@ -1989,7 +2519,7 @@ def symlink_reason(prog, words, cwd, rules, state):
         if DYNAMIC_RE.search(src):
             continue  # the write through it is checked when it happens, against the real file system
         base = where if os.path.isdir(where) else os.path.dirname(lexical(dest, cwd, shell_word=True))
-        pointee = os.path.realpath(text if os.path.isabs(text) else os.path.join(base, text))
+        pointee = ondisk(os.path.realpath(text if os.path.isabs(text) else os.path.join(base, text)))
         reason = gated(pointee, rules, state, explicit=False)
         if reason:
             return (f"spec-approval-gate (K22): the symbolic link to '{literal(src)}' would lead to {pointee}, which "
@@ -2418,7 +2948,13 @@ def run_event(event, rules_path=None, skills_dir=None):
             return 0
         if event.startswith("guard"):
             # Fail closed: a guard that silently opens is worse than one that asks to be fixed.
-            if not isinstance(exc, OSError):
+            if isinstance(exc, DraftsUnavailable):
+                fix = "the plugin's core/gate/draft_digest.py is missing or broken, so no draft can be checked: " \
+                      "reinstall the plugin."
+            elif type(exc).__name__ == "PathUnknown":  # ifs_paths.PathUnknown, matched by name: it may be what failed
+                fix = ("the gate cannot tell which file the path names, so it denies the call: make that directory "
+                       "readable by this user, or name the path as it is spelled on disk.")
+            elif not isinstance(exc, OSError):
                 fix = "they can fix core/gate/spec-approval-gate.py or the rules file."
             else:
                 try:

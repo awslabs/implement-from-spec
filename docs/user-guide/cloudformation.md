@@ -38,15 +38,28 @@ but the project's own commands need them on PATH.
   untracked file must belong to a task (see "How a run goes", step 6). The change-set JSON the skill keeps
   as evidence goes under `ai-planning/`, which is exempt
 
+## The specification
+
+Every run starts by finding the project's specification (`spec-layout.py detect`): `specification/`,
+`docs/specifications/` or `docs/SPECIFICATION.md`, or a file elsewhere that you confirm when detect names
+it as a candidate. The skill follows it as written and extends it in place, in its own layout and
+format: a requirement it lacks becomes a new item with the next free ID, and an item the change must
+alter or reverse is changed or struck through, never silently. Only a project with no specification
+gets a first one in `specification/`, derived from the existing code. Every specification file the
+change adds or changes is drafted under `ai-planning/<slug>.spec/`, recorded in the plan's
+`## Specification changes` with the draft's digest, and written into place first after your `approve`;
+the last wave then brings the living documents and the generated traceability report in line with the
+code. The `spec-handling` skill does this work: see [specification.md](specification.md).
+
 ## How a run goes
 
 1. Ingest: the items, the ownership rules, the existing templates, parameter files, Guard rules and
    tests, the validate stage, and the Template Reference page of every resource type the design uses
 2. Plan: `ai-planning/<slug>.plan`, prose only
-3. Analysis gate: `spec-trace.py plan`, then a self-review of stack fit, quotas after `Fn::ForEach`
-   expansion, data protection (both `DeletionPolicy` and `UpdateReplacePolicy` set explicitly, since both
-   default to `Delete`), replacement behaviour, IAM, typed and constrained parameters with no secret
-   defaults, Guard rules and tests, and scope
+3. Analysis gate: `spec-trace.py plan` and `spec-layout.py check`, then a self-review of stack fit, quotas
+   after `Fn::ForEach` expansion, data protection (both `DeletionPolicy` and `UpdateReplacePolicy` set
+   explicitly, since both default to `Delete`), replacement behaviour, IAM, typed and constrained parameters
+   with no secret defaults, Guard rules and tests, and scope
 4. Your `approve`
 5. Implementation in waves. Test first means a Guard rule fixture or a template test that fails before the
    resource exists. After each wave the full validation runs: the project's validate entry point, or

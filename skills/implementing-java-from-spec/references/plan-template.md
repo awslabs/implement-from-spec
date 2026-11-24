@@ -20,7 +20,32 @@ prose, never as code. `core/scripts/spec-trace.py plan` parses `## Scope`, `## G
 Items: <specification files or ai-planning/<feature>.md> · Drafted: YYYY-MM-DD
 
 ## Scope
-The item IDs this plan implements (SPEC-Fxxx, SPEC-NFxxx, or SPEC-PLAN-n for a feature spec), and nothing else.
+The item IDs this plan implements (SPEC-Fxxx, SPEC-NFxxx; a feature spec's requirements get new
+item IDs, contract section 13), and nothing else.
+
+## Specification changes
+One record per specification item this change adds, changes or strikes (contract sections 3 and 13),
+the file in backticks:
+- <ID> — new — `<specification file>` — <one-line reason, or the request it comes from>
+- <ID> — changed — `<specification file>` — <what changed and why>
+- <ID> — struck — `<specification file>` — <why it no longer holds>
+The full text of every specification file that is new or changes is drafted under
+`ai-planning/<slug>.spec/`. For a project that had no specification, one record covers the items
+derived from the code:
+- baseline — <n> items derived from the code at commit <hash> — `specification/`
+Then, as plain notes, the layout found and the standard documents it lacks (not created). "none" when
+no item is added, changed or struck.
+When the draft holds files, the section also carries exactly one line
+`Draft digest: sha256 <64 lowercase hex>`, computed once the draft is final with
+`python3 -I "<PLUGIN_ROOT>/core/scripts/spec-layout.py" digest <REPO>/ai-planning/<slug>.spec`; the
+analysis gate fails `draft-digest-mismatch`, and the approval gate refuses approval, when the draft
+changes after it (contract section 13). A plan with this section
+uses real specification item IDs throughout, never `SPEC-PLAN-n` (`plan-local-id`).
+A specification file the change removes (a move into another layout) is recorded as
+``- deleted — `<path>` — <reason>``, and a task owns it as `` `<path>` (deleted) ``.
+When more than one specification place holds files, the user's answer is one line
+`` Specification root: `<place>` ``, for example `` Specification root: `docs/SPECIFICATION.md` ``. A draft
+file that is binary or over 2 MB is named here in backticks, or `check` fails `draft-binary`.
 
 ## Binding rules
 CLAUDE.md or AGENTS.md, the specification index, the design-doc sections the items realise, and the
@@ -32,12 +57,12 @@ response fields, status codes, property names and defaults, limits, timeouts, er
 
 ## 1. Restated requirements
 What the items ask for, in your own words, item by item. Each ambiguity and how it was resolved (with the
-date of the user's answer). For a feature spec, one line per requirement starting with its SPEC-PLAN-n ID
+date of the user's answer). For a feature spec, one line per requirement starting with its new item ID
 and naming its source file and section.
 
 ## 2. Spec and test-case impact
-- New SPEC-Fxxx / SPEC-NFxxx: id, topic file, proposed text
-- Amended SPECs: id, topic file, proposed change
+- New, amended and struck SPEC-Fxxx / SPEC-NFxxx are recorded under `## Specification changes` and
+  drafted under `ai-planning/<slug>.spec/`; name here what each means for the tests
 - New TC-xxx: id, topic file, what it verifies; the coverage-matrix rows to add
 - Open questions this feature closes, with the answer and where it came from
 (Omit when the project keeps no specification tree.)
@@ -98,6 +123,14 @@ Depends: none
 Wave: 1
 Tests: `src/test/java/<package path>/<Class>Test.java` (cites <item IDs or TC-xxx>; methods: <names>)
 Verify: <the build command that runs those tests, and its expected result>
+
+Specification tasks (contract section 13): when `ai-planning/<slug>.spec/` holds files, a first-wave
+task owns the specification files and writes them from the draft; when the draft holds files, the
+layout keeps a generated TRACEABILITY.md or the change touches a living document, a last-wave task owns the documents that follow the code (the
+traceability report, the test-case document, the feature list and the others the layout keeps), never a
+file the draft holds, which is frozen at approval. Each names the Scope IDs it writes or documents and
+carries `Tests: none — <reason>` with `spec-layout.py check` as its `Verify:`. When no last-wave task
+is needed, `## Specification changes` says so.
 
 ## Deferred
 One record per Scope item the user agreed to leave out: `- <ID> — <reason> (agreed YYYY-MM-DD)`. Otherwise "none".

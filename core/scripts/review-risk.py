@@ -8,7 +8,8 @@ which security reviewers must be handed the change, and which model the review l
 Owns one thing: the mechanical risk rules of the review model (docs/design-notes.md, "Review model",
 section 2). It only adds scrutiny: it never lowers lens coverage, never reads author labels or commit
 messages, and never reads or changes an external-review setting. It reads the snapshot that
-core/scripts/review-snapshot.py wrote and the repository's git objects; it writes nothing.
+core/scripts/review-snapshot.py wrote and the repository's git objects, and takes which files are
+specification files from core/scripts/spec-trace.py; it writes nothing.
 
     classify DIR [--json]
 
@@ -19,7 +20,9 @@ added or deleted path; binary files and files over 2 MB are matched by path only
     policy-file          a policy file changed (the snapshot's policy_changed)          approval, high
     ci-automation        .github/, .gitlab-ci.yml, buildspec*.yml, Jenkinsfile, .claude/, hooks/,
                          *settings*.json, .claude-plugin/                                approval, high
-    specification        a specification file changed (docs/specifications/, specification/,
+    specification        a specification file changed (each file spec-trace.py counts as one: Markdown under
+                         specification/ and docs/specifications/, docs/SPECIFICATION.md and the documents
+                         beside it in docs/; and any other file under those two directories, and
                          ai-planning/<feature>.md) and the snapshot holds no plan        approval
     security             IAM policy documents or statements, Principal, sts:AssumeRole, authentication,
                          tokens, passwords, secrets, cryptography or TLS, network exposure (0.0.0.0/0, ::/0,
@@ -62,10 +65,12 @@ TF_REVIEWER = "implement-from-spec:reviewing-terraform-security"
 EXIT_OK, EXIT_ERROR, EXIT_CHANGED, EXIT_USAGE = 0, 1, 3, 64
 
 
-def load_snapshot_module():
-    """review-snapshot.py, the sibling that owns the candidate, loaded by its path (works under python3 -I)."""
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "review-snapshot.py")
-    spec = importlib.util.spec_from_file_location("ifs_review_snapshot", path)
+def load_sibling(filename: str, module_name: str):
+    """A script of this directory, loaded by its path (works under python3 -I, which keeps this directory off
+    sys.path): review-snapshot.py, which owns the candidate, and spec-trace.py, which owns which files are
+    specification files."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), filename)
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
@@ -81,6 +86,8 @@ def load_snapshot_module():
 # ---------------------------------------------------------------- path rules
 CI_RE = re.compile(r"(^|/)(\.github|\.claude|hooks|\.claude-plugin)/|(^|/)(\.gitlab-ci\.ya?ml|Jenkinsfile|"
                    r"buildspec[^/]*\.ya?ml|[^/]*settings[^/]*\.json)$", re.I)
+# Specification files beyond spec-trace.py's SPEC_FILE_RE (specification_files below): any file under the two
+# specification directories, not only Markdown, and a feature spec in ai-planning/.
 SPEC_RE = re.compile(r"^(docs/specifications/|specification/)|^ai-planning/[^/]+\.md$")
 MIGRATION_RE = re.compile(r"(^|/)(migrations?|migrate|alembic|flyway|liquibase|changelogs?)/|(^|/)V\d+[^/]*__[^/]*\.sql$",
                           re.I)
@@ -242,14 +249,25 @@ def matched_kinds(lines: list, table) -> list:
     return [kind for kind, pattern in table if any(pattern.search(line) for line in lines)]
 
 
-def classify_entry(res: Result, entry: dict, old_text, new_text, scanned: bool, has_plan: bool) -> None:
+def specification_files(snap):
+    """spec-trace.py's SPEC_FILE_RE, the one definition of a specification file, so that the files its code check
+    treats as specification are the files this rule escalates. A spec-trace.py that cannot be loaded, or that
+    lacks the rule, stops the classification (exit 1): the rule is never skipped."""
+    try:
+        return load_sibling("spec-trace.py", "ifs_spec_trace").SPEC_FILE_RE
+    except (ImportError, OSError, SyntaxError, AttributeError) as exc:
+        raise snap.Failure(EXIT_ERROR, f"cannot load the specification-file rule from spec-trace.py: {exc}")
+
+
+def classify_entry(res: Result, entry: dict, old_text, new_text, scanned: bool, has_plan: bool,
+                   spec_files) -> None:
     rel, status = entry["path"], entry["status"]
     recognised = False
     if CI_RE.search(rel):
         res.reason("ci-automation", rel, "CI or automation file changed", high=True,
                    approval=f"CI or automation file changed: {rel}")
         recognised = True
-    if SPEC_RE.search(rel):
+    if SPEC_RE.search(rel) or spec_files.match(rel):
         recognised = True
         if not has_plan:
             res.reason("specification", rel, "specification changed without an approved plan in the snapshot",
@@ -326,6 +344,7 @@ def classify_entry(res: Result, entry: dict, old_text, new_text, scanned: bool, 
 
 
 def classify(snap, directory: str) -> dict:
+    spec_files = specification_files(snap)
     _d, manifest = snap.load_manifest(directory)
     changed = snap.verify_manifest(manifest)
     if changed:
@@ -348,7 +367,7 @@ def classify(snap, directory: str) -> dict:
             old_text, new_text = text_of(old), text_of(new)
             scanned = entry["mode"] in snap.FILE_MODES + (None,) and \
                 (old is None or old_text is not None) and (new is None or new_text is not None)
-            classify_entry(res, entry, old_text, new_text, scanned, manifest.get("plan") is not None)
+            classify_entry(res, entry, old_text, new_text, scanned, manifest.get("plan") is not None, spec_files)
     return res.as_json(manifest["id"])
 
 
@@ -387,7 +406,7 @@ def main(argv=None) -> int:
     cls.add_argument("--json", action="store_true", help="print JSON (schema ifs-review-risk/1)")
     args = parser.parse_args(argv)
     try:
-        snap = load_snapshot_module()
+        snap = load_sibling("review-snapshot.py", "ifs_review_snapshot")
     except (ImportError, OSError, SyntaxError) as exc:
         print(f"review-risk: cannot load review-snapshot.py: {exc}", file=sys.stderr)
         return EXIT_ERROR

@@ -1,0 +1,14 @@
+{
+  "_doc": "Approval-gate (K22) rules for spec-handling, read by the plugin's core/gate/spec-approval-gate.py; the file's presence is what gates this skill, so a specification is drafted under ai-planning/ and written into the project only after the user approves its plan. The skill runs no build, install or deploy command, so it adds no command rule. The gate merges the rules of every gated skill of the plugin (each skill directory that holds a gate_rules.json), started or not, so the implementing skills' command rules apply in this skill's sessions too.",
+  "writable_before_approval": [
+    "ai-planning/",
+    ".claude/"
+  ],
+  "writable_why": "Before approval only the plan, its ledger and the specification draft (ai-planning/<slug>.spec/) may change. .claude/ holds tooling, not product.",
+  "approval_words": [
+    "approve",
+    "approved"
+  ],
+  "approval_why": "The skill asks the user to reply 'approve'. Looser words such as 'ok' or 'go' also answer unrelated questions and would unlock edits by accident.",
+  "command_rules": []
+}

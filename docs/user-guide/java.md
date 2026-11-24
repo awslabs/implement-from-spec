@@ -46,6 +46,19 @@ but the project's own commands need them on PATH.
 - Optional: a design doc (for example `docs/DESIGN.md`) and `scripts/` wrappers for build, test, run and
   request calls, which the skill uses instead of raw commands
 
+## The specification
+
+Every run starts by finding the project's specification (`spec-layout.py detect`): `specification/`,
+`docs/specifications/` or `docs/SPECIFICATION.md`, or a file elsewhere that you confirm when detect names
+it as a candidate. The skill follows it as written and extends it in place, in its own layout and
+format: a requirement it lacks becomes a new item with the next free ID, and an item the change must
+alter or reverse is changed or struck through, never silently. Only a project with no specification
+gets a first one in `specification/`, derived from the existing code. Every specification file the
+change adds or changes is drafted under `ai-planning/<slug>.spec/`, recorded in the plan's
+`## Specification changes` with the draft's digest, and written into place first after your `approve`;
+the last wave then brings the living documents and the generated traceability report in line with the
+code. The `spec-handling` skill does this work: see [specification.md](specification.md).
+
 ## How a run goes
 
 1. Ingest: the input, the specification tree, the build and its static analysis (Checkstyle, SpotBugs,
@@ -53,9 +66,9 @@ but the project's own commands need them on PATH.
    AWS work the SDK for Java 2.x modules and client setup. An open question the feature depends on is a
    blocker, never a default
 2. Plan: `ai-planning/<slug>.plan`, with every class described in prose and no Java
-3. Analysis gate: `spec-trace.py plan` (with `TC-xxx` IDs checked when the items cite test cases), then a
-   self-review of pattern fit, Java idioms, layer fit, AWS client use, concurrency, testability,
-   dependencies and scope
+3. Analysis gate: `spec-trace.py plan` and `spec-layout.py check` (with `TC-xxx` IDs checked when the items
+   cite test cases), then a self-review of pattern fit, Java idioms, layer fit, AWS client use, concurrency,
+   testability, dependencies and scope
 4. Your `approve`
 5. Implementation in waves, test first with JUnit through the project's own build entry point. The full
    build runs after every wave

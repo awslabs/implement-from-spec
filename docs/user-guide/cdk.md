@@ -40,15 +40,28 @@ but the project's own commands need them on PATH.
 - A `.gitignore` that covers `cdk.out/`, the virtual environment and build output: after implementation
   every changed or untracked file must belong to a task (see "How a run goes", step 7)
 
+## The specification
+
+Every run starts by finding the project's specification (`spec-layout.py detect`): `specification/`,
+`docs/specifications/` or `docs/SPECIFICATION.md`, or a file elsewhere that you confirm when detect names
+it as a candidate. The skill follows it as written and extends it in place, in its own layout and
+format: a requirement it lacks becomes a new item with the next free ID, and an item the change must
+alter or reverse is changed or struck through, never silently. Only a project with no specification
+gets a first one in `specification/`, derived from the existing code. Every specification file the
+change adds or changes is drafted under `ai-planning/<slug>.spec/`, recorded in the plan's
+`## Specification changes` with the draft's digest, and written into place first after your `approve`;
+the last wave then brings the living documents and the generated traceability report in line with the
+code. The `spec-handling` skill does this work: see [specification.md](specification.md).
+
 ## How a run goes
 
 1. Ingest: the items, the project rules, `cdk.json` and the dependency files, every stack the items
    touch, and the synthesised templates (`cdk synth --quiet`) for the logical IDs of existing resources.
    Every construct, property, default and CLI flag comes from documentation read in the session
 2. Plan: `ai-planning/<slug>.plan`, prose only
-3. Analysis gate: `spec-trace.py plan`, then a self-review of stack fit, logical ID stability, data
-   protection (`RemovalPolicy.RETAIN` or what the items require, set explicitly and asserted in a test),
-   replacement behaviour, IAM (`grant*` methods first), tests, dependencies and scope
+3. Analysis gate: `spec-trace.py plan` and `spec-layout.py check`, then a self-review of stack fit, logical
+   ID stability, data protection (`RemovalPolicy.RETAIN` or what the items require, set explicitly and
+   asserted in a test), replacement behaviour, IAM (`grant*` methods first), tests, dependencies and scope
 4. Your `approve`
 5. Implementation in waves, test first with fine-grained assertion tests. After each wave: the app's tests
    (`pytest`, or `mvn test` through the wrapper), `cdk synth --quiet` (which runs cdk-nag when the app

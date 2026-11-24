@@ -18,13 +18,13 @@ Precedence: the project's rules, the specification items and the approved plan o
 `cdk-practices.md`; a deviation the project prescribes is not a finding.
 
 Plan scope: what the approved plan explicitly leaves out is the agreed scope, not a finding against the
-change. That covers a stated exclusion ("the stack adds no bucket policy"), a `## Deferred` record, a
-check the plan or ledger hands to the operator (a change-set diff, a pre-deploy check), and the
-plan-local `SPEC-PLAN-n` items restated from an `ai-planning/` feature spec (contract section 2), which
-need no specification entry of their own. A hardening the plan excludes is at most a Nit or a question;
+change. That covers a stated exclusion ("the stack adds no bucket policy"), a `## Deferred` record, and a
+check the plan or ledger hands to the operator (a change-set diff, a pre-deploy check). The plan's
+items are specification items, each new, changed or struck one listed under its
+`## Specification changes` (contract section 13). A hardening the plan excludes is at most a Nit or a question;
 an operator check is *needs runtime verification*. The one exception is a binding rule: when the
 project's CLAUDE.md, its specifications index or a specification item requires what the plan leaves out
-(for example a same-change specification update or the promotion of plan-local items), report it with
+(for example a same-change specification update), report it with
 that rule quoted and the file the change lacks, because a plan cannot waive a binding rule. Before
 reporting it, check that the change really lacks it.
 
