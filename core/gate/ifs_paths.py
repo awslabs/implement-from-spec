@@ -25,10 +25,13 @@ state file to decide whether those checks can decide. The gate protects this fil
                                and where its gate state was then
     review_marker_file(sid)    <active_dir()>/review-<session_key(sid)>.json: the session's registered reviewers
     snapshot_roots()           every default location of review snapshots (review-snapshot.py state_dir)
+    dependency_audit_dirs()    the dependency audit's advisory cache and build-output directory:
+                               ~/.local/state/implement-from-spec/advisories and .../dependency-audit, from HOME
+                               alone, as core/scripts/dependency-audit.py locates them
     state_name_roots()         the state directories a shell command may not even name (the gate's, the
                                isolation hook's under both roots, the activation records)
-    state_write_roots()        those plus the snapshot roots (and the HOME one), timing_dir(): never written by a
-                               tool call while the gate is registered
+    state_write_roots()        those plus the snapshot roots (and the HOME one), timing_dir() and
+                               dependency_audit_dirs(): never written by a tool call while the gate is registered
     skill_parts(value)         (namespace, name) of a Skill call's `skill` input, read the one way the gate, the
                                dispatcher and the isolation hook share (whitespace and leading "/" dropped)
     may_exist(path)            False only when lstat says the path is absent (ENOENT, ENOTDIR); a path that
@@ -44,6 +47,8 @@ state file to decide whether those checks can decide. The gate protects this fil
     lookup_folds(dir, ...)     whether a directory finds an entry under another spelling (asked of the file system)
     name_folds(dir)            lookup_folds of the deepest existing directory of dir: whether fixed names (.claude/,
                                ai-planning/, .env) match in any case there
+    fold(text)                 text as a volume that ignores letter case, Unicode normalisation and format characters
+                               compares names (the isolation hook compares credential names and directories so)
 
 No variable a repository can set moves any of these. A project's or a local settings env block cannot set HOME
 or the XDG_* family: "Project and local settings can't set variables that a checked-out repository shouldn't
@@ -184,6 +189,16 @@ def isolation_state_dirs():
                    os.path.realpath(os.path.join(xdg_state(), "implement-from-spec", "review-isolation"))})
 
 
+def dependency_audit_dirs():
+    """The advisory cache and the build tool's raw output of core/scripts/dependency-audit.py, located as the
+    script locates them (state_home, default_cache_dir, build_log): under home_state(), from HOME alone. The
+    audit trusts a cached dataset that is the user's own, not a link, matches its recorded digest and holds the
+    minimum number of advisories; a tool call could write such a dataset itself and make a vulnerable project
+    read as clean, so only the script may write these directories. They are write roots, not name roots: a
+    command may still read the cache or name it."""
+    return [os.path.join(home_state(), "advisories"), os.path.join(home_state(), "dependency-audit")]
+
+
 def state_name_roots():
     """The directories no shell command of a gated session may name (only the hooks read and write them)."""
     return sorted({gate_state_dir(), os.path.realpath(active_dir())} | set(isolation_state_dirs()))
@@ -191,9 +206,11 @@ def state_name_roots():
 
 def state_write_roots():
     """The directories no tool call of a gated session may write, remove or replace: state_name_roots(), the
-    review snapshots (written only by the plugin's scripts, which the gate does not see) and the timing log."""
+    review snapshots and the dependency audit's directories (written only by the plugin's scripts, from their
+    own processes, which the gate does not see) and the timing log."""
     return sorted(set(state_name_roots()) | set(snapshot_roots()) | {
-        os.path.realpath(os.path.join(home_state(), "review-snapshots")), os.path.realpath(timing_dir())})
+        os.path.realpath(os.path.join(home_state(), "review-snapshots")), os.path.realpath(timing_dir())} |
+        {os.path.realpath(d) for d in dependency_audit_dirs()})
 
 
 def timing_dir():
@@ -506,6 +523,20 @@ def ondisk(path):
         result = os.path.join(base, *rest)
     _ONDISK[path] = result
     return result
+
+
+def fold(text):
+    """text as a volume that ignores letter case and Unicode normalisation compares names: the Unicode canonical
+    caseless match, "NFD(toCasefold(NFD(X))) = NFD(toCasefold(NFD(Y)))" (The Unicode Standard, section 3.13, D145,
+    read 2026-11-24), with format characters (Unicode category Cf) dropped first, since HFS+ skips some of them when
+    it compares names. No character folds to or from "/", so a path folds component by component. ASCII text is
+    only lower-cased, without loading unicodedata. A string operation: it asks the file system nothing, so it folds
+    on a volume that tells case apart too, which only a check that denies what matches may rely on."""
+    if text.isascii():
+        return text.lower()
+    import unicodedata
+    visible = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", visible).casefold())
 
 
 def name_folds(directory):

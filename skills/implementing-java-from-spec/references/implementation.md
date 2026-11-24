@@ -18,9 +18,12 @@ verification. This file adds only what is specific to a Java project.
 The first wave's tasks (contract section 3: shared work is a task too) own the files several later tasks
 need, so no two agents edit them concurrently:
 
-- every touched `specification/` and `specification/test-cases/` file and the coverage matrix, when the
-  project keeps them. The documented behaviour leads the code: new SPECs and TCs land first, with status
-  `PLANNED`
+- the specification files the approved draft holds (contract section 13): the first-wave specification
+  task writes each one from `ai-planning/<slug>.spec/` to its path, byte for byte, with `spec-layout.py
+  check --draft --plan` passing before and after the copy, and edits nothing else. The documented
+  behaviour leads the code. A drafted file is frozen from then on; the specification documents the draft
+  does not hold (the traceability report, the test-case files and coverage matrix, the feature list) are
+  the last wave's sync task (`implement-from-spec:spec-handling`, mode sync), never a first-wave edit
 - the `@ConfigurationProperties` class and `application.yml` (and its test copy), for the properties the
   later waves read
 - the build file (`pom.xml`, `build.gradle(.kts)`, a version catalog), when the approved plan adds a
@@ -54,6 +57,10 @@ The contract's brief (section 7), plus:
   flag; never run a formatter or fixer (`spotless:apply`, OpenRewrite) over files you do not own"
 - no network in unit tests: AWS clients are mocked or replaced through the project's client factory, and
   an SDK client is never built inside the code under test for each call
+- the path of `references/java-practices.md` with its section 7, "Security defaults", named: the
+  implementer reads it first and writes each construct of the task in its safe form (a query, a parser,
+  a token check, an authorisation rule, a file path, an outbound call, a log line). The review's
+  security reviewer takes those defaults as its baseline, so fewer findings reach the review
 
 ## 4. The build gate after each wave
 
@@ -89,12 +96,13 @@ After contract section 8's per-item check:
       specification itself is wrong or ambiguous, stop and ask
 3. **Docs.** Re-read the touched specification and test-case files and the coverage matrix against the
    diff: every new code path has a SPEC, every new test a `TC-xxx` cited in its name or Javadoc and a
-   matrix row, statuses current. The frozen `.plan` and the input feature spec are not edited
+   matrix row, statuses current. The frozen `.plan`, its draft, every drafted file and the input feature
+   spec are not edited; a gap in a drafted file is an amendment (contract section 13)
 
 ## 6. Report lines
 
 Contract section 11's report, with these lines filled for Java:
 
-    Checks: <build command> -> <result>; <static analysis> -> <result>; coverage <n %> on changed files (when measured)
+    Checks: <build command> -> <result>; <static analysis> -> <result>; coverage <n %> on changed files (when measured); <the review's Quality gate entry for the dependency audit, as the review printed it>
     Smoke: <invocation> -> <status>; output at <path>   (or: not applicable, no request or output change)
-    Spec: new <SPEC ids>; amended <SPEC ids>. Test cases: new <TC ids>   (when the project keeps them)
+    Test cases: new <TC ids>; coverage rows <added | none>   (when the project keeps them; the items are on contract section 11's Specification line)

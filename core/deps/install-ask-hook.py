@@ -4,8 +4,10 @@
 """core/deps/install-ask-hook.py — PreToolUse hook (matcher Bash): a human approves every setup install.
 
 Whenever a Bash command runs install.py with --apply, this hook answers permissionDecision "ask" and
-puts the plan's summary in the permission prompt. The summary is rendered from the plan saved by the dry
-run (plans/<digest>.json) only after the plan is checked against the digest (install.py's digest_of and
+puts the plan's summary in the permission prompt. install.py is matched in any letter case and with format
+characters dropped (folded), since a volume that ignores case or skips such characters (APFS and HFS+ in their
+default form) runs it for INSTALL.PY or inst<U+200C>all.py. The summary is rendered from the plan saved by the
+dry run (plans/<digest>.json) only after the plan is checked against the digest (install.py's digest_of and
 summary_line), never from the saved summary text: the file is ordinary user state, and an edited summary
 would misdescribe the plan the user approves (G6). A plan that no longer matches its digest is not
 described at all. The digest alone is not consent: the model could copy it from the dry run, so the user
@@ -41,12 +43,26 @@ from time import monotonic as _monotonic  # the opt-in timing log (run_timed) co
 _HOOK_T0 = _monotonic()
 
 APPLY_RE = re.compile(r"(?<![\w-])--apply(?![\w-])")
+# Matched in the folded command (folded), so every spelling a volume may take as install.py asks.
 INSTALL_RE = re.compile(r"install\.py\b")
 MAX_REASON = 1800
 
 
+def folded(command: str) -> str:
+    """The command as a volume that ignores letter case, Unicode normalisation and format characters compares
+    names: format characters (Unicode category Cf) dropped, then the Unicode canonical caseless match
+    (NFD, casefold, NFD), the fold core/gate/ifs_paths.py applies (fold). Kept here rather than loaded from there,
+    because matching must not depend on a module this hook otherwise loads only for the opt-in timing log. ASCII
+    text is only lower-cased, without loading unicodedata."""
+    if command.isascii():
+        return command.lower()
+    import unicodedata
+    visible = "".join(ch for ch in command if unicodedata.category(ch) != "Cf")
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", visible).casefold())
+
+
 def mentions_apply(command: str) -> bool:
-    return bool(INSTALL_RE.search(command) and APPLY_RE.search(command))
+    return bool(INSTALL_RE.search(folded(command)) and APPLY_RE.search(command))
 
 
 def option_value(tokens: List[str], name: str) -> Optional[str]:

@@ -2,14 +2,16 @@
 
 Review checks for Java changes (Java 17, 21 and 25; Spring Boot services; AWS Lambda functions; libraries;
 their tests and their Maven or Gradle build files). Each check is triggered by something in the diff and
-confirmed with bounded repository context (callers, configuration, the build file). The Claude-stage
-subagent reads this file and applies all of it to the change set it was given; the main conversation reads
-it to fill a gap. Report findings only; edit nothing. Re-read every specification item and test case you
-cite rather than recalling it. Precedence: the repository's rules (CLAUDE.md, AGENTS.md), its specification
-and the approved plan override the defaults below and in
+confirmed with bounded repository context (callers, configuration, the build file). The code reviewer of
+the Java review (`claude-stage`) reads this file and applies every group but group 9, which points to the
+security reviewer's catalogue; the main conversation reads it to fill a gap. Report findings only; edit
+nothing. Re-read every specification item and test case you cite rather than recalling it. Precedence:
+the repository's rules (CLAUDE.md, AGENTS.md), its specification and the approved plan override the
+defaults below and in
 `${CLAUDE_PLUGIN_ROOT}/skills/implementing-java-from-spec/references/java-practices.md`; a deviation the
-project prescribes is not a finding. Facts below were read on 2026-10-16; re-read a cited page before a
-finding depends on a version, a default or a date.
+project prescribes is not a finding. Facts below were read on 2026-10-16, except where a check gives a
+later date. A reviewer can open no page, so a finding that depends on a version, a default or a date is
+marked `unsure: verify against the docs`, and the main conversation verifies it.
 
 ## Contents
 
@@ -23,7 +25,7 @@ finding depends on a version, a default or a date.
 - 6. Error handling (JAVA-ERR)
 - 7. Concurrency and resources (JAVA-CNC)
 - 8. AWS SDK for Java 2.x and Lambda (JAVA-AWS)
-- 9. Security (JAVA-SEC)
+- 9. Security: the security reviewer's catalogue
 - 10. Performance (JAVA-PRF)
 - 11. Tests (JAVA-TST)
 - 12. Maintainability and readability (JAVA-STY)
@@ -41,13 +43,29 @@ ARC-01"). A finding that rests on a shared entry carries the most specific share
 beside the Java check ID (see Output format). This file's `JAVA-ARC-nn` numbers are its own: JAVA-ARC-04
 is not shared ARC-04.
 
-**Reviewer split.** `implement-from-spec:code-reviewer` (the Claude stage of
-`skills/reviewing-java-changes/SKILL.md`, `model: "opus"`) owns every group here, security included: the
-plugin has no Java security reviewer skill. Infrastructure next to the Java code (a CDK app in Java, a SAM or
-CloudFormation template) goes to the CDK or CloudFormation review skill and
-`implement-from-spec:iac-security-reviewer`. The external stage reads
-`skills/implementing-java-from-spec/references/review-focus.md`; its findings are verified against the
-checks here. Each group names the report dimension its findings go under.
+**Reviewer split.** Two Claude reviewers run on every Java review, both
+`implement-from-spec:code-reviewer` on `model: "opus"` (`skills/reviewing-java-changes/SKILL.md`), and
+between them no defect is left without an owner:
+
+- The **code reviewer** (`claude-stage`) owns this file: groups 1 to 8 and 10 to 12 under the report
+  dimension each names (Correctness, Design, Patterns, Extensibility, Maintainability, Readability),
+  plus Contract files and Documentation fidelity. No check here reports under Safety/security
+- The **security reviewer** (`security`) owns the Safety/security dimension for every file of the
+  change, Java sources, configuration and build files alike, from `references/security-dimensions.md`.
+  That includes the security consequence of a defect a check here describes: a Spring, AWS, persistence
+  or error-handling defect that crosses users or tenants, bypasses authorisation or discloses data
+- Where the two meet, both report. The code reviewer writes the defect in full under its own check and
+  dimension, for the failure the check describes, and adds one out-of-lens head line under
+  Safety/security naming the consequence; the security reviewer writes the consequence in full under its
+  catalogue rule. A security defect no check here describes is the code reviewer's head line only, and a
+  defect outside security is the security reviewer's head line only. The main conversation merges the
+  lines into one finding, or traces a head line itself when its owner did not report it
+
+Infrastructure next to the Java code (a CDK app in Java, a SAM or CloudFormation template) goes to the
+CDK or CloudFormation review skill and `implement-from-spec:iac-security-reviewer`. The external stage
+reads `skills/implementing-java-from-spec/references/review-focus.md`; its findings are verified against
+the checks here and in the security catalogue. Each group names the report dimension its findings go
+under.
 
 **Requirements, policy and runtime.** Read the approved requirements (the plan's items, the
 specification) first and the author's claims of completion last. Read `CLAUDE.md`, `AGENTS.md` and
@@ -119,13 +137,19 @@ Report dimension: Contract files. These files aren't deep-reviewed, but they are
 - **Look for:** a `com.amazonaws:aws-java-sdk-*` artifact in the build file, or an import from
   `com.amazonaws.services.<service>` or `com.amazonaws.auth` in new code. Not a finding:
   `com.amazonaws.services.lambda.runtime` (the `aws-lambda-java-core` handler interfaces) and
-  `com.amazonaws.services.lambda.runtime.events` (`aws-lambda-java-events`), which SDK 2.x code uses
+  `com.amazonaws.services.lambda.runtime.events` (`aws-lambda-java-events`), which SDK 2.x code uses;
+  `com.amazonaws:aws-encryption-sdk-java` (package `com.amazonaws.encryptionsdk`), which is the AWS
+  Encryption SDK for Java, a separate library that shares the group: its supported versions are the
+  security catalogue's subject, not this check's
 - **Why it matters:** version 1.x is out of support, so it gets no security fixes
 - **Instead:** the matching `software.amazon.awssdk` module through the BOM; migrating existing v1 code is
   its own planned task
 - **Severity:** Blocker in new code; Minor `(pre-existing)` in untouched code
 - **Source:** https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/basics.html — "The AWS SDK for
-  Java 1.x reached end-of-support on December 31, 2025."
+  Java 1.x reached end-of-support on December 31, 2025.";
+  https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/java.html — "The AWS Encryption SDK
+  for Java is available through Apache Maven with the following dependency definition", which names the
+  group `com.amazonaws` and the artifact `aws-encryption-sdk-java` (read 2026-11-24)
 
 ### JAVA-CTR-04 Project-rule paths and artefacts
 
@@ -968,8 +992,9 @@ Retired 2026-10-16: merged into JAVA-CNC-01
 
 ## 8. AWS SDK for Java 2.x and Lambda (JAVA-AWS)
 
-Report dimension: Patterns (JAVA-AWS-05, JAVA-AWS-06 and JAVA-AWS-09 under Correctness, JAVA-AWS-08 under
-Safety/security). Lambda runtime and SnapStart facts are in `java-practices.md` sections 4 and 5.
+Report dimension: Patterns (JAVA-AWS-05, JAVA-AWS-06, JAVA-AWS-08 and JAVA-AWS-09 under Correctness:
+JAVA-AWS-08 is a repeated effect, not a security defect). Lambda runtime and SnapStart facts are in
+`java-practices.md` sections 4 and 5.
 
 ### JAVA-AWS-01 Client construction and reuse
 
@@ -1115,196 +1140,14 @@ Retired 2026-10-16: merged into JAVA-CNC-08
 - **Source:** https://docs.aws.amazon.com/lambda/latest/dg/java-handler.html — "avoid uploading the entire
   AWS SDK library as part of your deployment package"; RSPEC-6246
 
-## 9. Security (JAVA-SEC)
+## 9. Security: the security reviewer's catalogue
 
-Report dimension: Safety/security. REST controllers, message listeners and Lambda handlers are the attack
-surface; trace untrusted input from there to every sink. A Blocker names the source, the sink and why the
-path is reachable; a policy gap with no reachable sink is Major.
-
-### JAVA-SEC-01 Request validation
-
-- **Look for:** a `@RequestBody`, `@ModelAttribute` or `@RequestPart` parameter without `@Valid` or
-  `@Validated`; DTO fields with no `jakarta.validation` constraints; hand-rolled `if` checks instead of
-  constraints; a Lambda handler using event fields unvalidated
-- **Why it matters:** unvalidated input reaches every sink below; constraints do not replace
-  authorisation (JAVA-SEC-11) or parameter binding (JAVA-SEC-04)
-- **Instead:** constraints on every DTO field and `@Valid` on the parameter, failures mapped by the
-  `@ControllerAdvice`; the same validator invoked explicitly in handlers
-- **Severity:** Major (a plugin default, `java-practices.md` section 2); Blocker when an unvalidated field
-  reaches a file path, command, query or authorisation decision unchecked
-- **Source:** https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-validation.html
-  — "Java Bean Validation is applied individually to an @ModelAttribute, @RequestBody, and @RequestPart
-  method parameter annotated with @jakarta.validation.Valid or Spring's @Validated"
-
-### JAVA-SEC-02 Path traversal and archive extraction
-
-- **Look for:** a user-supplied name joined into a `Path` or `File` the code treats as confined
-  (`baseDir.resolve(name)`); a zip entry name used to build an output path; a request value used as an S3
-  key or prefix that decides which objects a caller may read or write
-- **Why it matters:** `../` and absolute paths escape the directory ("zip slip"); `normalize()` "does not
-  access the file system", so a symbolic link under the base still leads out; in S3, `../` is valid key
-  content, so filesystem normalisation decides nothing about S3 access
-- **Instead:** resolve against an absolute, normalised base and check `startsWith(base)`; where an
-  attacker can create links under the base, compare `toRealPath()` results or use
-  `LinkOption.NOFOLLOW_LINKS`; for archives, reject link entries and bound entry count and size; for S3, a
-  server-chosen prefix plus a validated name, with the prefix authorised (JAVA-SEC-11)
-- **Severity:** Blocker for a reachable escape; Major `unsure` when who can write under the base is not
-  visible
-- **Source:** CERT FIO16-J; CERT IDS04-J; https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/file/Path.html
-  — "This method does not access the file system"; https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-keys.html
-  — "Object keys that contain relative path elements (for example, ../) are valid if ..."
-
-### JAVA-SEC-03 OS command and argument injection
-
-- **Look for:** `Runtime.exec` or `ProcessBuilder` with arguments derived from user input; `sh -c` or
-  `cmd /c` with interpolated values (shell injection); a user value passed as an argument that the program
-  can read as an option (`-o`, `--config`) (argument injection)
-- **Why it matters:** the caller controls what the process runs or how it behaves. `Runtime.exec(String)`
-  does not start a shell but splits the string on whitespace, so a value can add arguments
-- **Instead:** no external process where a Java API exists; otherwise a fixed command with an allow-listed
-  argument list passed as separate `ProcessBuilder` elements, never through a shell, with `--` before user
-  values where the program supports it
-- **Severity:** Blocker for a reachable injection
-- **Source:** CERT IDS07-J;
-  https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Runtime.html — "The command
-  string is broken into tokens using only whitespace characters."
-
-### JAVA-SEC-04 SQL and JPQL injection
-
-- **Look for:** a query string built with `+`, `String.format`, `StringBuilder` or a text block from
-  values a caller can influence, passed to `Statement.execute*`, `JdbcTemplate`, `EntityManager.createQuery`,
-  `createNativeQuery` or a `@Query` with concatenated SpEL; dynamic `ORDER BY` column names taken from the
-  request
-- **Why it matters:** "the untrusted data may maliciously alter the query, resulting in information leaks
-  or data modification"
-- **Instead:** bind parameters (`?`, `:name`, `setParameter`), Spring Data derived queries or the Criteria
-  API; an allow-list mapping for sort columns
-- **Severity:** Blocker when an untrusted value reaches the query text; Minor for formatting with
-  constants only
-- **Source:** RSPEC-2077; CERT IDS00-J
-
-### JAVA-SEC-05 Hard-coded secrets
-
-- **Look for:** passwords, API keys, tokens, private keys or connection strings with credentials in source,
-  test fixtures meant for real systems, `application.yml` defaults or annotations
-  (`@Value("${db.password:changeme}")`)
-- **Why it matters:** the secret is in version history and every build artefact
-- **Instead:** configuration resolved at run time from AWS Secrets Manager, Parameter Store or the
-  environment, with no default value
-- **Severity:** Blocker
-- **In the finding:** the file, the line and the kind of secret, never the value
-- **Source:** RSPEC-2068; CERT MSC03-J
-
-### JAVA-SEC-06 Sensitive data in logs, `toString` and errors
-
-- **Look for:** logging a whole request, event, entity or record holding secrets or personal data; a
-  record with a secret component (its generated `toString` prints it); user input logged without
-  neutralising line breaks; stack traces, SQL, hostnames or ARNs in an HTTP or Lambda error response
-- **Why it matters:** logs and error bodies leave the trust boundary; forged log lines mislead incident
-  response
-- **Instead:** log identifiers, not payloads; mask sensitive record components in `toString`; strip `\r`
-  and `\n` or log structured JSON; generic error bodies with a correlation ID
-- **Severity:** Major; Blocker for a secret or credential written to logs or returned to a client
-- **Source:** CERT FIO13-J; CERT IDS03-J; CERT ERR01-J;
-  https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Record.html — the implicit
-  `toString` contains "string representations of component values"
-
-### JAVA-SEC-07 Unsafe deserialisation
-
-- **Look for:** `ObjectInputStream.readObject` on data from a request, a queue, a file or a shared cache;
-  Jackson `enableDefaultTyping`, `activateDefaultTyping` with a permissive validator, or
-  `@JsonTypeInfo(use = JsonTypeInfo.Id.CLASS)` on types bound from untrusted input; XStream or a SnakeYAML
-  loader allowing arbitrary types (check the pinned version's default)
-- **Why it matters:** "Deserializing untrusted data can cause Java to create an object of an arbitrary
-  attacker-specified class", which can lead to code execution
-- **Instead:** JSON into concrete DTOs; for polymorphism, `Id.NAME` with listed subtypes or a
-  `PolymorphicTypeValidator` allowing only named types; Java serialisation only behind an
-  `ObjectInputFilter` allow-list
-- **Severity:** Blocker when untrusted data reaches the loader
-- **Source:** CERT SER12-J;
-  https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html — jackson-databind "can
-  be used safely as long as polymorphism is not used"; jackson-databind `ObjectMapper` source — "choice of
-  PolymorphicTypeValidator to pass is critical for security"; SnakeYAML `LoaderOptions` source — "Secure by
-  default - no custom classes are allowed"
-
-### JAVA-SEC-08 XML external entities
-
-- **Look for:** `DocumentBuilderFactory`, `SAXParserFactory`, `XMLInputFactory`, `TransformerFactory` or
-  `SchemaFactory` created for untrusted XML without the controls that factory needs
-- **Why it matters:** an attacker-supplied DOCTYPE, schema location or stylesheet reads local files or
-  makes server-side requests
-- **Instead:** parsers: `disallow-doctype-decl` set to `true` (or the per-factory equivalent);
-  `TransformerFactory` and `SchemaFactory`: `XMLConstants.ACCESS_EXTERNAL_DTD`, `ACCESS_EXTERNAL_SCHEMA`
-  and `ACCESS_EXTERNAL_STYLESHEET` set to `""`. `FEATURE_SECURE_PROCESSING` alone only recommends that
-  implementations restrict external connections
-- **Severity:** Blocker when the XML comes from outside; Minor for trusted, bundled files
-- **Source:** CERT IDS17-J; https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html
-  — "reject DOCTYPE declarations and leave XInclude disabled";
-  https://docs.oracle.com/en/java/javase/21/docs/api/java.xml/javax/xml/XMLConstants.html — "it is
-  recommended that implementations restrict external connections by default"
-
-### JAVA-SEC-09 Cryptography and randomness
-
-- **Look for:** `java.util.Random`, `Math.random()` or `ThreadLocalRandom` for tokens, reset codes or IDs
-  that must be unguessable; MD5 or SHA-1 for security; `Cipher.getInstance("AES")` or `"AES/ECB/..."`;
-  passwords hashed with a fast digest; a `TrustManager` or `HostnameVerifier` that accepts everything;
-  `SSLContext.getInstance("TLSv1")` or `"TLSv1.1"`
-- **Why it matters:** each makes the protected value guessable, forgeable or readable
-- **Instead:** `SecureRandom`; SHA-256 or better; `AES/GCM/NoPadding` with a fresh nonce; a password
-  hashing function (`BCryptPasswordEncoder`, Argon2); the platform's default trust and TLS 1.2 or later
-- **Severity:** Blocker for passwords, tokens and disabled certificate checks; Major otherwise
-- **Source:** RSPEC-2245; RSPEC-4790; RSPEC-5542; RSPEC-5344;
-  RSPEC-4423; CERT MSC02-J
-
-### JAVA-SEC-10 Spring Security and exposed endpoints
-
-- **Look for:** `csrf(csrf -> csrf.disable())` where browsers send credentials automatically (session or
-  custom cookies, basic authentication); broad `allowedOriginPatterns` with credentials; a new endpoint
-  under `permitAll()` or outside the filter chain; `management.endpoints.web.exposure.include=*` or
-  `env`, `heapdump`, `loggers` exposed without authentication; `debug=true` or
-  `server.error.include-stacktrace=always` in a non-local profile
-- **Why it matters:** each widens who can call what; a stateless API is still exposed to CSRF when the
-  browser attaches credentials. Spring rejects `allowedOrigins("*")` with credentials, so that exact
-  combination fails at start-up rather than opening a hole
-- **Instead:** CSRF on wherever browsers send credentials (off only for non-browser clients, with the
-  reason in a comment); an origin allow-list from configuration; deny by default and authorise each new
-  route; expose only `health` and what the plan names
-- **Severity:** Major; Blocker for an unauthenticated route to data or an exposed `env` or `heapdump`
-- **Source:** RSPEC-4502; RSPEC-5122; RSPEC-4507;
-  https://docs.spring.io/spring-security/reference/features/exploits/csrf.html — "What if my application
-  is stateless? That does not necessarily mean you are protected."; `CorsConfiguration` Javadoc — "those
-  combinations are rejected in favor of using allowedOriginPatterns instead";
-  https://docs.spring.io/spring-boot/reference/actuator/endpoints.html — "Endpoints may contain sensitive
-  information"
-
-### JAVA-SEC-11 Resource authorisation and tenant isolation
-
-- **Look for:** an ID from the path, body or event (`/orders/{id}`, a `tenantId` field) passed to a
-  repository or SDK call with no check that the caller may act on that object; owner, tenant or role read
-  from the request instead of the principal; `@PreAuthorize` with no `@EnableMethodSecurity`
-- **Why it matters:** an authenticated caller reads or changes another user's or tenant's data
-- **Instead:** identity from the security context; a scoped query (`findByIdAndOwnerId`) or an ownership
-  check; a test that another user's ID is refused through the real enforcement point
-- **Severity:** Blocker for a reachable cross-user or cross-tenant read or write; Major `unsure` when the
-  enforcement point is outside the diff
-- **Source:** https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html
-  — "attackers can access or modify objects by manipulating identifiers";
-  https://docs.spring.io/spring-security/reference/servlet/authorization/method-security.html — "Spring
-  Boot Starter Security does not activate method-level authorization by default."
-
-### JAVA-SEC-12 Server-side requests to caller-chosen destinations
-
-- **Look for:** a URL, host or redirect target from a request, an event or stored user data passed to
-  `HttpClient`, `RestClient`, `WebClient`, `URL.openStream` or an SDK `endpointOverride`, redirects
-  followed
-- **Why it matters:** SSRF "abuses an application to interact with the internal/external network or the
-  machine itself", instance metadata included
-- **Instead:** a configured destination allow-list; check scheme, host, port and the resolved address;
-  disable or revalidate redirects; egress controls where the plan names them
-- **Severity:** Blocker for a reachable destination outside the allow-list; Major `unsure` when resolver
-  or egress configuration is outside the diff
-- **Source:** https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html
-  — "validate the resolved destination IP addresses against the application's permitted networks"
+Report dimension: Safety/security, which the security reviewer owns (Reviewer split, above). Its rules,
+the JAVA-SEC rules and the JAVA-DEP rules for dependencies and build files, are in
+`references/security-dimensions.md`, where the security reviewer reads only the rule groups whose
+trigger the change or the repository meets. The code reviewer neither reads nor applies that file: its
+reading stays on its own groups, and a security defect it notices is an out-of-lens head line. The main
+conversation reads it to fill a gap in Safety/security.
 
 ## 10. Performance (JAVA-PRF)
 
@@ -1502,7 +1345,11 @@ the fix or the plan amendment it needs.
 - **Infrastructure** (IAM, bucket policies, security groups, KMS, event source mapping retry settings) in
   CDK Java apps, SAM or CloudFormation: `implement-from-spec:iac-security-reviewer` through the CDK or
   CloudFormation review skills; Terraform: `implement-from-spec:reviewing-terraform-security`
-- **Dependency CVEs**: the project's scanner; this file checks only approval and pinning (JAVA-CTR-02)
+- **Security of the Java code, its configuration and its build files** (JAVA-SEC, JAVA-DEP): the security
+  reviewer, from `references/security-dimensions.md` (group 9)
+- **Known vulnerabilities in dependencies**: the review's dependency audit, a gate the main conversation
+  runs (`core/scripts/dependency-audit.py`) and turns into findings itself, since a reviewer can open no
+  advisory source; this file checks only approval and pinning (JAVA-CTR-02)
 - **Approval and deploy gating**: the plugin's approval gate and
   `skills/implementing-java-from-spec/gate_rules.json`
 - **Profiling, load testing and deep security audits**: *Needs runtime verification* in the skill's
@@ -1536,9 +1383,11 @@ For example:
 Consolidate a repeated issue into one finding listing every location. Every Blocker and Major carries a
 concrete fix or a specific question: "Extract lines 42–87 of `OrderService.process` into
 `private BigDecimal computeDiscount(Order order)`", not "consider extracting this". Then the four
-closing lines of contract section 9, the `Groups:` line giving every dimension, plus "Contract files"
-and "Documentation fidelity", its outcome from How to apply
-(`Groups: Correctness=2; Design=clean; ...; Contract files=clean; Documentation fidelity=not applicable`).
+closing lines of contract section 9, the `Groups:` line giving every dimension the code reviewer owns,
+plus "Contract files" and "Documentation fidelity", its outcome from How to apply, then
+`Safety/security=not mine`, since the security reviewer reports that dimension
+(`Groups: Correctness=2; Design=clean; ...; Contract files=clean; Documentation fidelity=not applicable;
+Safety/security=not mine`).
 
 **In a fix round** the prompt gives the round's delta and the earlier findings numbered F1, F2 and so on.
 Report each as `F<n> closed (<evidence>)`, `F<n> open` or `F<n> regressed (<evidence>)`; an open finding
@@ -1547,9 +1396,10 @@ repository for sibling instances and report each one found.
 
 ## Sources
 
-All read on 2026-10-16; each check cites its own page and quote. RSPEC keys are the Sonar Java rules
-catalog, https://rules.sonarsource.com/java/ (titles quoted from the rule metadata in the sonar-java
-repository). CERT IDs are the SEI CERT Oracle Coding Standard for Java,
+All read on 2026-10-16, except where a check gives a later date; each check cites its own page and quote.
+The security rules cite their sources in `references/security-dimensions.md`. RSPEC keys are
+the Sonar Java rules catalog, https://rules.sonarsource.com/java/ (titles quoted from the rule metadata
+in the sonar-java repository). CERT IDs are the SEI CERT Oracle Coding Standard for Java,
 https://cmu-sei.github.io/secure-coding-standards/sei-cert-oracle-coding-standard-for-java/rules/.
 
 - Shared principles: `${CLAUDE_PLUGIN_ROOT}/core/review/principles-and-architecture-smells.md`
@@ -1558,7 +1408,7 @@ https://cmu-sei.github.io/secure-coding-standards/sei-cert-oracle-coding-standar
   `skills/code-reviewer/SKILL.md`
 - Official documentation: Java SE 21 API and JEPs; Spring Framework, Spring Boot, Spring Data JPA and
   Spring Security reference; Hibernate ORM 6.6 guides; Jakarta Persistence 3.1; AWS SDK for Java 2.x,
-  AWS Lambda, Amazon DynamoDB and Amazon S3 documentation; OWASP Cheat Sheet Series; SLF4J; Mockito wiki;
-  ArchUnit user guide; Google Java Style Guide
+  AWS Lambda, Amazon DynamoDB and AWS Encryption SDK documentation; OWASP Cheat Sheet Series; SLF4J;
+  Mockito wiki; ArchUnit user guide; Google Java Style Guide
 - Book (not online): Joshua Bloch, *Effective Java*, 3rd edition, Addison-Wesley, 2018; Items 5, 18, 69,
   73, cited by item title next to an online source

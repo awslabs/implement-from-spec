@@ -41,6 +41,17 @@
       }
     },
     {
+      "id": "java-advisory-data-import",
+      "decision": "ask",
+      "match": {"args_regex": "(^|\\s)(\\S*/)?(?i:dependency-audit\\.py)\\s+refresh\\s(.*\\s)?--f(r(o(m)?)?)?(=|\\s|$)"},
+      "why": "An import publishes whatever copy it is given, so a dataset built on purpose to the minimum size, without the advisories a project matches, makes a vulnerable project read as clean; the download comes from one fixed HTTPS address, whose content the session cannot choose. The rule names no program, so it matches the plugin's script under any interpreter, its file name in any letter case (a volume that ignores case runs it all the same) and --from in every abbreviation the script's argument parser accepts.",
+      "message": "this imports a local copy of the advisory data into the dependency audit's cache, and every later check and audit matches against that copy until a later refresh replaces it, for up to seven days. Approve only if you supplied this copy of the OSV Maven export yourself; plain `refresh` downloads it from OSV instead.",
+      "examples": {
+        "match": ["python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --from ~/Downloads/all.zip", "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --from ~/osv-maven-export/", "python3 \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --from \"/Volumes/Transfer disk/all.zip\"", "python3 -I /opt/implement-from-spec/core/scripts/dependency-audit.py refresh --from=/srv/osv/maven", "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --fr '/tmp/osv export'", "env python3.12 core/scripts/dependency-audit.py refresh --from all.zip", "python3 -I Core/Scripts/Dependency-Audit.py refresh --from all.zip"],
+        "no_match": ["python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh", "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" check org.yaml:snakeyaml:2.4", "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" audit --snapshot ~/.local/state/implement-from-spec/review-snapshots/0f3c9a", "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" register --snapshot ~/.local/state/implement-from-spec/review-snapshots/0f3c9a", "python3 -I tools/sync.py refresh --from upstream", "grep -n \"refresh --from\" core/scripts/dependency-audit.py"]
+      }
+    },
+    {
       "id": "java-aws-cli-read-only",
       "decision": "ask",
       "match": {"programs": ["aws"], "aws_mutating": true,

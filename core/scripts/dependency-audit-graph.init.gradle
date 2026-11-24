@@ -1,0 +1,265 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// dependency-audit-graph.init.gradle — the Gradle side of core/scripts/dependency-audit.py, which runs it as
+//     gradle --offline --no-daemon --no-configuration-cache -q --console=plain --project-cache-dir <scratch>/...
+//            -I <this file> -Difs.dependencyAudit.nonce=<nonce> -Difs.dependencyAudit.scratch=<scratch>
+//            :ifsDependencyAuditGraph
+// It refuses to run without the two properties, so it does nothing in a build started any other way.
+//
+// What it prints. One task, ifsDependencyAuditGraph, in every project of the build; the root project's task
+// depends on every other project's, so the one task path above covers the whole build whatever directory Gradle
+// starts in. Each task walks the resolution result of every resolvable configuration of its project, breadth
+// first from the configuration's root, and prints one line per resolved component (a module or a project, each
+// once per configuration, with its shortest path from the root) and per unresolved dependency, then one line
+// saying the project is done and how many configurations it walked. Resolving can add configurations, so the
+// walk repeats, taking those added, until a round adds none; a project still adding them after ten rounds is
+// printed as unfinished. The root project's task also prints the
+// Gradle and Java versions, every project of the build and every included build, which the audit needs to tell
+// a complete result from a partial one. A configuration whose resolution throws is printed as failed, and a
+// dependency result that is neither resolved nor unresolved as unknown, never skipped. Each task also prints the
+// flat-directory repositories its project declares (the root project's, those the settings declare too) and the
+// repositories whose metadata sources it changed (below), with every configuration resolved before the task
+// while the build had given a repository its artifact() source back (early), and every repository that got it
+// back during the walk (restored). The buildscript classpath is not walked: build plugins
+// are outside the audit's inventory. Every line is "IFS-DEPENDENCY-AUDIT <nonce> " and a JSON array of strings
+// and arrays, so the audit takes only this run's lines and no value can end a line or start another. The
+// build's own code runs in the same JVM and could still print such a line; the audit gives the build the trust
+// the project's tests have, no more.
+//
+// What it changes, for this run only. A module that a Maven or Ivy repository may resolve from its artefact
+// alone (metadataSources artifact()) and that has no metadata would resolve with no dependencies, and the
+// resolution result would not say so. So every Maven and Ivy repository the root build's projects resolve from
+// (those of every project and, from Gradle 6.8, those of the settings' dependencyResolutionManagement) loses the
+// artifact() source, keeping the POM, Ivy descriptor, Gradle module metadata and redirection settings it had:
+// such a module is then unresolved and the result partial. It is done when the repository is added, again
+// before the walk and after each configuration walked, in case the build gives the source back (in a callback
+// or by resolving early); each time it had, the result is partial. A repository left with no source resolves
+// nothing, which is printed as unresolved too. A flat-directory repository has no metadata at all, so declaring
+// one makes the result partial. The buildscript's and pluginManagement's repositories stay as the build declares
+// them: they serve build plugins, which are outside the audit's inventory, and without artifact() a plugin held
+// as an artefact alone would stop the build.
+//
+// What it does not do. It reads no project file, builds nothing and writes nothing but standard output. Gradle
+// itself writes reports into build directories even for this task, so every project's build directory is set
+// to a directory under <scratch>, before the project's build script runs and again after it, in case the script
+// sets its own; the project cache directory is redirected on the command line. In a nested build (buildSrc, an
+// included build) it only redirects the build directories: such builds are not audited.
+//
+// Supported Gradle versions: 6.6 and later. 6.6 is the first release whose command line takes
+// --no-configuration-cache (Gradle 6.6 user guide, "Configuration cache"). Everything used here is public API,
+// documented with no deprecation in the current Gradle Javadoc at docs.gradle.org (read 2026-11-24), and older
+// than 6.6 by its "Since" tag but for one, looked up only where it exists: Gradle.allprojects, getParent,
+// getRootProject, getGradleVersion, settingsEvaluated (1.0 or earlier)
+// and getIncludedBuilds (3.1); Configuration.getIncoming (1.0) and isCanBeResolved (3.3);
+// ResolutionResult.getRoot (1.2); ProjectComponentIdentifier.getProjectPath (1.10); ProjectLayout
+// .getBuildDirectory (4.1) with FileSystemLocationProperty.set(File) (5.6); TaskContainer.register (4.9);
+// MavenArtifactRepository and IvyArtifactRepository metadataSources(Action), which replaces the sources (4.5),
+// with MetadataSources.ignoreGradleMetadataRedirection (5.6), getMetadataSources and the MetadataSources
+// is...Enabled methods (6.4); FlatDirectoryArtifactRepository (1.0); and the one,
+// Settings.getDependencyResolutionManagement (6.8); Configuration.getState (0.7). The code is written for every
+// Groovy release those Gradle versions bundle.
+
+import org.gradle.api.artifacts.Configuration
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
+import org.gradle.api.artifacts.repositories.IvyArtifactRepository
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+
+def nonce = System.getProperty('ifs.dependencyAudit.nonce')
+def scratch = System.getProperty('ifs.dependencyAudit.scratch')
+if (!(nonce ==~ /[0-9a-f]{32}/) || !scratch) {
+    throw new GradleException('dependency-audit-graph.init.gradle runs only under dependency-audit.py, which ' +
+            'passes the run\'s nonce and scratch directory')
+}
+def taskName = 'ifsDependencyAuditGraph'
+def maxRounds = 10  // walks of a project's configurations, each round taking those the last one added
+def rootBuild = gradle.parent == null
+
+// A JSON string: a quote or a backslash escaped, and every control or line-separator character written as a
+// four-digit Unicode escape, so no value from a build file can end the line.
+def quote = { Object value ->
+    def out = new StringBuilder('"')
+    for (char c in String.valueOf(value).toCharArray()) {
+        int code = (int) c
+        if (code == 34 || code == 92) {
+            out.append('\\').append(c)
+        } else if (code < 0x20 || (code >= 0x7f && code < 0xa0) || code == 0x2028 || code == 0x2029) {
+            out.append('\\').append('u').append(String.format('%04x', code))
+        } else {
+            out.append(c)
+        }
+    }
+    out.append('"').toString()
+}
+def encode
+encode = { Object value ->
+    value instanceof List ? '[' + value.collect { encode(it) }.join(',') + ']' : quote(value)
+}
+def emit = { List record -> println("IFS-DEPENDENCY-AUDIT ${nonce} " + encode(record)) }
+
+// A component as a path element: ['project', path], ['module', group, module, version], or ['other', name]
+// for a kind the audit cannot match against advisories.
+def element = { component ->
+    def id = component.id
+    if (id instanceof ProjectComponentIdentifier) {
+        return ['project', id.projectPath]
+    }
+    if (id instanceof ModuleComponentIdentifier) {
+        return ['module', id.group, id.module, id.version]
+    }
+    return ['other', id.displayName]
+}
+
+// Breadth first, so the path printed for a component is a shortest one; each component and each unresolved
+// request is printed once per configuration.
+def walk = { project, configuration ->
+    def root = configuration.incoming.resolutionResult.root
+    def seen = new HashSet()
+    seen.add(root.id)
+    def unresolved = new HashSet()
+    def unknown = new HashSet()
+    def queue = new ArrayDeque()
+    queue.add([root, [element(root)]])
+    while (!queue.isEmpty()) {
+        def entry = queue.poll()
+        def component = entry[0]
+        def path = entry[1]
+        for (dependency in component.dependencies) {
+            if (dependency instanceof UnresolvedDependencyResult) {
+                def requested = dependency.requested.displayName
+                if (unresolved.add(requested)) {
+                    emit(['unresolved', project.path, configuration.name, requested, path])
+                }
+            } else if (dependency instanceof ResolvedDependencyResult) {
+                def selected = dependency.selected
+                if (seen.add(selected.id)) {
+                    def here = path + [element(selected)]
+                    emit(['resolved', project.path, configuration.name, here])
+                    queue.add([selected, here])
+                }
+            } else if (unknown.add(dependency.getClass().name)) {
+                // Gradle documents no third kind; one would be a part of the graph the walk cannot follow.
+                emit(['unknown', project.path, configuration.name, dependency.getClass().name])
+            }
+        }
+    }
+}
+
+// The repositories whose artifact() source was removed, as [owner, name]: the owner is a project path, or
+// 'settings' for the repositories the settings declare.
+def narrowed = new LinkedHashSet()
+def withoutArtifactSource = { String owner, repository ->
+    def maven = repository instanceof MavenArtifactRepository
+    if (!(maven || repository instanceof IvyArtifactRepository) || !repository.metadataSources.isArtifactEnabled()) {
+        return false
+    }
+    def had = repository.metadataSources
+    def keep = [descriptor: maven ? had.isMavenPomEnabled() : had.isIvyDescriptorEnabled(),
+                module: had.isGradleMetadataEnabled(), redirection: had.isIgnoreGradleMetadataRedirectionEnabled()]
+    repository.metadataSources { sources ->
+        if (keep.descriptor) {
+            maven ? sources.mavenPom() : sources.ivyDescriptor()
+        }
+        if (keep.module) {
+            sources.gradleMetadata()
+        }
+        if (keep.redirection) {
+            sources.ignoreGradleMetadataRedirection()
+        }
+    }
+    narrowed.add([owner, String.valueOf(repository.name)])
+    true
+}
+// The artifact() source removed again from one owner's repositories, in case the build gave it back after adding
+// the repository: the names of the repositories changed now.
+def enforce = { String owner, repositories ->
+    new ArrayList(repositories).findAll { withoutArtifactSource(owner, it) }.collect { String.valueOf(it.name) }
+}
+// The records of one owner's repositories, printed before its configurations are walked.
+def repositoryRecords = { String owner, repositories ->
+    def records = new ArrayList(repositories).findAll { it instanceof FlatDirectoryArtifactRepository }
+            .collect { ['flatdir', owner, String.valueOf(it.name)] }
+    records + narrowed.findAll { it[0] == owner }.collect { ['narrowed', owner, it[1]] }
+}
+def settingsRepositories = []
+if (rootBuild) {
+    gradle.settingsEvaluated { settings ->
+        try {
+            settingsRepositories = settings.dependencyResolutionManagement.repositories
+        } catch (MissingPropertyException ignored) {
+            return  // before Gradle 6.8 the settings declare no repositories for projects
+        }
+        settingsRepositories.all { withoutArtifactSource('settings', it) }
+    }
+}
+
+gradle.allprojects { project ->
+    def buildDirectory = new File(new File(scratch, 'build'), project.projectDir.absolutePath + '/out')
+    project.layout.buildDirectory.set(buildDirectory)
+    project.afterEvaluate { project.layout.buildDirectory.set(buildDirectory) }
+    if (!rootBuild) {
+        return
+    }
+    project.repositories.all { withoutArtifactSource(project.path, it) }
+    project.tasks.register(taskName) { task ->
+        if (project == project.rootProject) {
+            task.dependsOn(project.subprojects.collect { it.path + ':' + taskName })
+        }
+        task.doLast {
+            if (project == project.rootProject) {
+                emit(['gradle', project.gradle.gradleVersion, String.valueOf(System.getProperty('java.version'))])
+                for (each in project.allprojects) {
+                    emit(['project', each.path])
+                }
+                for (included in project.gradle.includedBuilds) {
+                    emit(['included', included.name])
+                }
+                repositoryRecords('settings', settingsRepositories).each { emit(it) }
+            }
+            // A source the build gave back since the repository was added may have served a configuration
+            // resolved before this task: such a result cannot be shown to come from metadata alone.
+            def givenBack = enforce('settings', settingsRepositories) + enforce(project.path, project.repositories)
+            repositoryRecords(project.path, project.repositories).each { emit(it) }
+            def walked = new LinkedHashSet()
+            if (givenBack) {
+                new ArrayList(project.configurations)
+                        .findAll { it.canBeResolved && it.state != Configuration.State.UNRESOLVED }
+                        .each { emit(['early', project.path, it.name]) }
+            }
+            // Resolving can add configurations, so the walk repeats until a round finds no new one, within a
+            // bound: a project still adding them after that is reported unfinished.
+            def rounds = 0
+            def pending = {
+                new ArrayList(project.configurations).findAll { it.canBeResolved && !walked.contains(it.name) }
+            }
+            for (def next = pending(); next && rounds < maxRounds; next = pending()) {
+                rounds++
+                for (configuration in next) {
+                    walked.add(configuration.name)
+                    emit(['configuration', project.path, configuration.name])
+                    try {
+                        walk(project, configuration)
+                    } catch (Exception failure) {
+                        emit(['failed', project.path, configuration.name, failure.getClass().name])
+                        // Unmarked, so it reaches only the build output file the audit keeps for the user.
+                        println("dependency-audit: ${configuration.name} of ${project.path} did not resolve: " +
+                                "${failure}")
+                    }
+                    // A resolution callback can give the source back; the result just walked may then hold a
+                    // module without metadata.
+                    (enforce('settings', settingsRepositories).collect { ['restored', 'settings', it] } +
+                            enforce(project.path, project.repositories).collect { ['restored', project.path, it] })
+                            .each { emit(it) }
+                }
+            }
+            if (pending()) {
+                emit(['unfinished', project.path])
+            }
+            emit(['done', project.path, String.valueOf(walked.size())])
+        }
+    }
+}

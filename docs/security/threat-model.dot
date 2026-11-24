@@ -22,6 +22,7 @@ digraph threat_model {
     }
 
     settings [label="Claude settings\n(managed, user):\nplugin options", shape=note, fillcolor="#F1F3F4"];
+    buildtool [label="Project's build tool\n(Maven, Gradle), offline:\nruns the build configuration", fillcolor="#F1F3F4"];
 
     subgraph cluster_plugin {
       label="B2  plugin hooks and scripts (hooks/hooks.json)"; style="dashed"; color="#188038"; fontcolor="#188038";
@@ -32,6 +33,7 @@ digraph threat_model {
       revscripts [label="Review scripts: review-prepare.py,\nreview-snapshot.py, review-risk.py", fillcolor="#E6F4EA"];
       speccheck [label="Specification checks:\nspec-trace.py, spec-layout.py\n(print, write nothing)", fillcolor="#E6F4EA"];
       installer [label="Setup: doctor.py,\ninstall.py", fillcolor="#E6F4EA"];
+      audit [label="Dependency audit:\ndependency-audit.py\n+ Gradle init script", fillcolor="#E6F4EA"];
       gatestate [label="Gate state\n$CLAUDE_PLUGIN_DATA/\nspec-approval-gate", shape=cylinder, fillcolor="#E6F4EA"];
       isostate [label="Isolation state\n$CLAUDE_PLUGIN_DATA/\nreview-isolation", shape=cylinder, fillcolor="#E6F4EA"];
       reviewhome [label="Review home\n~/.local/state/\nspec-external-review", shape=cylinder, fillcolor="#E6F4EA"];
@@ -39,6 +41,7 @@ digraph threat_model {
       snapshots [label="Review snapshots\n<state>/review-snapshots", shape=cylinder, fillcolor="#E6F4EA"];
       active [label="Activation records\n~/.local/state/\nimplement-from-spec/active", shape=cylinder, fillcolor="#E6F4EA"];
       timing [label="Timing log (opt-in)\n~/.local/state/\nimplement-from-spec/hook-timing", shape=cylinder, fillcolor="#E6F4EA"];
+      auditstate [label="Advisory cache, build output\n~/.local/state/implement-from-spec/\nadvisories, dependency-audit", shape=cylinder, fillcolor="#E6F4EA"];
     }
 
     subgraph cluster_repo {
@@ -58,14 +61,15 @@ digraph threat_model {
     aws [label="Live resources\nand state", fillcolor="#FEF7E0"];
   }
   subgraph cluster_vendors {
-    label="B6  vendor downloads"; style="dashed"; color="#B06000"; fontcolor="#B06000";
+    label="B6  vendor downloads and advisory data"; style="dashed"; color="#B06000"; fontcolor="#B06000";
     vendors [label="Vendor hosts\n(HTTPS only)", fillcolor="#FEF7E0"];
+    osv [label="OSV Maven export\n(one fixed HTTPS address)", fillcolor="#FEF7E0"];
   }
 
   { rank=same; claude; subagents; }
-  { rank=same; gate; askhook; notice; review; revscripts; speccheck; installer; }
+  { rank=same; gate; askhook; notice; review; revscripts; speccheck; installer; audit; }
   { rank=same; gatestate; reviewhome; setupstate; snapshots; }
-  { rank=same; inference; reviewer; aws; vendors; }
+  { rank=same; inference; reviewer; aws; vendors; osv; }
 
   user -> claude [label="1"];
   claude -> user [label="2"];
@@ -100,4 +104,11 @@ digraph threat_model {
   claude -> speccheck [label="24"];
   speccheck -> repo [label="24", dir=back];
   gate -> repo [label="25", dir=back];
+  audit -> osv [label="26"];
+  audit -> auditstate [label="26, 27"];
+  revscripts -> audit [label="27", style=dotted];
+  claude -> audit [label="27"];
+  audit -> buildtool [label="27"];
+  buildtool -> repo [label="27", dir=back];
+  audit -> snapshots [label="27"];
 }

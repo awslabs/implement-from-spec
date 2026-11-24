@@ -36,7 +36,9 @@ the session's state file):
   - Read, Grep and Glob outside the allowed roots (the git top level of the payload's cwd, the plugin
     root, <state>/review-snapshots under both of review-snapshot.py's default roots, snapshot_roots) or on
     a credential path anywhere (CREDENTIAL_DIRS, CREDENTIAL_FILES,
-    any path component `.env` or `.env.*`); paths are checked as named and after symlinks are resolved.
+    any path component `.env` or `.env.*`); paths are checked as named and after symlinks are resolved, each
+    spelled as the file system holds it and compared with roots spelled the same way (Spelling, below), and
+    credential names and directories are compared in any letter case and normalisation.
     One exception, for the running-external-review role only: Read of its own session's background Bash
     task output, <tmp>/claude-<uid>/<project>/<session_id>/tasks/<id>.output (is_task_output), because it
     runs spec-external-review.py in the background and reads the result there; its command may carry
@@ -131,10 +133,11 @@ REVIEWER_TOOLS = frozenset({"TodoWrite", "TaskCreate", "TaskGet", "TaskList", "T
                             "SubagentHandback"})
 CREDENTIAL_DIRS = ("~/.aws", "~/.ssh", "~/.config/gcloud", "~/.azure")
 CREDENTIAL_FILES = ("~/.docker/config.json", "~/.netrc")
-# Names in a Glob pattern or a Grep glob filter that aim at credentials.
+# Names in a Glob pattern or a Grep glob filter that aim at credentials, matched in the folded text (fold): a
+# pattern is matched against names on whatever volume the tool walks, and where that ignores case .ENV is .env.
 CREDENTIAL_NAME_RE = re.compile(r"\.env|\.aws|\.ssh|\.netrc|\.azure|gcloud|\.docker")
 # The same names as a path component or glob in a shell word (`--include=.env*`, `*/.aws/*`), which a recursive
-# grep would otherwise read inside an allowed directory.
+# grep would otherwise read inside an allowed directory; also matched folded.
 CREDENTIAL_WORD_RE = re.compile(r"(?:^|[/=*])\.(?:env|aws|ssh|netrc|azure|docker)(?![A-Za-z0-9_-])")
 GLOB_CHARS = set("*?[")
 GLOB_LIMIT = 500
@@ -367,13 +370,70 @@ def under(path, root):
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
+# Spelling. On a volume that ignores letter case (APFS and HFS+ in their default form) or Unicode normalisation
+# (APFS), one file has many spellings, and a macOS firmlink gives a directory a second name
+# (/System/Volumes/Data/<path> is <path>). Every path this hook compares, and every root it compares one with, is
+# therefore first spelled the way the file system holds it, by the approval gate's own primitive
+# (ifs_paths.ondisk): a respelled root is the root, and a path under a second name is the path. Credential names
+# and directories are compared folded as well (ifs_paths.fold), because a credential file that does not exist yet,
+# or a name in a directory that cannot be read, keeps the spelling it was given; folding is a string operation, so
+# on a volume that tells case apart it denies a file such as .ENV too, the safe direction for a denial.
+
+def spelled(path):
+    """path (absolute, without `..`) spelled as the file system holds it (ifs_paths.ondisk). A component that exists
+    under another spelling whose own cannot be read denies the call (fail closed)."""
+    paths = load_paths()
+    try:
+        return paths.ondisk(path)
+    except paths.PathUnknown as exc:
+        raise Deny(f"the spelling of {path} cannot be read ({exc})")
+
+
+def spelled_named(path):
+    """The path as named (absolute, `..` folded lexically), spelled on disk up to and including its first symlink;
+    what lies beyond the link keeps the spelling given, so the name is still the name as named, not the place the
+    link resolves to (check_path checks that as well)."""
+    parts = path.split(os.sep)
+    for k in range(2, len(parts)):
+        prefix = os.sep.join(parts[:k])
+        if os.path.islink(prefix):
+            return os.path.join(spelled(prefix), *parts[k:])
+    return spelled(path)
+
+
+def within_root(path, root):
+    """Whether path is root or lies below it, both spelled on disk (spelled). A root that does not exist yet (a
+    snapshot directory before the first snapshot) keeps the spelling given below its deepest existing directory, and
+    so does path: there the names are compared folded, but only where that directory finds names under another
+    spelling (ifs_paths.name_folds is True), since only then are the two one place."""
+    if under(path, root):
+        return True
+    anchor = root
+    while not os.path.lexists(anchor):
+        parent = os.path.dirname(anchor)
+        if parent == anchor:
+            return False
+        anchor = parent
+    missing = [part for part in root[len(anchor):].split(os.sep) if part]
+    if not missing or not under(path, anchor) or load_paths().name_folds(anchor) is not True:
+        return False
+    rest = [part for part in path[len(anchor):].split(os.sep) if part]
+    return len(rest) >= len(missing) and all(fold(a) == fold(b) for a, b in zip(rest, missing))
+
+
+def fold(text):
+    """text folded as a volume that ignores letter case and normalisation compares names (ifs_paths.fold)."""
+    return load_paths().fold(text)
+
+
 def credential_reason(path):
-    home_dirs = [os.path.realpath(os.path.expanduser(p)) for p in CREDENTIAL_DIRS]
-    home_files = [os.path.realpath(os.path.expanduser(p)) for p in CREDENTIAL_FILES]
-    for root in home_dirs + home_files:
-        if under(path, root):
+    """Why path, spelled on disk (spelled), is a credential path, or None: below a credential directory or file
+    (spelled the same way), or with a component .env or .env.*, all compared folded (Spelling, above)."""
+    folded = fold(path)
+    for root in CREDENTIAL_DIRS + CREDENTIAL_FILES:
+        if under(folded, fold(spelled(os.path.realpath(os.path.expanduser(root))))):
             return f"{path} is a credential path"
-    for part in path.split(os.sep):
+    for part in folded.split(os.sep):
         if part == ".env" or part.startswith(".env."):
             return f"{path} is a credential path (.env)"
     return None
@@ -386,13 +446,14 @@ def check_path(path, cwd, roots, label="path"):
     expanded = os.path.expanduser(path)
     if not os.path.isabs(expanded):
         expanded = os.path.join(cwd or os.getcwd(), expanded)
-    named = os.path.normpath(expanded)
-    real = os.path.realpath(expanded)
+    named = spelled_named(os.path.normpath(expanded))
+    real = spelled(os.path.realpath(expanded))
     for candidate in (named, real):
         reason = credential_reason(candidate)
         if reason:
             raise Deny(reason)
-    if not any(under(real, r) for r in roots) or not any(under(named, r) for r in roots):
+    allowed = [spelled(r) for r in roots]
+    if not any(within_root(real, r) for r in allowed) or not any(within_root(named, r) for r in allowed):
         raise Deny(f"{path} is outside the review's allowed roots ({', '.join(sorted(roots))})")
 
 
@@ -417,7 +478,11 @@ def is_task_output(path, session_id):
     real = os.path.realpath(path)
     if real != os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)):
         return False
-    for top in task_output_dirs(session_id):
+    try:  # the layout's names below are compared as the file system spells them (Spelling)
+        real, tops = spelled(real), [spelled(top) for top in task_output_dirs(session_id)]
+    except Deny:
+        return False  # check_path then decides, and denies as well
+    for top in tops:
         if not under(real, top) or not os.path.isfile(real):
             continue
         # The resolved path decides: a symlinked tasks directory resolves elsewhere and fails here.
@@ -440,13 +505,13 @@ def check_path_tool(tool, tool_input, cwd, roots, role=None, session_id=None):
     check_path(base, cwd, roots, f"{tool} path")
     if tool == "Grep":
         filt = tool_input.get("glob") or ""
-        if CREDENTIAL_NAME_RE.search(str(filt)):
+        if CREDENTIAL_NAME_RE.search(fold(str(filt))):
             raise Deny(f"Grep glob {filt!r} aims at credential files")
         return
     pattern = tool_input.get("pattern")
     if not isinstance(pattern, str) or not pattern:
         raise Deny("Glob pattern is missing")
-    if CREDENTIAL_NAME_RE.search(pattern):
+    if CREDENTIAL_NAME_RE.search(fold(pattern)):
         raise Deny(f"Glob pattern {pattern!r} aims at credential files")
     if ".." in pattern.split("/"):
         raise Deny(f"Glob pattern {pattern!r} climbs with '..'")
@@ -1154,17 +1219,18 @@ def check_python(ctx, words):
     if len(words) < 3 or words[1].value() != "-I":
         raise Deny("python3 is allowed only as python3 -I <plugin>/core/scripts/review-snapshot.py "
                    "verify|delta|gates")
-    script = os.path.realpath(os.path.join(ctx.cwd, os.path.expanduser(words[2].value())))
+    # Compared as the file system spells them (Spelling), so a respelled path to the script is the script.
+    script = spelled(os.path.realpath(os.path.join(ctx.cwd, os.path.expanduser(words[2].value()))))
     snap = {os.path.join(r, "core", "scripts", "review-snapshot.py") for r in plugin_roots()}
     ext = {os.path.join(r, "core", "scripts", "spec-external-review.py") for r in plugin_roots()}
     rest = words[3:]
-    if script in {os.path.realpath(p) for p in snap}:
+    if script in {spelled(os.path.realpath(p)) for p in snap}:
         if not rest or rest[0].value() not in ("verify", "delta", "gates"):
             raise Deny("review-snapshot.py is allowed only with verify, delta or gates")
         for w in parse_args(ctx, rest[1:], {}):
             ctx.path(w)
         return
-    if script in {os.path.realpath(p) for p in ext}:
+    if script in {spelled(os.path.realpath(p)) for p in ext}:
         if ctx.role != EXTERNAL_ROLE:
             raise Deny("spec-external-review.py is for the running-external-review role only")
         spec = {"forbid_long": {"out", "external-review", "external-review-auth", "external-review-aws-profile",
@@ -1189,7 +1255,7 @@ def check_segment(ctx, words):
         if w.plugin_var and not (prog == "python3" and k == 2):
             raise Deny("${CLAUDE_PLUGIN_ROOT} is allowed only at the start of the script path python3 -I runs")
     for w in args:
-        if CREDENTIAL_WORD_RE.search(w.value()):
+        if CREDENTIAL_WORD_RE.search(fold(w.value())):
             raise Deny(f"the argument {w.value()!r} names credential files")
     if prog == "git":
         while args and args[0].value() in ("--no-pager", "-C"):

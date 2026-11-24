@@ -9,8 +9,8 @@ prose, never as code. `core/scripts/spec-trace.py plan` parses `## Scope`, `## G
 
 ## Contents
 
-1. The template: Scope, Binding rules, Global constraints, sections 1 to 8, Open questions, Review
-   focus, Tasks, Deferred, Risks and rollback
+1. The template: Scope, Specification changes, Binding rules, Global constraints, sections 1 to 8,
+   Open questions, Review focus, Tasks, Deferred, Risks and rollback
 2. Task rules
 3. Task fields
 
@@ -92,9 +92,13 @@ the feature touches and how it is preserved.
 
 ## 6. Dependencies
 New dependencies and plugins with coordinates, version (or the BOM that manages it) and reason, the
-build file they go into and the CLAUDE.md tech-stack line that records them; anything removed. When a
-project rule requires the user's explicit approval for a kind of dependency (a cloud SDK, a new
-framework), quote the rule next to the dependency. "none" when nothing changes.
+build file they go into and the CLAUDE.md tech-stack line that records them; anything removed. Beside
+each one: where its version comes from (the specification, the project's dependency management, or
+"the plan's own choice"), and the dependency check's result, in one of three forms: "no advisory
+matches this coordinate in the dataset of <date>"; the match, with its advisory ids, the reported fix
+and the open question or approval line that raises it; or "not checked (<reason>)". When a project
+rule requires the user's explicit approval for a kind of dependency (a cloud SDK, a new framework),
+quote the rule next to the dependency. "none" when nothing changes.
 
 ## 7. Test strategy
 Unit tests per class, slice tests (`@WebMvcTest`, plain JUnit) before `@SpringBootTest`, and fault tests
@@ -108,8 +112,11 @@ HTTP behaviour), and the representative call the smoke gate makes with its expec
 
 ## Open questions
 Each question the feature depends on that an item, a project rule or `specification/open-questions.md`
-leaves open: its source (file and ID, such as Q1), the options, the recommended answer the design
-follows, and what changes with each other answer. The approval request lists them; approve accepts the
+leaves open, and each advisory match on a version the specification or the project asked for: its
+source (file and ID, such as Q1, or "dependency check"), the options, the recommended answer the design
+follows, and what changes with each other answer. When the recommended answer changes what a
+specification item states (the reported fix for a version an item names), the item is drafted changed
+and recorded under `## Specification changes`. The approval request lists them; approve accepts the
 recommended answers. "none" when nothing is open.
 
 ## Review focus

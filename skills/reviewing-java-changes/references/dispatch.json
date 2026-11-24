@@ -8,7 +8,16 @@
       "brief": [
         {"file": "references/review-brief.md", "section": "Claude stage"}
       ],
-      "assign": "Every group of references/review-dimensions.md under the report dimension it names (Correctness, Design, Patterns, Extensibility, Safety/security, Maintainability, Readability), plus Contract files and Documentation fidelity, with the shared core/review/principles-and-architecture-smells.md inside Design, Extensibility and Maintainability"
+      "assign": "Groups 1 to 8 and 10 to 12 of references/review-dimensions.md, each under the report dimension it names (Correctness, Design, Patterns, Extensibility, Maintainability, Readability), plus Contract files and Documentation fidelity, with the shared core/review/principles-and-architecture-smells.md inside Design, Extensibility and Maintainability. Safety/security is the security reviewer's for every file of the change, the security consequence of a defect one of your groups describes included: report that defect in full under your own check and add an out-of-lens head line under Safety/security for the consequence; any other security defect you notice is an out-of-lens head line only"
+    },
+    {
+      "name": "security",
+      "skill": "code-reviewer",
+      "model": "opus",
+      "brief": [
+        {"file": "references/review-brief.md", "section": "Security reviewer"}
+      ],
+      "assign": "Safety/security: every group of references/security-dimensions.md whose trigger in its Contents the change or the repository meets (a trigger you cannot rule out is met), on the Java sources, the configuration and the build files of the change; a group whose trigger is not met is unread and reported not applicable with the reason. Every group appears on the Groups line with its outcome, and one left unsure or needing runtime verification also on the Could not complete line. You own this dimension for every file of the change, the security consequence of a defect that a group of references/review-dimensions.md describes included; a defect outside security that you notice is an out-of-lens head line only"
     },
     {
       "name": "iac-security-handoff",
@@ -30,6 +39,9 @@
       ],
       "assign": "groups 3 (IAM) and 4 (Exposure and data protection) of the Terraform review file, on the paths the hand-off reason names"
     }
+  ],
+  "required_gates": [
+    {"name": "dependency-audit", "script": "core/scripts/dependency-audit.py"}
   ],
   "runner": {
     "skill": "running-external-review",
