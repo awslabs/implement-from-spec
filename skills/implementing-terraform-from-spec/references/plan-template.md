@@ -97,8 +97,9 @@ which after approval can only be fixed by an amendment and a second approval.
 
 Each field is one physical line, however long: never wrap it. spec-trace reads only the line its label
 starts, so an `Owns:` path on a wrapped line counts as unowned and fails verification after approval. In
-`Tests:`, backticks hold test paths and nothing else (spec-trace reads every backticked span there as a
-test file, so `command = plan` fails the same way); describe what the test asserts in plain prose.
+`Tests:`, backticks hold test paths and nothing else, outside a `none — <reason>` field (spec-trace reads
+every backticked span there as a test file, so `command = plan` fails the same way); describe what the
+test asserts in plain prose.
 
 Specification tasks (contract section 13): when `ai-planning/<slug>.spec/` holds files, a first-wave
 task owns the specification files and writes them from the draft; when the draft holds files, the

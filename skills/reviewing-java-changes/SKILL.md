@@ -94,10 +94,14 @@ Both stages review exactly the same change: pick one mode, which the preparation
 - **Working tree** (the default): `--base <base>`, the change `git -C <repo> diff <base>` plus untracked
   files, where `<base>` is `HEAD` or, from `implementing-java-from-spec`, the ledger's baseline commit
 - **Committed changes only**: `--range <a>..<b>`, with `--base <a>`
-- **Explicit files**: `--files <paths>`. The dependency audit covers such a snapshot only when it holds
-  every file the build reads to choose its dependencies (each `pom.xml`, `.mvn/`, the wrappers, the
+- **Explicit files**: `--files <paths>`. The dependency audit stops as not run when the snapshot leaves
+  out a file the build reads to choose its dependencies (each `pom.xml`, `.mvn/`, the wrappers, the
   Gradle build, settings and properties files, lockfiles, `gradle/` and `buildSrc/`), because the
-  snapshot verifies only its own files; otherwise the audit is not run (step 3)
+  snapshot verifies only its own files (step 3); holding every one of those does not make the result
+  complete either, since no list of files covers everything a build can read — a file created later,
+  one whose mere existence activates a profile, is outside any list taken before it. A `--files`
+  snapshot is never a remedy for partial coverage; the remedy is always a snapshot of the working tree
+  or of a commit range
 - **A pasted diff**: save it to a new file in a temporary directory outside the repository and pass
   `--diff-file <path>`
 - **With an approved plan**: `--plan ai-planning/<slug>.plan`, and the specification files in scope, with
@@ -268,10 +272,18 @@ reviewers never see it, and its entries are yours (step 4). Its first line is th
     revision too large or one that cannot be written out) audits outside the review: run it only when
     the user asks, and report its status line beside the gate's, never on the `Quality gate:` line or in
     its place
-  - `snapshot does not cover the build`: a `--files` snapshot without a build file the project reads,
-    which the remedy names. Tell the user; on their word prepare the review again (step 1) with those
-    files added to `--files`, or of the working tree, and review that snapshot. Never widen it on your
-    own: the added files are part of what the reviewers read
+  - `snapshot does not cover the build`, as a `not run`: a `--files` snapshot without a build file the
+    project reads, which the remedy names. Tell the user; on their word prepare the review again
+    (step 1) of the working tree or of a commit range, and review that snapshot. Never remedy this by
+    widening `--files` on your own: no list of files covers everything a build can read, so adding the
+    named files is not a fix
+  - `snapshot does not cover the build`, inside `coverage partial (...)` on a `fail` or counted in a
+    `not run`: a `--files` snapshot that held every named build file, which is always partial, since any
+    other file of the working tree, one created later included, can change what the build resolves
+    without the snapshot showing it. The audit still ran and any vulnerabilities it found are findings all
+    the same (step 4); a clean result here is still not a pass. Tell the user; on their word prepare the
+    review again (step 1) of the working tree or of a commit range, never by widening `--files` on your
+    own, since no list of files covers everything a build can read
   - `pasted diff`: nothing to run; a review of the working tree or a commit range is what audits the
     dependencies
 
@@ -519,7 +531,8 @@ The state, exactly as contract section 9 defines it (the arguments of `state`):
   dependency audit or another gate did not run, or the audit's coverage was partial
   (`dependency-audit-coverage` not run; `state` adds each not-run gate itself), the external
   review was required by policy and did not run, a security hand-off was required and did not run, a
-  high-risk claim needs runtime verification, the snapshot was invalidated, an isolation denial left a
+  finding of Major or Blocker severity, or any finding in a change classified `Risk: high`, is left as
+  needs runtime verification, the snapshot was invalidated, an isolation denial left a
   reviewer's brief incomplete
 - **Approval required**: `human (<reasons>)` for every `approval_required` reason of the risk JSON and
   every changed policy file; `none` otherwise. `state` adds the classifier's reasons itself; pass

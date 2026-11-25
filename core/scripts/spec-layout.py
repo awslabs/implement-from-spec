@@ -562,7 +562,8 @@ def draft_view(draft: str, rep, named=(), listed=frozenset()) -> dict:
             continue
         if not is_spec_path(rel, named):
             rep.add("FAIL", "draft-path", f"the draft holds {rel}, which is not a specification path "
-                                          f"({SPEC_DIR}/, {STRUCTURED_DIR}/, {FLAT_FILE} or a document beside it)")
+                                          f"({SPEC_DIR}/, {STRUCTURED_DIR}/, {FLAT_FILE}, a document beside it "
+                                          "or a file named with --spec)")
             continue
         if os.path.basename(rel) == TRACEABILITY:
             rep.add("FAIL", "draft-traceability", f"the draft holds {rel}: the traceability report is never drafted; "
@@ -599,7 +600,10 @@ def mask_fences(text: str) -> str:
 
 def parse_items(rel: str, text: str, id_pattern: str) -> list:
     """The items one file defines, in file order: id, title, file, line, struck, text (whitespace
-    normalised, the comparison form) and body (as written)."""
+    normalised, the comparison form), body (as written, for reporting and history comparison) and
+    semantic (body with fenced code and HTML comments blanked, the form every format and content check
+    reads, so a requirement, an Acceptance: or a Source: that is not actually readable in the rendered
+    specification can never satisfy a check)."""
     masked = mask_fences(text)
     id_re = re.compile(id_pattern)
     # At the margin only: a nested or indented list line ("  - **SPEC-F002** must run first") is a
@@ -630,9 +634,10 @@ def parse_items(rel: str, text: str, id_pattern: str) -> list:
                 end = later_pos
                 break
         body = text[pos:end].rstrip()
+        semantic = masked[pos:end].rstrip()
         items.append({"id": item_id, "title": " ".join(title.replace("~~", "").strip(" \t\n—–-:.").split()),
                       "file": rel, "line": text.count("\n", 0, pos) + 1, "struck": struck,
-                      "text": " ".join(body.split()), "body": body})
+                      "text": " ".join(body.split()), "body": body, "semantic": semantic})
     return items
 
 
@@ -696,7 +701,7 @@ def classify(view: dict, id_pattern: str, named=(), root=None) -> dict:
     spec = sorted(p for p in view if p.startswith(SPEC_DIR + "/") and p not in named)
     if spec:
         index = SPEC_DIR + "/" + INDEX if SPEC_DIR + "/" + INDEX in view else None
-        fmt = FORMAT_RE.search(view[index]) if index else None
+        fmt = FORMAT_RE.search(mask_fences(view[index])) if index else None
         dims = [p for p in spec if p.startswith((SPEC_DIR + "/functional/", SPEC_DIR + "/non-functional/"))]
         if fmt:
             name, item_files = "combined", dims
@@ -940,7 +945,7 @@ def check_format(layout: dict, items: dict, view: dict, delta: dict, repo: str, 
         where = f"{item_id} ({item['file']}:{item['line']})"
         if not combined and item_id not in touched:
             continue  # an existing layout is extended in its own format: only what this change writes is judged
-        for path in source_paths(item["body"]):
+        for path in source_paths(item["semantic"]):
             if PATTERN_CHARS_RE.search(path):
                 continue  # a pattern, not a path
             normal = os.path.normpath(path).replace(os.sep, "/")
@@ -956,9 +961,9 @@ def check_format(layout: dict, items: dict, view: dict, delta: dict, repo: str, 
         wanted = {"SPEC-F": "/functional/", "SPEC-NF": "/non-functional/"}.get(family)
         if wanted and layout["layout"] in ("combined", "kit") and wanted not in "/" + item["file"]:
             rep.add(level, "misplaced", f"{where}: {family}nnn items live under {SPEC_DIR}{wanted}")
-        if combined and not KEYWORD_RE.search(item["body"]):
+        if combined and not KEYWORD_RE.search(item["semantic"]):
             rep.add("FAIL", "statement", f"{where}: the item states no requirement (MUST or SHOULD)")
-        if not ACCEPTANCE_RE.search(item["body"]):
+        if not ACCEPTANCE_RE.search(item["semantic"]):
             rep.add(level, "acceptance", f"{where}: the item has no Acceptance: check")
     for rel, text in sorted(draft_files.items()):
         for number, line in TRACE.added_lines(text, before_view.get(rel, "")):
@@ -1053,7 +1058,7 @@ def check_plan_records(plan: dict, delta: dict, before_layout: dict, items: dict
         rep.add("FAIL", "baseline-count", f"the plan's baseline record says {baseline} items; {len(covered)} new "
                                           "items have no record of their own")
     for item_id in covered:
-        paths = [p for p in source_paths(items[item_id]["body"]) if not PATTERN_CHARS_RE.search(p)]
+        paths = [p for p in source_paths(items[item_id]["semantic"]) if not PATTERN_CHARS_RE.search(p)]
         if not any(os.path.lexists(os.path.join(repo, os.path.normpath(p))) for p in paths):
             rep.add("FAIL", "baseline-unsourced", f"{item_id} is a baseline item but names no existing Source: path "
                                                   "(a baseline item says which files evidence it)")

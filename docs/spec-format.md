@@ -353,8 +353,9 @@ spec-layout check: 0 FAIL, 0 WARN
   plan's `Specification root:` line names one
 - Two records of one ID fail `record-duplicate`; a record that names no file, or not the file that holds
   the item, fails `record-file`
-- A draft file outside `specification/`, `docs/specifications/`, `docs/SPECIFICATION.md` and the standard
-  documents in `docs/` fails `draft-path`, a symlink or a special file in the draft fails
+- A draft file outside `specification/`, `docs/specifications/`, `docs/SPECIFICATION.md`, the standard
+  documents in `docs/`, a `--spec` file and the documents beside it fails `draft-path`, a symlink or a
+  special file in the draft fails
   `draft-symlink`, a file the external review treats as sensitive (keys, credentials, `.env` files,
   state, real tfvars) fails `draft-sensitive`, a binary file or one over 2 MB that the plan's
   `## Specification changes` does not name in backticks fails `draft-binary` (it cannot be scanned for

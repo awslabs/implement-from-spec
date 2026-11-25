@@ -297,7 +297,21 @@ def mib(size: int) -> str:
 # of itself (the real text stays in the private build output). Paths, which no grammar can cover, are escaped
 # and capped instead.
 UNSAFE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
-ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,15}(?:-[A-Za-z0-9]{1,32}){1,6}$")
+class _AdvisoryIdGrammar:
+    """An advisory id (GHSA-xxxx-xxxx-xxxx, CVE-2024-1234, PYSEC-2021-1): a prefix of a letter and up to 15
+    letters or digits, then one to six parts of one to 32 letters or digits, each after a dash. Checked by
+    splitting at the dashes rather than with one regex whose quantified group holds a quantifier, so no
+    input can make the check backtrack; match() is the regex interface the callers use."""
+    PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9]{0,15}")
+    PART = re.compile(r"[A-Za-z0-9]{1,32}")
+
+    def match(self, value) -> bool:
+        parts = value.split("-") if isinstance(value, str) else []
+        return 2 <= len(parts) <= 7 and bool(self.PREFIX.fullmatch(parts[0])) and \
+            all(self.PART.fullmatch(part) for part in parts[1:])
+
+
+ID_GRAMMAR = _AdvisoryIdGrammar()
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")  # a groupId or an artifactId
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$")
 WORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")  # a scope, a type, a classifier, a configuration
@@ -1355,12 +1369,25 @@ CONFIG_END = "[DEBUG] -- end configuration --"
 TREE_FILTERS = {"scope": None, "includes": "[]", "excludes": "[]", "outputFile": None, "outputType": "text",
                 "skip": "false", "verbose": "false", "tokens": "standard"}
 MISSING_PROFILE_RE = re.compile(r'The requested profile "([^"]*)" could not be activated because it does not exist')
-# Options that make Maven build part of the project only, in .mvn/maven.config or MAVEN_ARGS.
-NARROWING_RE = re.compile(r"^(?:-N|--non-recursive|-pl\S*|--projects(?:=\S*)?|-rf\S*|--resume-from(?:=\S*)?|-f|"
-                          r"--file(?:=\S*)?)$")
+# Options that make Maven build part of the project only, in .mvn/maven.config or MAVEN_ARGS, by every name
+# Maven 3.9's command line takes, with the long name each is reported by. Maven 3.9's CLIManager parses the
+# options with commons-cli's GnuParser: a word names an option after one or two leading dashes, by its short or
+# its long name (-file, --pl and --N are options too), with
+# its value in the next word or after "=" (-f=x, --projects=x), and a one-letter short option also takes its value
+# attached (-fx; -Nclean is -N and the goal clean).
+MAVEN_NARROWING = {"N": "--non-recursive", "non-recursive": "--non-recursive", "pl": "--projects",
+                   "projects": "--projects", "rf": "--resume-from", "resume-from": "--resume-from", "f": "--file",
+                   "file": "--file"}
+# The one-letter options above, which take an attached value, and the other options whose names start with one of
+# those letters, by their short and their long names (a long name takes one dash as well as two): -fae and
+# -fail-at-end are --fail-at-end, -ffoo is --file foo.
+MAVEN_ATTACHED = ("f", "N")
+MAVEN_NOT_NARROWING = ("fae", "ff", "fn", "fail-at-end", "fail-fast", "fail-never")
 BANNER_RE = re.compile(r"^\[INFO\] -+< ([^\s:]+:[^\s:]+) >-+$")
 GOAL_RE = re.compile(r"^\[INFO\] --- (?:maven-)?dependency(?:-plugin)?:(\S+):tree \([^)]*\) @ .+ ---$")
-ROOT_RE = re.compile(r"^\[INFO\] ([^\s:]+(?::[^\s:]+){3,4})$")
+# The tree's root line, GROUP:ARTIFACT:TYPE[:CLASSIFIER]:VERSION; the fields are counted after the split
+# (root_fields), not by a quantified group in the regex.
+ROOT_RE = re.compile(r"^\[INFO\] (\S+)$")
 NODE_RE = re.compile(r"^\[INFO\] ((?:\|  |   )*)(?:\+- |\\- )(\S+)( \(optional\))?$")
 TREE_LINE_RE = re.compile(r"^\[INFO\] (?:\|  |   )*(?:\+- |\\- )")  # anything shaped like a line of a tree
 ORDER_ENTRY_RE = re.compile(r"^\[INFO\] \S.*\[[A-Za-z0-9._-]+\]$")
@@ -1567,6 +1594,24 @@ def read_small(path: str, limit: int = INPUT_LIMIT):
     return data if len(data) <= limit else None
 
 
+def file_sha256(path: str):
+    """The sha256 of a regular file of any size, read in pieces; None when it is a link, special or unreadable."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return None
+        digest = hashlib.sha256()
+        try:
+            for piece in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(piece)
+        except OSError:
+            return None
+    return digest.hexdigest()
+
+
 def worktree_inputs(root: str, names: list, project: str) -> dict:
     """{path: sha256} of the resolution inputs in a working tree; a link or an unreadable file is recorded by
     what it is, so it never equals a regular file at the base."""
@@ -1677,6 +1722,7 @@ def parse_maven_output(text: str) -> dict:
         if tree == "root":
             root = ROOT_RE.match(line)
             fields = root.group(1).split(":") if root else []
+            fields = fields if 4 <= len(fields) <= 5 and all(fields) else []
             if fields and f"{fields[0]}:{fields[1]}" == current["id"]:
                 current["version"], current["parsed"] = fields[-1], True
                 stack, tree = [(current["id"], fields[-1])], "nodes"
@@ -1899,6 +1945,8 @@ def run_build_tool(argv: list, cwd: str, timeout: float, log: str, environ) -> t
     fd = os.open(log, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
     try:
         try:
+            # Argument list of the build tool's absolute path outside the repository and fixed arguments, no shell
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
             proc = subprocess.Popen(  # nosec B603 - argument list, absolute tool path outside the repo, fixed args
                 argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT, env=dict(environ),
                 start_new_session=True)
@@ -2026,14 +2074,34 @@ def maven_narrowing(project_dir: str, environ) -> None:
         directory = parent
     if environ.get("MAVEN_ARGS"):
         sources.append(("MAVEN_ARGS", environ["MAVEN_ARGS"]))
+    # Split at any white space, although Maven 3.9 takes each line of maven.config as one word: an option's name
+    # is always in the first piece of its word, so this refuses whatever either rule would pass, and more only
+    # where a value holds a space followed by a dash.
     for where, text in sources:
         for token in text.split():
-            if NARROWING_RE.match(token):
-                option = next(o for o in ("--non-recursive", "--projects", "--resume-from", "--file", "-N", "-pl",
-                                          "-rf", "-f") if token == o or token.startswith(o))
+            option = maven_narrowing_option(token)
+            if option:
                 raise NotRun("partial coverage", f"{where} passes {option}, which makes Maven build only part of the "
                                                  "project, so the tree would cover only that part: remove it, then "
                                                  "run the audit again")
+
+
+def maven_narrowing_option(token: str):
+    """The long name of the MAVEN_NARROWING option that one word of Maven's command line passes, None when it
+    passes none. Any number of leading dashes is read as Maven reads one or two, and a word that starts with
+    -pl or -rf, which Maven 3.9 refuses as an unknown option, is refused here too: no word passes because the
+    parser of another Maven version might read it otherwise."""
+    name = token.lstrip("-")
+    if not name or name == token:
+        return None  # a value, a goal, or "-" or "--" alone
+    key = name.split("=", 1)[0]
+    if key in MAVEN_NARROWING:
+        return MAVEN_NARROWING[key]
+    if token.startswith("--") or key in MAVEN_NOT_NARROWING:
+        return None
+    if name[0] in MAVEN_ATTACHED:
+        return MAVEN_NARROWING[name[0]]
+    return next((MAVEN_NARROWING[p] for p in ("pl", "rf") if name.startswith(p)), None)
 
 
 def merge_module(merged: dict, module: dict, configuration) -> None:
@@ -2376,8 +2444,9 @@ def gradle_wrapper_distribution(project_dir: str, repo, environ) -> str | None:
     """The bin/gradle of the distribution the project's wrapper names, when the wrapper has already unpacked
     it into the user's Gradle user home (GRADLE_USER_HOME, else ~/.gradle) and left its completion marker, in
     the directory Gradle names after this distribution URL only: a distribution of the same file name from
-    another URL is another distribution. With a distributionSha256Sum, the archive the wrapper kept there must
-    have that digest. A wrapper that keeps its distribution anywhere but the Gradle user home gives None: that
+    another URL is another distribution. With a distributionSha256Sum, an archive the wrapper left there must
+    have that digest; the wrapper deletes it once installed, and checked it before unpacking. A wrapper that
+    keeps its distribution anywhere but the Gradle user home gives None: that
     copy would be a program inside the project."""
     data = read_small(os.path.join(project_dir, GRADLE_WRAPPER_PROPERTIES), 65536)
     text = data.decode("utf-8", "replace") if data else ""
@@ -2392,11 +2461,16 @@ def gradle_wrapper_distribution(project_dir: str, repo, environ) -> str | None:
     digest = wrapper_url_hash(url)
     if not os.path.isfile(os.path.join(zips, digest, name + ".ok")):
         return None
+    # The wrapper checks distributionSha256Sum against the archive it downloaded before it unpacks it, writes the
+    # marker once the distribution is unpacked, and then deletes the archive; a later run that finds the marker
+    # and the unpacked distribution checks nothing again (Install.createDist in Gradle's wrapper-shared). So the
+    # audit trusts a completed installation as far as the wrapper
+    # itself does, no further: whoever can write the Gradle user home can change it, as they could change what
+    # the wrapper runs. An archive still beside the marker must have the digest the properties give.
     expected = _read_property(text, "distributionSha256Sum")
-    if expected:
-        archive = read_small(os.path.join(zips, digest, name), MAX_DOWNLOAD_BYTES)
-        if archive is None or sha256(archive) != expected.lower():
-            return None
+    archive = os.path.join(zips, digest, name)
+    if expected and os.path.lexists(archive) and file_sha256(archive) != expected.lower():
+        return None
     pattern = os.path.join(glob.escape(os.path.join(unpacked, digest)), "*", "bin", "gradle")
     for tool in sorted(glob.glob(pattern)):
         if os.path.isfile(tool) and os.access(tool, os.X_OK) and not (repo and inside(tool, repo)):
@@ -2467,7 +2541,7 @@ def gradle_problem(code, text: str, parsed: dict, project: str, log: str, timeou
         return "partial coverage", f"the resolution of {failed} configurations failed: see {shown(log)}"
     if parsed["restored"]:
         return "partial coverage", (f"the build gives {named_list(repository_names(parsed['restored']))} its "
-                                    "artefact-only metadata source back while it resolves, so a module without "
+                                    "artefact-only metadata source back after the audit took it away, so a module without "
                                     "metadata may be listed without its dependencies: stop the build from adding "
                                     "artifact() to metadataSources, then run the audit again")
     early = sum(len(m["early"]) for m in parsed["modules"])
@@ -2753,8 +2827,8 @@ def occurrence(module: dict, node: dict, advisories: list, fix, fix_checked: boo
             "coordinate": safe_coordinate(node["package"]),
             "version": safe(node["version"], VERSION_RE, "version"), "scope": scope_label(node),
             "path": [path_label(package, version) for package, version in node["path"]],
-            "advisories": [{"id": safe(a["id"], ID_RE, "advisory id"),
-                            "aliases": [alias for alias in a["aliases"] if ID_RE.match(alias)][:3],
+            "advisories": [{"id": safe(a["id"], ID_GRAMMAR, "advisory id"),
+                            "aliases": [alias for alias in a["aliases"] if ID_GRAMMAR.match(alias)][:3],
                             "severity": a["severity"], "class": a["class"], "unsure": a["unsure"], "basis": a["basis"]}
                            for a in advisories],
             "class": worst["class"],
@@ -2941,7 +3015,7 @@ def run_audit(snap, ctx: dict, store: Store) -> dict:
         result["not_evaluated"] += inventory["notes"]
         result["not_evaluated"] += [f"module {module_label(m)}: no dependency tree was parsed"
                                     for m in inventory.get("unparsed", [])]
-        result["not_evaluated"] += [f"accepted id {safe(a, ID_RE, 'advisory id')} matches no entry of this audit"
+        result["not_evaluated"] += [f"accepted id {safe(a, ID_GRAMMAR, 'advisory id')} matches no entry of this audit"
                                     for a in found["unused_accepts"]]
         result["resolution"] = {
             "selection": inventory["selection"], "profiles": ctx["profiles"], "project": shown(ctx["project_shown"]),
@@ -3101,7 +3175,7 @@ def project_context(args, snap, root: str, git: bool) -> dict:
                 or not inside(os.path.join(root, project), root):
             raise Stop(EXIT_USAGE, f"--project-dir is not a directory of the repository: {shown(args.project_dir)}")
     for value in args.profile + args.accept:
-        if not (PROFILE_RE if value in args.profile else ID_RE).match(value):
+        if not (PROFILE_RE if value in args.profile else ID_GRAMMAR).match(value):
             raise Stop(EXIT_USAGE, f"not a profile id or an advisory id: {shown(value)}")
     return {"root": root, "git": git, "project": project, "project_shown": project or ".",
             "build_tool": args.build_tool, "total_timeout": args.total_timeout,
@@ -3167,13 +3241,15 @@ def cmd_audit(args, snap) -> int:
                       problem=["snapshot does not cover the build",
                                f"the snapshot holds the files named with --files only, and the build also reads "
                                f"{named_list([safe_path(p) for p in uncovered])}, which could change without the "
-                               "snapshot showing it: take the snapshot with those files in --files too, or of the "
-                               "working tree"])
+                               "snapshot showing it: take a snapshot of the working tree or of a commit range to "
+                               "audit the dependencies"])
         result["status_line"] = status_line(result)
     else:
         if manifest["mode"] == "range":
             ctx["candidate"] = manifest["source"]["to_commit"]
         result = run_audit(snap, ctx, store)
+        if manifest["mode"] == "files":
+            files_snapshot_partial(result)
     return finish_snapshot_audit(snap, directory, result, ctx["accept"])
 
 
@@ -3185,6 +3261,26 @@ def uncovered_inputs(snap, ctx: dict, manifest: dict) -> list:
     names = worktree_files(snap, ctx["root"], ctx["git"])
     held = set(manifest["source"].get("files") or [])
     return sorted(p for p in worktree_inputs(ctx["root"], names, ctx["project"]) if p not in held)
+
+
+def files_snapshot_partial(result: dict) -> None:
+    """Makes the result of a --files snapshot partial, as an inventory a build tool reports in part is: what it
+    found stays and fails, nothing reads as a pass. The snapshot verifies only the files it holds, and no list of
+    file names covers what a build reads: a script it applies, a version catalogue, a convention plugin, or a file
+    whose mere existence activates a profile, which may appear after the audit. Holding every file of the working
+    tree now does not change that, so no --files snapshot gives a complete result. A result already partial keeps
+    the problem its resolution named; one that did not resolve is left as it is."""
+    if result["status"] not in ("pass", "fail"):
+        return
+    if result.get("coverage") != "partial":
+        result["problem"] = ["snapshot does not cover the build",
+                             "the snapshot holds the files named with --files only, and any other file of the "
+                             "working tree, one created later included, can change what the build resolves "
+                             "without the snapshot showing it: take a snapshot of the working tree or of a "
+                             "commit range to audit the dependencies"]
+    result["coverage"] = result["resolution"]["coverage"] = "partial"
+    result["status"] = gate_status(result["blocks"], False)
+    result["status_line"] = status_line(result)
 
 
 def check_line(index: Index, coordinate: str) -> tuple:

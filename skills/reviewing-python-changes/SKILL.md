@@ -336,7 +336,8 @@ The state, exactly as contract section 9 defines it (the arguments of `state`):
   who ran the review approves
 - **Verification incomplete** when any of: a lens or reviewer failed or skipped part of its brief (even
   when the orchestrator covered it, which is named), the external review was required by policy and did
-  not run, a security hand-off was required and did not run, a high-risk claim needs runtime
+  not run, a security hand-off was required and did not run, a finding of Major or Blocker severity, or
+  any finding in a change classified `Risk: high`, is left as needs runtime
   verification, the snapshot was invalidated, an isolation denial left a reviewer's brief incomplete
 - **Approval required**: `human (<reasons>)` for every `approval_required` reason of the risk JSON and
   every changed policy file; `none` otherwise. `state` adds the classifier's reasons itself; pass

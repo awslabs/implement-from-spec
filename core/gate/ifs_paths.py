@@ -49,6 +49,9 @@ state file to decide whether those checks can decide. The gate protects this fil
                                ai-planning/, .env) match in any case there
     fold(text)                 text as a volume that ignores letter case, Unicode normalisation and format characters
                                compares names (the isolation hook compares credential names and directories so)
+    within_root(path, root)    whether path is root or below it, a root not created yet compared folded below its
+                               deepest existing directory where that directory folds (the gate's protected roots,
+                               the isolation hook's allowed roots)
 
 No variable a repository can set moves any of these. A project's or a local settings env block cannot set HOME
 or the XDG_* family: "Project and local settings can't set variables that a checked-out repository shouldn't
@@ -550,3 +553,32 @@ def name_folds(directory):
             return None
         probe = parent
     return lookup_folds(probe)
+
+
+def within_root(path, root, unknown_folds=False):
+    """Whether path is root or lies below it, both spelled on disk (ondisk). A root that does not exist yet (the
+    advisory cache or a snapshot directory before its first use) keeps the spelling given below its deepest existing
+    directory, and so does path: there the names are compared folded (fold), where that directory finds names under
+    another spelling (name_folds), since only then are the two one place. unknown_folds is what an answer that cannot
+    be had counts as: no for a check that lets through what lies within (the isolation hook's allowed roots), yes for
+    one that denies it (the approval gate's protected roots), so each fails closed."""
+    if _under(path, root):
+        return True
+    anchor = root
+    while not os.path.lexists(anchor):
+        parent = os.path.dirname(anchor)
+        if parent == anchor:
+            return False
+        anchor = parent
+    missing = [part for part in root[len(anchor):].split(os.sep) if part]
+    if not missing or not _under(path, anchor):
+        return False
+    folds = name_folds(anchor)
+    if not (unknown_folds if folds is None else folds):
+        return False
+    rest = [part for part in path[len(anchor):].split(os.sep) if part]
+    return len(rest) >= len(missing) and all(fold(a) == fold(b) for a, b in zip(rest, missing))
+
+
+def _under(path, root):
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)

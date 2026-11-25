@@ -92,7 +92,9 @@ What to expect from a baseline:
   found there. A target nobody set, two parts of the code that disagree, and behaviour that looks
   unintended are listed in `open-questions.md`, not written as requirements
 - Before the plan is shown, every drafted item is read a second time against the code by a separate
-  read-only subagent; an item the code does not evidence is corrected or becomes an open question
+  read-only subagent; an item the code does not evidence is corrected or becomes an open question. At
+  Claude Code's nesting limit, or with nesting switched off, the same agent does the second read
+  itself, and the check is then reported as "not independent"
 - `DEPLOYMENT.md` quotes commands from the repository's own files and names the file; none is run
 - Generated and vendored code is left out, and the plan says so
 

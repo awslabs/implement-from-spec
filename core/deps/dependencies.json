@@ -542,12 +542,12 @@
         "any": [
           {"id": "uv-tool", "label": "official", "admin": false, "scope": "user", "requires": ["uv"],
            "source": "https://www.checkov.io/2.Basics/Installing%20Checkov.html",
-           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment (the docs show pip; the isolated install is this plugin's choice)"},
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment (the docs show pip; the isolated install is this plugin's choice); the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "run", "argv": ["uv", "tool", "install", "checkov"]}],
            "uninstall": [{"kind": "run", "argv": ["uv", "tool", "uninstall", "checkov"]}]},
           {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
            "source": "https://www.checkov.io/2.Basics/Installing%20Checkov.html",
-           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment"},
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "run", "argv": ["pipx", "install", "checkov"]}],
            "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "checkov"]}]}
         ]
@@ -566,7 +566,7 @@
         "any": [
           {"id": "uv-tool", "label": "official", "admin": false, "scope": "user", "requires": ["uv"],
            "source": "https://github.com/aws-cloudformation/cfn-lint",
-           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment. --python requests the 3.10 to 3.14 range cfn-lint supports: uv uses a system Python in that range, else downloads a uv-managed CPython (https://docs.astral.sh/uv/concepts/python-versions/, read 2026-10-16). Without it uv used Amazon Linux 2023's and RHEL 9's Python 3.9 and resolved cfn-lint 1.46.0"},
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment. --python requests the 3.10 to 3.14 range cfn-lint supports: uv uses a system Python in that range, else downloads a uv-managed CPython (https://docs.astral.sh/uv/concepts/python-versions/, read 2026-10-16). Without it uv used Amazon Linux 2023's and RHEL 9's Python 3.9 and resolved cfn-lint 1.46.0; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [
              {"kind": "run", "argv": ["uv", "tool", "install", "--python", ">=3.10,<3.15", "cfn-lint"]},
              {"kind": "note", "text": "when no Python 3.10 to 3.14 was on the system, uv downloaded a managed CPython for cfn-lint; uv python list --only-installed shows it and uv python uninstall removes it once no tool uses it"}
@@ -574,7 +574,7 @@
            "uninstall": [{"kind": "run", "argv": ["uv", "tool", "uninstall", "cfn-lint"]}]},
           {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
            "source": "https://github.com/aws-cloudformation/cfn-lint",
-           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment on the Python pipx runs on; on a Python older than 3.10 pip resolves an old cfn-lint, which the minimum then reports"},
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment on the Python pipx runs on; on a Python older than 3.10 pip resolves an old cfn-lint, which the minimum then reports; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "run", "argv": ["pipx", "install", "cfn-lint"]}],
            "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "cfn-lint"]}]}
         ]
@@ -662,12 +662,12 @@
         "any": [
           {"id": "uv-tool", "label": "official", "admin": false, "scope": "user", "requires": ["uv"],
            "source": "https://aws-ia.github.io/taskcat/installation/",
-           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment"},
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by uv into its own environment; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "run", "argv": ["uv", "tool", "install", "taskcat"]}],
            "uninstall": [{"kind": "run", "argv": ["uv", "tool", "uninstall", "taskcat"]}]},
           {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
            "source": "https://aws-ia.github.io/taskcat/installation/",
-           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment"},
+           "integrity": {"method": "package-manager", "detail": "the PyPI package over HTTPS, installed by pipx into its own environment; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "run", "argv": ["pipx", "install", "taskcat"]}],
            "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "taskcat"]}]}
         ]
@@ -731,7 +731,7 @@
         "unix": [
           {"id": "npm-user-prefix", "label": "official", "admin": false, "scope": "user", "requires": ["node"],
            "source": "https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html",
-           "integrity": {"method": "package-manager", "detail": "the aws-cdk package from the npm registry, which checks each package's integrity hash; installed under ~/.local instead of a global prefix that needs sudo"},
+           "integrity": {"method": "package-manager", "detail": "the aws-cdk package from the npm registry, which checks each package's integrity hash; installed under ~/.local instead of a global prefix that needs sudo; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [
              {"kind": "note", "text": "a project-local CLI (npm install aws-cdk in the project, then npx aws-cdk) takes precedence; setup never installs into a project, so add it there through an approved plan if the project should pin its CLI"},
              {"kind": "run", "argv": ["npm", "install", "-g", "--prefix", "{user_local}", "aws-cdk"]}
@@ -739,7 +739,7 @@
            "uninstall": [{"kind": "run", "argv": ["npm", "uninstall", "-g", "--prefix", "{user_local}", "aws-cdk"]}]},
           {"id": "npm-global-admin", "label": "official", "admin": true, "scope": "system", "requires": ["node"],
            "source": "https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html",
-           "integrity": {"method": "package-manager", "detail": "the aws-cdk package from the npm registry, which checks each package's integrity hash"},
+           "integrity": {"method": "package-manager", "detail": "the aws-cdk package from the npm registry, which checks each package's integrity hash; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "manual", "admin": true, "argv": ["sudo", "npm", "install", "-g", "aws-cdk"], "why": "the documented global install, when npm's global prefix needs root"}]}
         ]
       }
@@ -913,7 +913,7 @@
         "any": [
           {"id": "pipx", "label": "official", "admin": false, "scope": "user", "requires": ["pipx"],
            "source": "https://docs.astral.sh/uv/getting-started/installation/",
-           "integrity": {"method": "package-manager", "detail": "Astral's uv package from PyPI over HTTPS, installed by pipx; preferred over Astral's piped install script"},
+           "integrity": {"method": "package-manager", "detail": "Astral's uv package from PyPI over HTTPS, installed by pipx; preferred over Astral's piped install script; the latest release on purpose: setup installs only the tool the user names, after the user approves the dry run by its digest, so the user gets the vendor's current fixes, and a pin would go stale between plugin releases"},
            "steps": [{"kind": "run", "argv": ["pipx", "install", "uv"]}],
            "uninstall": [{"kind": "run", "argv": ["pipx", "uninstall", "uv"]}]},
           {"id": "install-script", "label": "official", "admin": false, "scope": "user", "requires": ["curl", "tar"],

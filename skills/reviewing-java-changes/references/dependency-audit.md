@@ -76,9 +76,11 @@ what it found); none is dropped:
   never invented; its Evidence is that line and the report line; its Fix is the
   reported fix (with its not-checked note, when the line carries one) or, on "no fixed version in the
   advisory data", a specific question: replace or remove the library, or accept the advisory (section 3)
-- Search the change for calls into the library. A reviewer's usage finding that names the same
-  `group:artifact` merges into the entry's finding: one finding, the code path in its Evidence, source
-  `dependency audit, Claude`
+- Search the change for calls into the library. A reviewer's usage finding merges into the entry's
+  finding only when it shows a call into the code the advisory describes, not merely the same
+  `group:artifact`: one finding, the code path in its Evidence, source `dependency audit, Claude`, and
+  the class the higher of the two. Accepting the advisory (section 3) defers only the advisory part; a
+  usage defect that is not a call into the described code keeps its own finding and disposition
 - *Pre-existing*: under *Pre-existing*, with an escalation note on a Blocker, unless a usage finding shows
   the change newly calls the vulnerable code. Exposure the change creates is the change's (SKILL.md step
   4, attribution), so the usage finding is then a finding of the change
@@ -112,4 +114,10 @@ Compare the
 `dataset sha256` on the two reports' `Data:` lines: the
 script does not compare them itself. When they differ, the advisory data changed between the rounds:
 say so in the round's section, and an entry the earlier report did not list is a new finding under the
-next F-number.
+next F-number. When the digests differ, the audit's own comparison between the two reports closes an
+earlier entry on absence alone, coordinate and version unchanged included: the later report simply no
+longer lists it, with no re-check against the previous dataset (a known limitation; see CHANGELOG). The
+review does not take that at face value: keep such an entry `open` in the review, noted "advisory no
+longer in the dataset (dataset changed)", for the user to accept or confirm — this is a manual rule of
+the review, not something the audit enforces. A finding is confirmed closed in the review only when the
+version itself changed, or the fix is otherwise confirmed.
