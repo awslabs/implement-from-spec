@@ -3,6 +3,126 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
+## Unreleased
+
+### Added
+
+- Python security reviewer (decided 2026-11-25, `docs/design-notes.md`, "Python security review"): a
+  dedicated Claude reviewer on every Python review and every fix round, the `code-reviewer` skill on Opus
+  (`security` in the dispatch manifest), which owns the Safety/security dimension for every file of the
+  change, Python sources, configuration and dependency, lock and installer files alike, including the
+  security consequence of a defect a lens reviewer's check describes. It works from a new catalogue,
+  `skills/reviewing-python-changes/references/security-dimensions.md` (CPython 3.11 to 3.15; AWS Lambda,
+  Strands agents on AgentCore, Django, Flask, FastAPI; facts read 2026-11-25): 103 rules in 14 groups,
+  injection, deserialisation and data binding, XML, cryptography and TLS, authentication and tokens,
+  authorisation, the web surface, files and denial of service, input and outbound requests, platform
+  mechanisms, AI agents and model output, the AWS SDK and Lambda, the code patterns behind named CVEs in
+  the interpreter and widely used libraries, and the `PY-DEP` rules for dependencies, indexes, lock files
+  and installers. It reads the groups whose trigger the change meets (four always apply), gives every
+  group's outcome on its `Groups:` line, and looks nothing up: a finding that depends on a version, a
+  default or a date is marked "verify against the docs" and checked by the main conversation
+- Dependency audit for Python reviews, in `core/scripts/dependency-audit.py`: the project's lock and pin
+  files (`uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml` and `pylock.<name>.toml`, `Pipfile.lock`, and
+  requirements files pinned with `==` or `===`, with the files they name with `-r` and `-c`) are read as
+  data, never resolved: no installer, resolver or build backend runs and nothing from the project is
+  imported, since building a source distribution runs the repository's code. Every package version, in
+  every group and extra, whatever its environment marker, is matched with PEP 440 ordering against a local
+  copy of the public OSV PyPI export (PyPI Advisory Database and GitHub Advisory Database records, CC-BY
+  4.0; OpenSSF Malicious Packages, Apache 2.0), downloaded at most once a day into
+  `~/.local/state/implement-from-spec/advisories/pypi/`, and compared with the base revision's files,
+  module by module. The same gates, status lines, report blocks, acceptance and setting as the Java audit;
+  `skills/reviewing-python-changes/references/dispatch.json` lists the gate under `required_gates`, so the
+  preparation registers it as pending. Declarations without a lock or pin file, an unpinned requirement
+  and a package from a VCS, a URL or a local path make the result partial, each with its remedy; Python
+  sources with no Python lock, pin or declaration file anywhere in the repository pass with nothing to
+  match, `coverage complete (no third-party Python dependency declared)`, undeclared imports and
+  runtime-provided packages being the security reviewer's (PY-DEP-10, PY-DEP-11).
+  `PYSEC` records, which carry no severity word, take the word of the GitHub advisory they are an alias
+  of, else the rating of their CVSS 3.x base score; aliased advisories of one occurrence are one entry; a
+  local version is matched as its public version too and marked unsure. A project with both Java build
+  files and Python dependency files is audited for both, each with its own data
+- `dependency-audit.py`: `audit --ecosystem maven|pypi` audits one ecosystem alone; `refresh --ecosystem
+  pypi [--from <zip or directory>]` fills the PyPI cache (plain `refresh` stays Maven's); `check` takes
+  `pypi:<name>==<version>` beside `GROUP:ARTIFACT:VERSION`
+- `implementing-python-from-spec`: a dependency check at plan time (`dependency-audit.py check
+  pypi:<name>==<version> ...`): every new dependency the plan names is matched before approval, and a
+  match becomes an open question or an approval line with the reported fix, never changed silently, as
+  for Java; security defaults in `references/python-practices.md` for the implementing subagents, the
+  generation-time form of the catalogue's rules
+- `implementing-python-from-spec/gate_rules.json`: the rule `python-advisory-data-import` asks before
+  `dependency-audit.py refresh --from`, for either ecosystem
+
+### Changed
+
+- `reviewing-python-changes`: the Claude stage is four lens reviewers (specification fidelity, failure
+  handling, types and design, tests) and the security reviewer; the lens "security and AWS runtime" is
+  gone, and its AWS runtime and logging groups (7 and 9) and PY-ARC-03 belong to the failure-handling
+  lens. Group 8 of `references/review-dimensions.md` is a pointer to the new catalogue, whose rules
+  `PY-SEC-01` to `PY-SEC-11` keep their numbers. The review runs the dependency audit after the quality
+  gate, its `Quality gate:` line ends with the audit's status line, and `dependency audit` is a finding
+  source (rule `PY-DEP-01`, `references/dependency-audit.md`). Asking to "skip security" leaves
+  verification incomplete; the audit still runs
+- `dependency-audit.py`: the ecosystem-neutral half (the advisory store, matching, classes, attribution
+  and reports) moved to `core/scripts/dependency_audit_osv.py`, and the PyPI inventory and PEP 440 are
+  `core/scripts/dependency_audit_pypi.py`, both loaded by path. Java reports are unchanged, except that
+  the not-run line of a directory with no build file of any kind, and the usage line of `check`, now name
+  the Python files too
+- A Java project that also holds Python lock, pin or dependency declaration files is now audited for both
+  ecosystems; a `pyproject.toml` that configures tools only does not count, on python3 3.9 and 3.10 too,
+  where its table headers decide
+- `reviewing-java-changes/references/security-dimensions.md`: JAVA-SEC-35 maps CWE-378 in place of
+  CWE-377, which CWE 5.0 deprecated (CWE-379 it mapped already)
+- `implementing-java-from-spec/gate_rules.json`: `java-advisory-data-import` no longer matches an import
+  naming `--ecosystem pypi`, which the Python rule asks for
+
+### Fixed
+
+- `reviewing-java-changes` and `reviewing-python-changes`: a fix round's re-run of the dependency audit
+  now repeats every option the review's first audit run carried (`--accept`, `--profile`, `--build-tool`,
+  `--project-dir`, `--timeout`, `--total-timeout` and `--dependency-audit on`), with the same interpreter.
+  A round that dropped them could read the audit as `off` or `not run` with the fix left unaudited, even
+  though the user had asked for it on the first run
+
+### Known limitations
+
+- The PyPI audit needs python3 3.11 or later (`tomllib`) only to read a TOML lock file, a Pipfile or a
+  declaring `pyproject.toml`; on an older interpreter that side is recorded as not run, while requirements
+  files, `Pipfile.lock`, `setup.cfg` and the rest of the plugin, the Java audit and `check
+  pypi:<name>==<version>` keep the 3.9 minimum. There, a `pyproject.toml` is judged by its table headers,
+  so one of tool settings alone leaves a Java project's audit as it was
+- The PyPI audit now checks the lock file against the declarations: an uncovered or out-of-date lock file
+  (a dependency declared but not listed, a main dependency an environment marker narrows included) is
+  reported as `lock file out of date` rather than trusted as written, and a declaration it cannot read (a
+  `setup.py` list built in code, which is read with `ast` and never run, a dynamic field other than
+  setuptools' `file =` list, a `pyproject.toml` that does not parse) as `declarations not read` unless a
+  lock file that locks every group covers it. The check is by name, not by version range. Lock and pin files in every directory under the project directory are modules, not only the
+  top; a directory outside the project is still found only by naming it with `--project-dir`
+- Environment markers are not evaluated, so a package locked for another platform or Python release is
+  reported too
+
+### Security
+
+- The PyPI audit runs nothing of the project: lock, pin and declaration files are read as data, a
+  `setup.py` is never run, and a revision's files are read through `git ls-tree` and `git cat-file`
+  without being written out
+- Lock and pin files are hostile input: a per-run budget of at most 16 MiB a file, 200 files and 64 MiB in
+  all, a per-side cap of 100,000 packages or requirements kept, 100,000 packages or lines read from a
+  single file, and a deadline checked before each file so the audit ends within one file's reading of
+  `--total-timeout`, and the same deadline checked while the dependencies are matched; reports are bounded
+  (10 advisories an entry and 500 entries a block in the text report, 100 and 5,000 in the JSON report,
+  each cut said where it applies); an option pip does not read, on its own line or after a requirement,
+  makes the file not read; a constraint to a URL, a VCS or a path makes the package not evaluated; a file
+  is opened without following a link, must be a regular file, and a link, `-r`
+  or `-c` is followed only to a file inside the repository (at most 8 links in a revision, 16 levels of
+  includes); only UTF-8 is read; versions are parsed by a scanner with no regex and a length cap; every
+  package name and version a report prints passes a grammar
+- The PyPI advisory data is downloaded from the same host as the Maven export and kept under the
+  protected `advisories/` directory, so the gate's protection, the cache checks and the limits apply to it
+  unchanged; a PyPI dataset must hold at least 10,000 usable advisories
+- Threat model: TM-80 (lock and pin files as hostile input), TM-81 (the audit executing the project's
+  code), TM-82 (the PyPI audit reading clean when it is not), data flow 28; TM-71 to TM-79 and data flows
+  26 and 27 extended to the second ecosystem and re-cited after the script's split
+
 ## 0.3.0 — 2026-11-24
 
 ### Added

@@ -119,6 +119,34 @@
       }
     },
     {
+      "id": "python-advisory-data-import",
+      "decision": "ask",
+      "match": {
+        "args_regex": "(^|\\s)(\\S*/)?(?i:dependency-audit\\.py)\\s+refresh\\s(.*\\s)?--f(r(o(m)?)?)?(=|\\s|$)"
+      },
+      "why": "An import publishes whatever copy it is given, so a dataset built on purpose to the minimum size, without the advisories a project matches, makes a vulnerable project read as clean; the download comes from one fixed HTTPS address, whose content the session cannot choose. The plan's dependency check (check pypi:<name>==<version>) and a plain refresh write only the advisory cache outside the project and need no rule. This rule names no program, so it matches the plugin's script under any interpreter, its file name in any letter case (a volume that ignores case runs it all the same), --from in every abbreviation the script's argument parser accepts, and either ecosystem, since --ecosystem may stand before or after it.",
+      "message": "this imports a local copy of the advisory data into the dependency audit's cache, and every later check and audit of that ecosystem matches against that copy until a later refresh replaces it, for up to seven days. Approve only if you supplied this copy of the OSV export yourself (the PyPI export when the last --ecosystem names pypi, the Maven export otherwise, as the command reads only its last --ecosystem); plain `refresh --ecosystem pypi` downloads it from OSV instead.",
+      "examples": {
+        "match": [
+          "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --ecosystem pypi --from ~/Downloads/PyPI-all.zip",
+          "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --from ~/osv-pypi-export/ --ecosystem pypi",
+          "python3.13 \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --ecosystem=pypi --from=\"/Volumes/Transfer disk/all.zip\"",
+          "python3 -I /opt/implement-from-spec/core/scripts/dependency-audit.py refresh --fr all.zip",
+          "env python3.12 core/scripts/dependency-audit.py refresh --ecosystem pypi --from all.zip",
+          "python3 -I Core/Scripts/Dependency-Audit.py refresh --from all.zip"
+        ],
+        "no_match": [
+          "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" refresh --ecosystem pypi",
+          "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" check pypi:requests==2.32.4 pypi:pydantic==2.12.0",
+          "python3.13 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" audit --snapshot ~/.local/state/implement-from-spec/review-snapshots/0f3c9a",
+          "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" audit --snapshot ~/.local/state/implement-from-spec/review-snapshots/0f3c9a --accept GHSA-aaaa-bbbb-cccc",
+          "python3 -I \"${CLAUDE_PLUGIN_ROOT}/core/scripts/dependency-audit.py\" register --snapshot ~/.local/state/implement-from-spec/review-snapshots/0f3c9a",
+          "uv run python tools/sync.py refresh --from upstream",
+          "grep -n \"refresh --from\" core/scripts/dependency-audit.py"
+        ]
+      }
+    },
+    {
       "id": "python-aws-cli-read-only",
       "decision": "ask",
       "match": {

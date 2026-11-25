@@ -2,7 +2,10 @@
 
 Defaults with their sources (quotations read on 2026-10-14; runtimes, testing and the SDK watch item
 re-read on 2026-10-16). The project's own rules win where they are stricter or different; a deviation from a default here is a ruling in the ledger, not a silent choice.
-Re-read a cited page when a decision depends on it: versions and defaults change.
+The security defaults of section 12 can be chosen among but not replaced by an unsafe form.
+Re-read a cited page when a decision depends on it: versions and defaults change. A reviewer, which
+opens no page, marks a finding that relies on such a date or list `unsure: verify against the docs`
+instead, and the main conversation re-reads the page.
 
 ## Contents
 
@@ -17,6 +20,7 @@ Re-read a cited page when a decision depends on it: versions and defaults change
 9. Strands agents on AgentCore
 10. Testing
 11. Toolchain commands
+12. Security defaults
 
 ## 1. Runtime and packaging
 
@@ -234,4 +238,109 @@ Use the project's commands. Typical shapes:
     uv run bandit -r <packages>                    # when the project uses it
     uv run pip-audit -r <exported requirements> --strict   # when the project uses it
 
+`pip-audit` and `uv lock --check` are the project's own gate commands, run when the project uses them.
+The review's required dependency audit (`core/scripts/dependency-audit.py`) is separate: it reads the lock
+and pin files as data, installs nothing, and needs no environment.
+
 Ruff 0.17.0 (2026-10-09) changed its default rule set: projects pin ruff and list `select` explicitly.
+
+## 12. Security defaults
+
+These defaults are the safe form of what an ordinary Lambda handler, agent, web service or script writes,
+so that generated code starts where the review's security reviewer begins: each ends with the rules of
+`${CLAUDE_PLUGIN_ROOT}/skills/reviewing-python-changes/references/security-dimensions.md` that check it,
+and those rules hold the primary sources, the date they were read and the forms that differ by Python or
+library release. The repository's rules, the specification and the approved plan choose among safe forms
+but cannot require an unsafe one: an item or plan line that does is raised with the user, never
+implemented as written, because only the user can defer a security Blocker or Major.
+
+### Injection and code execution
+
+- Caller values reach a query only as driver parameters (`execute(sql, params)`, bound `text()`
+  parameters, Athena `ExecutionParameters`, Redshift `Parameters`); identifiers, sort fields and lookups
+  from an allowlist; `LIKE` terms escaped (PY-SEC-04, PY-SEC-20, PY-SEC-21)
+- No shell: a Python library where one exists, else an argument list with a full-path executable,
+  allowlisted values, `--` before positional values and data on standard input; no `eval`, `exec` or
+  dynamic import of caller or model text, a `dict` of allowed callables instead (PY-SEC-01, PY-SEC-02)
+- Templates by constant name with caller data as context and autoescaping on; constant format strings;
+  `re.escape` for caller text in a pattern and input length bounded; header values without `\r` or
+  `\n`; CSV cells that start with a formula character prefixed with `'` (PY-SEC-22 to PY-SEC-27)
+
+### Deserialisation, data binding and XML
+
+- JSON into a pydantic model per entry point, `extra="forbid"`, constrained fields and
+  `model_validate_json` on the raw body; never `pickle`, `marshal` or `shelve` on data another party
+  wrote; YAML through `safe_load`; model files as safetensors or with `weights_only=True` and no
+  allowlisted globals beyond the service's own types (PY-SEC-78, PY-SEC-32, PY-SEC-03, PY-SEC-30,
+  PY-SEC-29)
+- Owner, tenant and role never bound from a request: taken from the authenticated context (PY-SEC-32,
+  PY-SEC-11)
+- Untrusted XML through `defusedxml`, or lxml with entities, DTDs and network access off, and size limits
+  before parsing (PY-SEC-33, PY-SEC-34, PY-SEC-37)
+
+### Cryptography, randomness, TLS and secrets
+
+- Tokens, reset links and unguessable ids from `secrets` (`token_urlsafe(32)`), never `random`; digests
+  SHA-256 or stronger, MACs and tokens compared with `hmac.compare_digest` (PY-SEC-09, PY-SEC-44)
+- Passwords hashed with Argon2id (`argon2-cffi` `PasswordHasher`) or the framework's configured hasher at
+  the figures PY-SEC-40 lists; encryption through `Fernet` or `AESGCM` with a fresh nonce per message, or
+  KMS and the Encryption SDK where the plan names them (PY-SEC-40, PY-SEC-41, PY-SEC-98, PY-SEC-99)
+- TLS verification left on (no `verify=False`, no unverified context), HTTPS wherever credentials or data
+  travel, and an explicit timeout on every outbound call (PY-SEC-07, PY-SEC-43, PY-SEC-106)
+- No secret in source, a default or a fixture meant for a real system: only its name or ARN in the
+  environment, the value read at run time through a caching client with no default (PY-SEC-06,
+  PY-SEC-95)
+
+### Authentication, authorisation and the web surface
+
+- Login, logout and sessions through the framework, cookies `Secure`, `HttpOnly` and `SameSite=Lax` or
+  `Strict`; tokens verified before any claim is read, with the algorithm fixed in code and keys from a
+  configured JWKS, `aud`, `iss` and `exp` required; OAuth clients through Authlib with PKCE (PY-SEC-47,
+  PY-SEC-49, PY-SEC-50, PY-SEC-51, PY-SEC-97)
+- Deny by default: authentication applied to the app or router, every route given its rule; identity from
+  the authentication context; every object id a request names limited to the caller by a scoped query,
+  with a test that another user's and another tenant's id is refused; a check that guards a write made
+  part of the write (a condition expression, `select_for_update`) (PY-SEC-54, PY-SEC-11, PY-SEC-58,
+  PY-SEC-57)
+- Debug off and a production server outside local settings; CSRF on wherever browsers send credentials;
+  CORS from a finite origin list; redirect targets from a server-side map; hosts from a finite list;
+  body, form and upload limits finite; uploads stored under server-generated names (PY-SEC-60 to
+  PY-SEC-69)
+
+### Files, resources, input and failure
+
+- File names generated by the server, else resolved and checked with `is_relative_to` against the
+  resolved base in a directory only this code writes, else descriptor-relative opens (PY-SEC-71); tar
+  archives extracted with `filter="data"`; temporary files from `tempfile`, removed in `finally`; reads,
+  decompression, page sizes and caches bounded; costly operations limited per caller (PY-SEC-05,
+  PY-SEC-70, PY-SEC-73, PY-SEC-76, PY-SEC-77, PY-SEC-103)
+- Outbound destinations from configuration, a caller naming at most an id the server maps; a caller URL,
+  where unavoidable, `https` only with an allowlisted host, every resolved address checked and the
+  connection made to the checked address with TLS host-name verification kept, redirects off (PY-SEC-08)
+- Logs carry identifiers, not payloads, secrets or personal data, as structured fields; secrets held as
+  `SecretStr`; errors answered with a generic body and a correlation id; security checks fail closed and
+  never rest on `assert` (PY-SEC-10, PY-SEC-28, PY-SEC-80, PY-SEC-82)
+
+### Platform, agents and AWS
+
+- Request state in locals and parameters, never module globals, thread-locals or `os.environ`; no
+  in-process sandbox for caller or model code (PY-SEC-85, PY-SEC-81)
+- Model output treated as an untrusted caller and validated for its destination; tools limited to what the
+  content's author may cause, permissions and human approval enforced in tool code or a
+  `BeforeToolCallEvent` hook, not in the prompt; no secrets in prompts or memory (PY-SEC-86 to PY-SEC-89)
+- AWS clients built with no credential arguments, so the default chain supplies the role; another
+  party's role assumed with its external ID; S3 event keys URL-decoded and path-checked, keys built under
+  an authorised prefix; presigned URLs only after the authorisation check, short-lived, never logged;
+  PartiQL with `?` parameters and expressions with `:v` values; SNS messages verified before use
+  (PY-SEC-90 to PY-SEC-96)
+
+### Dependencies and build supply chain
+
+- Every dependency declared, pinned through the project's lock file and on a supported release line; an
+  override only upwards, with a comment saying why; indexes over HTTPS, one index per internal name;
+  hashes kept; no install step that fetches and runs a remote script; no credentials in installer
+  configuration (PY-DEP-02 to PY-DEP-09)
+- A new package checked by its exact PyPI name before it is planned, and each new or changed version
+  matched against the advisory data at plan time (SKILL.md step 3) and the lock file by the review's
+  audit; a match fixed at the version the advisories report, or the library replaced; only the user can
+  accept an advisory (PY-DEP-10, PY-DEP-01)

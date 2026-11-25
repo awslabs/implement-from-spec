@@ -167,8 +167,9 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
     `command -p` and `exec -a`, besides the residuals above. If you need a hard boundary, run the agent
     in a sandbox
   - Any process running as your user can change the plugin's state, plans and saved reviews
-  - The dependency audit's advisory dataset can reach the cache through a route the gate cannot see; its
-    build tool runs at review time with your own permissions, as the project's tests do; and nothing
+  - The dependency audit's advisory dataset can reach the cache through a route the gate cannot see; for
+    a Java project its build tool runs at review time with your own permissions, as the project's tests do
+    (for a Python project nothing runs: the lock and pin files are read as data); and nothing
     authenticates the advisory export beyond HTTPS and its publisher
 
 ## Requirements
@@ -179,7 +180,11 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
   below 2.1.295. Tested with 2.1.292 and 2.1.302
 - macOS, Linux or WSL2. Native Windows is not supported
 - python3 3.9 or later, which is the `python3` macOS ships with the Command Line Tools. Every script and
-  hook uses the standard library only, so there is nothing to `pip install`
+  hook uses the standard library only, so there is nothing to `pip install`. The dependency audit of a
+  Python project needs python3 3.11 or later only when it must read a TOML lock file (`uv.lock`,
+  `poetry.lock`, `pdm.lock`, `pylock.toml`), a `Pipfile`, or a `pyproject.toml` that declares dependencies;
+  on an older `python3` that side alone is recorded as not run, while requirements files and
+  `Pipfile.lock` are still read
 - git and bash. A project must be a git work tree: the gate uses it to find where the project ends
 - The command-line tools of the stacks you use. `/implement-from-spec:setup` checks them and installs the
   ones you approve. See the user guide of each stack
@@ -355,7 +360,8 @@ approve
 
 The skill keeps a ledger next to the plan, writes each test first and records its failing run, writes
 `textkit/slug.py`, runs the tests from `CLAUDE.md`, verifies both items, runs `spec-trace.py code`, and
-reviews the change with its Claude lens reviewers. It ends with a report headed
+reviews the change with its Claude lens reviewers, its security reviewer and the dependency audit, which
+passes with nothing to match, since the project declares no third-party package. It ends with a report headed
 `## <Feature>: implemented (not deployed)`, with a line "External review: off (configuration)" after the
 Review line, and whose last lines give the status (`implementation complete`) and the next steps.
 
@@ -390,8 +396,10 @@ skill expects.
 - `reviewing-java-changes`: a two-stage review of any Java change, with or without a plan, with a Claude
   code reviewer, a Claude security reviewer and a dependency audit against public advisory data; also the
   review step of the Java skill
-- `reviewing-python-changes`: a two-stage review of any Python change, with five Claude lenses; also the
-  review step of the Python skill
+- `reviewing-python-changes`: a two-stage review of any Python change, with four Claude lens reviewers
+  (specification fidelity, failure handling with the AWS runtime and logging, types and design, tests), a
+  Claude security reviewer and a dependency audit of the lock and pin files against public advisory data;
+  also the review step of the Python skill
 - `reviewing-terraform-changes`, `reviewing-cloudformation-changes` and `reviewing-cdk-changes`: the same
   two-stage review for infrastructure code changed outside the implementing skills, with read-only checks
   (fmt and validate, cfn-lint and cfn-guard, synth) and no deploy
@@ -492,12 +500,13 @@ CDK skills fetch `docs.aws.amazon.com` pages directly; the other skills expect t
   filtered change to GPT-6 Astra on Amazon Bedrock, in your AWS account. Without access the report says
   "External review: not run (<reason>)" and the Claude review still runs. Details:
   [docs/user-guide/external-review.md](docs/user-guide/external-review.md)
-- **Java reviews download public advisory data.** The dependency audit of every Java review, and the
-  Java skill's dependency check at plan time, match the project's dependencies against the public OSV
-  Maven export, downloaded anonymously at most once a day into
-  `~/.local/state/implement-from-spec/advisories/`; nothing about the project is sent. Only you can
+- **Java and Python reviews download public advisory data.** The dependency audit of every Java and
+  Python review, and the Java and Python skills' dependency check at plan time, match the project's
+  dependencies against the public OSV Maven or PyPI export, each downloaded anonymously at most once a day
+  into `~/.local/state/implement-from-spec/advisories/`; nothing about the project is sent. Only you can
   switch it off (`dependency_audit = off` in `/config`). Details, and how to import the data on a machine
-  without internet access: [docs/user-guide/java.md](docs/user-guide/java.md)
+  without internet access: [docs/user-guide/java.md](docs/user-guide/java.md) and
+  [docs/user-guide/python.md](docs/user-guide/python.md)
 - **Cost.** On a subscription the skills spend plan usage; with an API key or on Amazon Bedrock they are
   billed per token. When enabled, the external review is billed to the AWS account it runs in, at the
   model's Bedrock price

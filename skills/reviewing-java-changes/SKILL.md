@@ -597,13 +597,17 @@ raised, a test they asked for) is round k+1's fix, reviewed the same way; after 
    `closed` (evidence), `open` or `regressed`; an open finding keeps its number and is not reported
    again as new. For every fixed pattern the reviewer searches the repository for sibling instances.
    New findings take the next F-numbers
-4. Re-run the tests and record them against `<NEW>`, then the audit (step 3's command with `--snapshot
-   <NEW>`, every `--accept` the user gave and any `--profile` or `--build-tool` the user named), which
-   the preparation registered anew for `<NEW>`; a
-   dependency finding closes only as `references/dependency-audit.md` section 4 says. Merge and verify
-   as in step 4; save the round's findings with `save-findings <NEW>`: every earlier F-number with its
-   status, then the round's new findings under the next F-numbers. Print the block with this full call,
-   the round flags included, in every round, the last one included (the other arguments as in step 5):
+4. Re-run the tests and record them against `<NEW>`, then the audit: step 3's command with
+   `--snapshot <NEW>` and every option this review's first audit run carried (every `--accept` the user
+   gave, and any `--profile`, `--build-tool`, `--project-dir`, `--timeout`, `--total-timeout` and
+   `--dependency-audit on`), run by the same interpreter as that run, since a round audited without them
+   can read `off` or `not run` with the fix unaudited. The preparation registered it anew for `<NEW>` (a
+   registration line reading `off` does not stand when the user asked for the audit: the run with
+   `--dependency-audit on` records the gate itself); a dependency finding closes only as
+   `references/dependency-audit.md` section 4 says. Merge and verify as in step 4; save the round's
+   findings with `save-findings <NEW>`: every earlier F-number with its status, then the round's new
+   findings under the next F-numbers. Print the block with this full call, the round flags included, in
+   every round, the last one included (the other arguments as in step 5):
 
        python3 -I "${CLAUDE_PLUGIN_ROOT}/core/scripts/review-snapshot.py" state <NEW> \
            --recommendation "<...>" --verification <...> --approval <...> --rollback "<...>" \

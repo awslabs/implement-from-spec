@@ -1484,7 +1484,7 @@ in How to apply grades the rules here whose only consequence is exhaustion.
   delete in `finally`, or open a work file with `StandardOpenOption.DELETE_ON_CLOSE`
 - **Severity:** Major when the file holds secrets, personal data or caller content; Minor otherwise
 - **Not a finding:** `deleteOnExit` in a short-lived command-line tool. A caller-chosen name is JAVA-SEC-02
-- **Maps to:** CWE-377; CWE-379; CWE-732; OWASP Top 10:2025 A01
+- **Maps to:** CWE-378; CWE-379; CWE-732; OWASP Top 10:2025 A01
 - **Source:** CERT FIO03-J; CodeQL `java/local-temp-file-or-directory-information-disclosure`;
   https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/io/File.html — "may be more suited to
   security-sensitive applications"; https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html

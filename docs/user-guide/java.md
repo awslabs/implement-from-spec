@@ -259,9 +259,9 @@ you name one.
      scratch directory, not your working tree: its files, then its links that are relative and lead
      to a place inside it; any other link, and every submodule, is left out and makes the result
      partial. A pasted diff has no project, so the audit does not run, and a `--files` review stops
-     before it runs when its snapshot leaves out a named build input, but otherwise runs and covers
-     only the files it holds: any other file of the working tree the snapshot leaves out makes the
-     result partial, so take the snapshot of the working tree or of a commit range instead
+     before it runs when its snapshot leaves out a named build input; otherwise it runs, and its
+     result is always partial, since the snapshot verifies only the files it holds and no list of files
+     covers what a build reads: take the snapshot of the working tree or of a commit range instead
 2. **Matching** against a local copy of public advisory data (below), with Maven's own version ordering
 3. **Comparison with the review's base revision.** The base is always resolved, written out from its
    own revision as a commit range's end is: no list of file names covers everything a build reads to
@@ -616,9 +616,11 @@ Build tool and project:
     is the long name (`--non-recursive`, `--projects`, `--resume-from` or `--file`); any form Maven
     reads is refused, short or long, one or two leading dashes, and with its value attached or after `=`
     (`-N`, `-pl`, `--pl=app`, `-ffoo.xml`, `--file=foo.xml`)
-  - `--files` review: the snapshot leaves out `<n>` other files of the working tree, which the build
-    can read too: the vulnerabilities found are still reported and still fail the gate, and a clean
-    result reads `not run`, never `pass`; take a snapshot of the working tree or of a commit range
+  - `snapshot does not cover the build`, every `--files` review: the snapshot holds the files named with
+    --files only, and any other file of the working tree, one created later included, can change what the
+    build resolves without the snapshot showing it: take a snapshot of the working tree or of a commit
+    range to audit the dependencies. The vulnerabilities found are still reported and still fail the
+    gate, and a clean result reads `not run`, never `pass`
   - Maven: the build has no profile `<profiles>`: name a profile it defines, then run the audit again
   - Maven: the build configures the dependency plugin's tree goal (`<parameters>`) for `<modules>`,
     which narrows what it lists: remove that configuration, then run the audit again
@@ -662,7 +664,9 @@ Build tool and project:
   remedy of the first in the order above, and *Could not be evaluated* lists every gap (see "Maven" and
   "Gradle")
 - `no build file`:
-  - no pom.xml and no Gradle build in `<dir>`: name the directory that holds one with --project-dir
+  - no pom.xml, no Gradle build and no Python lock, pin or dependency declaration file in `<dir>`: name
+    the directory that holds one with --project-dir (a directory with neither Java build files nor Python
+    sources; Python sources alone are audited as a Python project, see `docs/user-guide/python.md`)
   - no pom.xml in `<dir>`, which --build-tool maven names: name the build tool whose build files the
     project holds; for `--build-tool gradle`, no Gradle build in `<dir>`, which --build-tool gradle
     names: name the build tool whose build files the project holds
@@ -687,7 +691,8 @@ The review and the commit to audit:
     volume, then run the audit again
 - `snapshot does not cover the build`: the snapshot holds the files named with --files only, and the
   build also reads `<files>`, which could change without the snapshot showing it: take a snapshot of
-  the working tree or of a commit range instead
+  the working tree or of a commit range to audit the dependencies (the audit does not run); a snapshot
+  that holds every build input still gives a partial result (above)
 - `scratch directory refused`: the temporary directory resolves inside the repository: unset TMPDIR
 - `setting not obeyed` (see "The `dependency_audit` setting"):
   - `<variable>=off` in the environment is not obeyed: unset it, or switch the audit off in your own
