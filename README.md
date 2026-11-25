@@ -6,7 +6,7 @@ rules, writes a code-free plan, and waits until you reply `approve`. A hook enfo
 builds the change test-first, runs the stack's own checks, has it reviewed by Claude and, if you enable
 it, by an external model, and reports. It never deploys on its own: every deploy or live change asks you first.
 
-Version 0.2.0.
+Version 0.3.0.
 
 ## Disclaimer
 
@@ -119,9 +119,10 @@ The plugin registers one gate for every session, in `hooks/hooks.json`.
   which the release scan runs too) before you enable the reviewer, and keep it `off` for a
   repository with regulated or classified content. `off` sends nothing. Details:
   [docs/user-guide/external-review.md](docs/user-guide/external-review.md)
-- **Credentials are never written or forwarded.** The skills configure no credentials and write no key to
-  a file. The reviewer's environment never carries `AWS_BEARER_TOKEN_BEDROCK` or any other Bedrock bearer
-  variable
+- **The plugin configures and stores no credential of its own.** The skills configure no credentials and
+  write no key to a file. The reviewer's environment never carries `AWS_BEARER_TOKEN_BEDROCK` or any
+  other Bedrock bearer variable. The dependency audit's private build log (0600, the 20 newest kept)
+  holds whatever the build tool printed, credentials included
 - **Findings are verified.** Every reviewer finding is checked against the code before anything is fixed,
   and a fix stays inside the approved plan
 - **What it does not stop.** These residual risks stay with you (the threat model,

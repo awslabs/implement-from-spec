@@ -8,7 +8,8 @@ files is named here, and no other ID is (format.md, section 2).
 # Specification: <Project name>
 
 Version 0.1.0, YYYY-MM-DD, owner <name or team>. Status: baseline derived from the code at commit
-<hash>; items are as built until the owner confirms them.
+<hash> (with uncommitted changes to <paths, or a count>, if the tree was not clean); items are as built
+until the owner confirms them.
 Format: implement-from-spec specification format 1.
 
 This specification states what <the system> must do (functional, `SPEC-Fnnn`) and how well

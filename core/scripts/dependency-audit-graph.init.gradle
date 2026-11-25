@@ -21,8 +21,8 @@
 // flat-directory repositories its project declares (the root project's, those the settings declare too) and the
 // repositories whose metadata sources it changed (below), with every configuration resolved before the task
 // while the build had given a repository its artifact() source back (early), and every repository that got it
-// back during the walk (restored). The buildscript classpath is not walked: build plugins
-// are outside the audit's inventory. Every line is "IFS-DEPENDENCY-AUDIT <nonce> " and a JSON array of strings
+// back, found at the task's start or after a configuration's walk (restored). The buildscript classpath is not
+// walked: build plugins are outside the audit's inventory. Every line is "IFS-DEPENDENCY-AUDIT <nonce> " and a JSON array of strings
 // and arrays, so the audit takes only this run's lines and no value can end a line or start another. The
 // build's own code runs in the same JVM and could still print such a line; the audit gives the build the trust
 // the project's tests have, no more.
@@ -196,6 +196,23 @@ if (rootBuild) {
         settingsRepositories.all { withoutArtifactSource('settings', it) }
     }
 }
+// Whether the build has given a repository of the settings its artifact() source back, at any time in this run.
+// The settings' repositories serve every project, and the first task to find the source back takes it away again,
+// so the answer is kept for the whole build: every later task still marks its project's configurations resolved
+// before it. Tasks of different projects can run at once (parallel execution), hence the lock. Whichever call
+// finds a source given back reports it at once, as a restored record that makes the whole inventory partial: under
+// parallel execution the call may belong to a task other than the one whose walk the source served, so the
+// evidence is never left for a particular task to report.
+def settingsGaveBack = false
+def settingsLock = new Object()
+def settingsGivenBack = {
+    synchronized (settingsLock) {
+        def names = enforce('settings', settingsRepositories)
+        names.each { emit(['restored', 'settings', it]) }
+        settingsGaveBack = settingsGaveBack || !names.isEmpty()
+        settingsGaveBack
+    }
+}
 
 gradle.allprojects { project ->
     def buildDirectory = new File(new File(scratch, 'build'), project.projectDir.absolutePath + '/out')
@@ -221,8 +238,10 @@ gradle.allprojects { project ->
                 repositoryRecords('settings', settingsRepositories).each { emit(it) }
             }
             // A source the build gave back since the repository was added may have served a configuration
-            // resolved before this task: such a result cannot be shown to come from metadata alone.
-            def givenBack = enforce('settings', settingsRepositories) + enforce(project.path, project.repositories)
+            // resolved before this task: such a result cannot be shown to come from metadata alone. For the
+            // settings' repositories that holds whichever task found the source back first.
+            def settingsBack = settingsGivenBack()
+            def givenBack = !enforce(project.path, project.repositories).isEmpty() || settingsBack
             repositoryRecords(project.path, project.repositories).each { emit(it) }
             def walked = new LinkedHashSet()
             if (givenBack) {
@@ -251,9 +270,8 @@ gradle.allprojects { project ->
                     }
                     // A resolution callback can give the source back; the result just walked may then hold a
                     // module without metadata.
-                    (enforce('settings', settingsRepositories).collect { ['restored', 'settings', it] } +
-                            enforce(project.path, project.repositories).collect { ['restored', project.path, it] })
-                            .each { emit(it) }
+                    settingsGivenBack()
+                    enforce(project.path, project.repositories).each { emit(['restored', project.path, it]) }
                 }
             }
             if (pending()) {

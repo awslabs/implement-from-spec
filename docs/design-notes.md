@@ -240,7 +240,8 @@ Why:
 - **Python 3.9 as the floor.** It is the interpreter a Mac has without any install, so a customer can try
   the plugin on a stock machine. Code therefore avoids newer syntax and modules (`match`, `tomllib`, the
   `X | Y` union at run time; `from __future__ import annotations` keeps annotations unevaluated). The
-  maintainers' local checks run every suite once, on the most recent stable Python release, not on 3.9
+  maintainers' local checks run every suite once, on the most recent stable Python release; the gate's own
+  suite, `spec-trace` and `spec-external-review` also run on Python 3.9 (Amazon Linux 2023)
 - **Supply chain.** Nothing in the plugin is fetched from a package index at run time, so there is no
   dependency to pin, audit, typosquat or compromise, and a release is exactly the files in the
   repository. The same reasoning keeps MCP servers out of the bundle: they are other projects' code, and
@@ -252,7 +253,7 @@ Cost: no third-party YAML, HTTP or CLI libraries. The scripts parse what they ne
 `re`, call AWS through the AWS CLI rather than an SDK, and the Bedrock API-key path is a bash script
 (`core/scripts/bedrock-gpt`) over curl and jq.
 
-Evidence: the core suites pass on Python 3.9.6 (macOS Command Line Tools) and 3.9.25 (Amazon Linux 2023,
+Evidence: the gate, spec-trace and spec-external-review suites pass on 3.9.25 (Amazon Linux 2023,
 in the maintainers' test container); the "Plugin manifest reference" page of the Claude Code documentation, read
 2026-10-16, lists the manifest fields and the `${CLAUDE_PLUGIN_DATA}` directory "for installed
 dependencies such as `node_modules`".
@@ -524,7 +525,8 @@ Every review report opens with this block, which ends with the same state as one
   person who ran the review approves
 - **Verification incomplete** when any of: a lens or reviewer failed or skipped part of its brief (even
   when the orchestrator covered it, which is named), the external review was required by policy and did
-  not run, a security hand-off was required and did not run, a high-risk claim needs runtime
+  not run, a security hand-off was required and did not run, a finding of Major or Blocker severity, or
+  any finding in a change classified `Risk: high`, is left as needs runtime
   verification, the snapshot was invalidated, an isolation denial left a reviewer's brief incomplete
 - A review is **complete** only with *No blocking findings*, *Verification: complete* and *Approval
   required: none*. The implementing skills read the JSON line; anything else means their report states
@@ -974,8 +976,10 @@ advisory data can say whether it is vulnerable. What users see: [user-guide/java
   `git cat-file` (so no attribute or filter applies) into a scratch directory, its links only when they
   are relative and stay inside it (any other link, and a submodule, makes the result partial), and never
   two entries that directory's file system would take for one; a pasted diff has no project and is not
-  audited, and a `--files` snapshot only when it holds every resolution input, since it verifies its own
-  files only. The base is always resolved, from the whole base revision written out the same way: no
+  audited, and a `--files` snapshot that leaves out a named resolution input is not audited either. A
+  snapshot that holds every resolution input but leaves out some other file of the working tree still
+  runs, but covers only what it holds, since it verifies only its own files: the result is partial, so
+  what it found still fails and a clean result reads `not run`, never `pass`. The base is always resolved, from the whole base revision written out the same way: no
   list of file names covers everything a build reads to choose its dependencies (a script it applies, a
   file a profile's activation tests), so equal resolution inputs prove nothing. Why: old
   vulnerabilities in untouched dependencies are reported as pre-existing and never block a change that
@@ -1071,7 +1075,9 @@ advisory data can say whether it is vulnerable. What users see: [user-guide/java
   build's `activeByDefault` profiles ("This profile will automatically be active for all builds unless
   another profile in the same POM is activated", Maven's Introduction to Build Profiles, read
   2026-11-24). An option in `.mvn/maven.config` or `MAVEN_ARGS` that builds only part of the reactor
-  (`-N`, `-pl`, `-rf`, `-f`) stops the audit, and a tree goal the build configures to list less, or one
+  (`--non-recursive`, `--projects`, `--resume-from`, `--file`, by any form Maven's own parser reads:
+  short or long, one or two leading dashes, a value attached or after `=`) stops the audit, and a tree
+  goal the build configures to list less, or one
   whose configuration Maven did not print, makes the result partial: the tree would then cover only part
   of the build. Two logger properties on the command line make Maven print its POM warnings and the tree
   goal's configuration whatever the build's own logging; the configuration check was verified on Maven
@@ -1107,8 +1113,11 @@ advisory data can say whether it is vulnerable. What users see: [user-guide/java
   because Gradle's `.gradle/` and `build/` would otherwise appear in the working tree and invalidate
   the review snapshot. The Gradle that runs is the distribution the project's wrapper names, when the
   wrapper has already unpacked it into the Gradle user home, in the directory named after that
-  distribution's URL, from an archive checked against the `distributionSha256Sum` the wrapper's
-  properties give when they give one, and with no wrapper `gradle` from PATH;
+  distribution's URL, with its completion marker left. The wrapper checks an archive against the
+  `distributionSha256Sum` its properties give, when they give one, before unpacking it, then deletes
+  the archive once unpacked; the audit trusts that completed installation the same way, so a marker and
+  an unpacked distribution with the archive already gone count as provisioned, and only an archive
+  still there is checked against the digest again. With no wrapper, `gradle` from PATH;
   the `gradlew` script is never run, because it would download a missing distribution and it is a
   program inside the repository, and a wrapper whose distribution is not there stops the audit, because
   another Gradle version may not configure the build. Supported: Gradle 6.6 and later, the first

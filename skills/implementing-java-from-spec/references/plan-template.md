@@ -158,7 +158,8 @@ without revoking the approval, so get them right before asking:
 - Each field is one line, however long. Never wrap `Owns:` or `Tests:`: the checker reads only the
   field's own line, so a path on a continuation line is not owned, and `spec-trace.py code` fails the
   file as an unowned change
-- Backticks hold repository-relative file paths and nothing else. A test class goes in as its path
+- Backticks hold repository-relative file paths and nothing else, outside a `none — <reason>` field. A
+  test class goes in as its path
   (`src/test/java/com/acme/billing/InvoiceServiceTest.java`, not `InvoiceServiceTest`); its method names
   follow in plain text. `spec-trace.py code` fails every backticked `Tests:` entry that is not a file
 - A test file the task writes or edits is in its `Owns:` as well as its `Tests:`

@@ -3,7 +3,7 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
-## Unreleased
+## 0.3.0 — 2026-11-24
 
 ### Added
 
@@ -84,12 +84,15 @@ specification input formats, a minor version adds a stack or a check, a patch fi
   changes, which the inventory leaves out, is matched with `check`.
   `--timeout` limits each build-tool run (default 120 seconds) and `--total-timeout` the whole audit, the
   lock wait and the download included (default 480 seconds), so the audit ends with a result of its own
-  within one Bash tool command
+  within one Bash tool command, except a git read or a network read that keeps trickling: then the Bash
+  command ends first and the gate stays pending, which reads as verification incomplete
 - Gradle projects in the dependency audit: Gradle itself resolves every resolvable configuration of every
   project, offline, through the plugin's init script `core/scripts/dependency-audit-graph.init.gradle`
   (Gradle 6.6 and later), with the distribution the project's wrapper names when it is in the Gradle user
-  home under that distribution's URL (and, with a `distributionSha256Sum`, from an archive with that
-  digest), never the `gradlew` script, and writes nothing in the project; for the run, the Maven and Ivy
+  home under that distribution's URL with its completion marker left (an archive still beside the marker
+  must match the `distributionSha256Sum` the wrapper's properties give, when they give one; the wrapper
+  deletes the archive once it unpacks the distribution, so a marker and an unpacked distribution with no
+  archive left count as provisioned), never the `gradlew` script, and writes nothing in the project; for the run, the Maven and Ivy
   repositories of the projects and of the settings' `dependencyResolutionManagement` are read without
   their artefact-only metadata source, so a module without metadata counts as unresolved, while the
   `buildscript` and `pluginManagement` repositories stay as declared; each entry's context is ship,
@@ -167,7 +170,8 @@ These also affect 0.2.0 users:
   its `.claude` settings or the plugin's own files was allowed before approval. The gate now compares
   every path as the file system spells it; on a case-sensitive volume nothing changes
 - A firmlink alias of a project path (on macOS, `/System/Volumes/Data/<path>` for `<path>`) was allowed
-  before approval. The gate now resolves it to the project's own path
+  before approval. The gate now resolves it to the project's own path, on a case-insensitive system
+  volume (the default)
 - A shell command whose program name was in upper case (`RM`, `CP` and others, which a case-insensitive
   volume runs as `rm` and `cp`) was not analysed as a write. Such a name is now read as the program the
   shell finds on the hook's `PATH`; one found only on the Bash tool's `PATH` is not
@@ -195,6 +199,15 @@ These also affect 0.2.0 users:
 - No runnable eval proves the post-approval apply step live: the post-approval eval needs gate state a
   resumed run lacks. The script side is covered by a host integration test in the maintainers' test
   suite
+- The dependency audit's inventory leaves out local file and file-tree dependencies (Gradle `files()`
+  and `fileTree()`, `flatDir`, Maven system-scope dependencies): they are never resolved against the
+  advisory dataset, so a vulnerable jar brought in this way is not reported
+- The dependency audit's download deadline does not bound a response that keeps trickling bytes: the
+  attempt is recorded as pending before the run starts, so a hang leaves the gate not run rather than
+  wrongly passed, but the audit does not always end within its stated total timeout
+- A dependency finding closes when the current report's advisory dataset no longer lists it, which is
+  also true when the advisory was simply dropped from the dataset rather than fixed; the coordinate and
+  version are not re-checked against the previous dataset before closing
 - Running a gate script through a symlink has not been checked against the gate's rule for its own
   scripts
 - The approved draft is guarded only as far as the gate sees each write: a shell or NotebookEdit write

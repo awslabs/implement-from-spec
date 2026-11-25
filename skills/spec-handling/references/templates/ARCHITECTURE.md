@@ -9,7 +9,7 @@ One diagram at most, as an image file beside the document; none is required.
 
 How <the system> is built: its components, data, data flows, and how it stays correct and secure.
 Requirements: [SPECIFICATION.md](SPECIFICATION.md). Status: describes the system as built at commit
-<hash>.
+<hash> (with uncommitted changes to <paths, or a count>, if the tree was not clean).
 
 ## 1. Overview
 Three to five sentences: the source of truth, the ways in, the ways out.

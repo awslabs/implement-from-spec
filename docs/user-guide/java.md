@@ -83,7 +83,7 @@ code. The `spec-handling` skill does this work: see [specification.md](specifica
    implementing subagents start from the security defaults of the skill's
    [`java-practices.md`](../../skills/implementing-java-from-spec/references/java-practices.md), the
    form of the review's security rules that applies while code is written. The full build runs after
-   every wave
+   every wave; the last wave syncs the specification and test-case files
 6. Verification of each item, `spec-trace.py code`, the full build with the project's static analysis,
    the packaged artifact, and a smoke gate whenever request or output behaviour changed: start the
    application, call the endpoint (or invoke the Lambda handler locally), inspect the result, stop it.
@@ -98,7 +98,7 @@ code. The `spec-handling` skill does this work: see [specification.md](specifica
    and the dependency audit runs after the project's tests. Blockers and Majors are fixed; a vulnerable
    dependency the change introduced is fixed with the version change its finding names, unless you
    accept the advisory
-8. The full build again, then a sync of the specification and test-case files
+8. The full build again, and a check that the review snapshot is still valid
 9. The report, with each build command, the static analysis, the dependency audit and the smoke call,
    and the deploy command the skill did not run
 
@@ -211,8 +211,10 @@ round, on the new snapshot.
 Each run of a build tool may take 120 seconds (`--timeout`) and the whole audit 480 seconds
 (`--total-timeout`), the wait for another refresh's lock, the download and every build-tool run
 included; each run gets the smaller of its own limit and what is left of the whole. The total stays below the 10 minutes a Bash tool command may run
-by default, so the audit always ends with a result of its own, `not run (time limit: ...)` at worst,
-instead of outliving its command with the gate still pending. The skill passes another limit only when
+by default, so the audit ends with a result of its own, `not run (time limit: ...)` at worst,
+instead of outliving its command with the gate still pending, except a git read or a network read that
+keeps trickling: then the Bash command ends first and the gate stays pending, which reads as
+verification incomplete. The skill passes another limit only when
 you name one.
 
 ### How it works
@@ -242,8 +244,10 @@ you name one.
      build. The Gradle
      that runs is the distribution the project's wrapper names, when the wrapper has already unpacked
      it into the Gradle user home (`GRADLE_USER_HOME`, else `~/.gradle`), in the directory named after
-     that distribution's URL, and, when the wrapper properties give a `distributionSha256Sum`, from an
-     archive with that digest; with no wrapper, `gradle` from PATH. The `gradlew` script itself is never run, because it would download a missing
+     that distribution's URL, with its completion marker left: once unpacked, the wrapper deletes the
+     archive it checked, so a marker and an unpacked distribution with no archive beside them count as
+     provisioned, and an archive still there must match the `distributionSha256Sum` the wrapper
+     properties give, when they give one; with no wrapper, `gradle` from PATH. The `gradlew` script itself is never run, because it would download a missing
      distribution, and a project whose wrapper's distribution is not there is not audited, because
      another Gradle version may not configure the build. Gradle's project cache and every project's
      build directory go to a scratch directory that is removed afterwards, so nothing is written in
@@ -254,8 +258,10 @@ you name one.
    - A commit-range review audits the range's end commit, written out byte for byte from git into a
      scratch directory, not your working tree: its files, then its links that are relative and lead
      to a place inside it; any other link, and every submodule, is left out and makes the result
-     partial. A pasted diff has no project, so the audit does not run, and a `--files` review is
-     audited only when its snapshot holds every build input of the project
+     partial. A pasted diff has no project, so the audit does not run, and a `--files` review stops
+     before it runs when its snapshot leaves out a named build input, but otherwise runs and covers
+     only the files it holds: any other file of the working tree the snapshot leaves out makes the
+     result partial, so take the snapshot of the working tree or of a commit range instead
 2. **Matching** against a local copy of public advisory data (below), with Maven's own version ordering
 3. **Comparison with the review's base revision.** The base is always resolved, written out from its
    own revision as a commit range's end is: no list of file names covers everything a build reads to
@@ -481,9 +487,11 @@ move: Claude Code drops `HOME`, `TMPDIR` and the `XDG_*` variables from the `env
 local settings (settings reference, "Variables Claude Code ignores in `env`", read 2026-11-24). A
 repository whose settings you trust can still define hooks, which run its own code with your
 permissions and could write a copy into the cache; that is the trusted-folder risk of the threat model
-(TM-45), and the `Data:` line, which names where the data came from, its publication date and its count,
-is what shows such a copy, since the minimum advisory count alone does not stop one built on purpose
-(see "The advisory data"). Read a repository's `.claude/settings.json` before you trust it.
+(TM-45). The `Data:` line shows what the cache records about the data (where it says the data came
+from, its publication date and its count); a process that can write the cache can write that record
+too, so the line does not reveal such a copy, and the minimum advisory count alone does not stop one
+built on purpose (see "The advisory data"). Read a repository's `.claude/settings.json` before you trust
+it.
 
 ### Machines without internet access
 
@@ -604,8 +612,13 @@ Build tool and project:
     run the audit again
   - Maven: not every module of the build has a parsed dependency tree: see `<log>`
   - Maven: `.mvn/maven.config` (or `MAVEN_ARGS`) passes `<option>`, which makes Maven build only part of
-    the project, so the tree would cover only that part: remove it, then run the audit again
-    (`-N`, `-pl`, `-rf`, `-f` and their long forms)
+    the project, so the tree would cover only that part: remove it, then run the audit again. `<option>`
+    is the long name (`--non-recursive`, `--projects`, `--resume-from` or `--file`); any form Maven
+    reads is refused, short or long, one or two leading dashes, and with its value attached or after `=`
+    (`-N`, `-pl`, `--pl=app`, `-ffoo.xml`, `--file=foo.xml`)
+  - `--files` review: the snapshot leaves out `<n>` other files of the working tree, which the build
+    can read too: the vulnerabilities found are still reported and still fail the gate, and a clean
+    result reads `not run`, never `pass`; take a snapshot of the working tree or of a commit range
   - Maven: the build has no profile `<profiles>`: name a profile it defines, then run the audit again
   - Maven: the build configures the dependency plugin's tree goal (`<parameters>`) for `<modules>`,
     which narrows what it lists: remove that configuration, then run the audit again
@@ -623,7 +636,7 @@ Build tool and project:
     (`<repositories>`), whose dependencies no metadata lists: publish it with a POM or Gradle module
     metadata
   - Gradle: the resolution of `<n>` configurations failed: see `<log>`
-  - Gradle: the build gives `<repositories>` its artefact-only metadata source back while it resolves,
+  - Gradle: the build gives `<repositories>` its artefact-only metadata source back after the audit took it away,
     so a module without metadata may be listed without its dependencies: stop the build from adding
     artifact() to metadataSources, then run the audit again
   - Gradle: `<n>` configurations were resolved while the build had given a repository its artefact-only
@@ -673,8 +686,8 @@ The review and the commit to audit:
     scratch directory's file system does not tell apart: set TMPDIR to a directory on a case-sensitive
     volume, then run the audit again
 - `snapshot does not cover the build`: the snapshot holds the files named with --files only, and the
-  build also reads `<files>`, which could change without the snapshot showing it: take the snapshot
-  with those files in --files too, or of the working tree
+  build also reads `<files>`, which could change without the snapshot showing it: take a snapshot of
+  the working tree or of a commit range instead
 - `scratch directory refused`: the temporary directory resolves inside the repository: unset TMPDIR
 - `setting not obeyed` (see "The `dependency_audit` setting"):
   - `<variable>=off` in the environment is not obeyed: unset it, or switch the audit off in your own
@@ -724,8 +737,10 @@ both resolve at the `compile` scope. A dependency only one of them resolves name
 Gradle projects are audited on the same terms as Maven projects; "How it works" gives the command and
 which Gradle runs. A wrapper that keeps its distribution anywhere but the Gradle user home (a
 `distributionBase` or `zipStoreBase` other than `GRADLE_USER_HOME`) counts as not provisioned, because
-that copy would be a program inside the project, and so does a distribution unpacked from another URL or,
-with a `distributionSha256Sum`, from an archive whose digest differs.
+that copy would be a program inside the project, and so does a distribution unpacked from another URL. With
+a `distributionSha256Sum`, an archive still beside the completion marker must match that digest; once the
+wrapper has unpacked the distribution it deletes the archive it checked, so a marker and an unpacked
+distribution with no archive left count as provisioned without checking the digest again.
 
 **Repositories, for the audit's run only.** A Maven or Ivy repository may resolve a module from its
 artefact alone (`metadataSources { artifact() }`), and a module with no metadata then resolves as one

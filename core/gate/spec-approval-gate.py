@@ -679,16 +679,6 @@ def draft_holding(abspath):
         probe = parent
 
 
-def draft_files(draft):
-    """The draft's files, as paths relative to it (POSIX), sorted. A directory that cannot be read raises OSError."""
-    def fail(exc):
-        raise exc
-    files = []
-    for top, _dirs, names in os.walk(draft, onerror=fail):
-        files += [os.path.relpath(os.path.join(top, n), draft).replace(os.sep, "/") for n in names]
-    return sorted(files)
-
-
 def bind_draft(repo, plan, text):
     """On the approval reply: (record, refusal) for the plan whose bytes, the ones whose sha256 was just checked, are
     `text`. A plan with no Draft digest line and no draft directory gives (None, None) and is approved on its sha256; a
@@ -724,8 +714,10 @@ def bind_draft(repo, plan, text):
         return None, (f"[spec-approval-gate K22] {plan_rel} records Draft digest sha256 {line[:12]}, but its draft "
                       f"{draft_rel} does not exist. " + DRAFT_RECHECK)
     try:
-        current = drafts.digest(draft)
-        files = draft_files(draft)
+        # One traversal for both: a file removed between two readings would be in the approved digest but not in
+        # the recorded files, and a write to its repository path would then skip the draft's check.
+        current, manifest = drafts.manifest(draft)
+        files = [rel for rel, _sha in manifest]
         aliases = draft_aliases(repo, files)
     except (drafts.DraftError, OSError, load_paths().PathUnknown) as exc:
         return None, (f"[spec-approval-gate K22] The draft {draft_rel} of {plan_rel} cannot be digested ({exc}). "
@@ -967,6 +959,13 @@ def under(path, root):
     return path == root or path.startswith(root + os.sep)
 
 
+def within(path, root):
+    """Whether path is root or lies below it, a root not created yet compared folded below its deepest existing
+    directory (ifs_paths.within_root): where the volume folds case, a path in another case creates that very root.
+    An answer that cannot be had folds, since a match denies (fail closed)."""
+    return load_paths().within_root(path, root, unknown_folds=True)
+
+
 def project_repo(abspath, state):
     """The project repository holding abspath: an enrolled repo, else (skill mode only) the nearest
     git work tree outside the exemptions."""
@@ -1010,10 +1009,17 @@ def plugin_trees():
     return trees
 
 
+def protected_dirs():
+    """The directories no tool call writes into while the gate is registered: the gate's state, code and hook
+    registrations, setup's state, the other hooks' state and the dependency audit's directories (the write roots), and
+    the installed plugin trees."""
+    r = roots()
+    return [r["state_dir"], r["gate_dir"], r["hooks_dir"], r["setup_dir"]] + r["write_roots"] + plugin_trees()
+
+
 def protected_roots():
     r = roots()
-    return [r["state_dir"], r["gate_dir"], r["hooks_dir"], r["setup_dir"]] + r["write_roots"] + plugin_trees() + \
-        sorted(glob.glob(os.path.join(glob.escape(r["skills_root"]), "*", "gate_rules.json")))
+    return protected_dirs() + sorted(glob.glob(os.path.join(glob.escape(r["skills_root"]), "*", "gate_rules.json")))
 
 
 def gated(abspath, rules, state, explicit=True):
@@ -1022,7 +1028,9 @@ def gated(abspath, rules, state, explicit=True):
     `explicit` is false for the synthetic 'somewhere under the working directory' target of formatters,
     git and inline code: such a target is checked as a location, not as a directory being replaced."""
     r = roots()
-    if r["protected_re"].search(abspath) or any(under(abspath, root) for root in plugin_trees() + r["write_roots"]) or (
+    # within, not under: a protected directory not created yet (the advisory cache before the first refresh) keeps
+    # the spelling given, and where the volume folds case a path in another case would create it.
+    if r["protected_re"].search(abspath) or any(within(abspath, root) for root in protected_dirs()) or (
             r["skills_dir"] and re.match(r"^%s/[^/]+/gate_rules\.json$" % re.escape(r["skills_dir"]), abspath)):
         return (f"spec-approval-gate (K22): '{abspath}' is the approval gate's own state, code or rules, the "
                 "plugin's other hook state (reviewer registrations, review snapshots, activation records, the "
@@ -1033,7 +1041,7 @@ def gated(abspath, rules, state, explicit=True):
                 "check or audit).")
     if explicit:
         for root in protected_roots():
-            if under(root, abspath) and root != abspath:
+            if root != abspath and within(root, abspath):  # a directory above a root, in any case it folds to
                 return (f"spec-approval-gate (K22): '{abspath}' contains the approval gate's state, code or "
                         "rules; removing, moving or replacing the directory is not allowed while the gate "
                         "is registered.")

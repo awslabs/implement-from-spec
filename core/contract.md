@@ -871,7 +871,8 @@ read stderr, correct the argument and run it once more. The rules:
   who ran the review approves
 - **Verification incomplete** when any of: a lens or reviewer failed or skipped part of its brief (even
   when the orchestrator covered it, which is named), the external review was required by policy and did
-  not run, a security hand-off was required and did not run, a high-risk claim needs runtime
+  not run, a security hand-off was required and did not run, a finding of Major or Blocker severity, or
+  any finding in a change classified `Risk: high`, is left as needs runtime
   verification, the snapshot was invalidated, an isolation denial left a reviewer's brief incomplete
 - **Rollback**: `not applicable` when the change writes and reads no persistent state or format;
   otherwise from the temporal-compatibility findings, judged between the change and the version it
@@ -1041,7 +1042,9 @@ candidate, no baseline is derived first: the plan records an open question whose
 to treat the candidate as the project's specification and extend it in place, as the layout `named`,
 with the same `--spec <path>` on every later `detect`, `check` and `traceability` call, and approval
 accepts that answer. A run on its own whose only work would be the baseline asks the question before
-planning, because its plan would have no Scope.
+planning, because its plan would have no Scope. `--spec` takes a Markdown file only; for a non-Markdown
+candidate, the recommended answer is a Markdown copy at a path the user approves, recorded as a change,
+otherwise verification stays incomplete and no baseline is derived.
 
 **Follow it.** A specification in any recognised layout is authoritative as written, wherever it is:
 it is followed and extended in place, in its own format, and `specification/` is derived from the code

@@ -349,9 +349,9 @@ A finding left unfixed gets a stated reason.
 ### 8–9. Sync and report
 
 Contract sections 10 and 11. For a project that keeps a `specification/` tree, every new code path has a
-SPEC, every new test a `TC-xxx` and a coverage-matrix row, and test-case statuses read `READY`: as
-drafted, for a test-case file the draft holds (frozen, contract section 13), otherwise through the last
-wave's sync. The report's checks line names each build command, the static analysis and the smoke call with
+SPEC, every new test a `TC-xxx` and a coverage-matrix row, and test-case statuses read `READY` through the
+last wave's sync: test-case files are sync-owned, never drafted (contract section 13), so a status is
+written only after the test it names exists. The report's checks line names each build command, the static analysis and the smoke call with
 their results, the coverage of the changed files when the project measures it, and last the dependency
 audit's entry, the last entry of the review's `Quality gate:` line, character for character
 (`references/implementation.md`, section 6). The Review line is contract section 11's as written; its

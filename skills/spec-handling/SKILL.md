@@ -110,7 +110,10 @@ documents and the candidates. Then:
   is the project's specification, extended in place as the layout `named`, with the same `--spec <path>`
   on every later `detect`, `check` and `traceability` call. With a request to draft, design for that
   answer and record it as an open question in the plan (approve accepts it); a run whose only work would
-  be the baseline asks it first, one question, because its plan would have no Scope
+  be the baseline asks it first, one question, because its plan would have no Scope. `--spec` takes a
+  Markdown file only. For a non-Markdown candidate (`.txt`, `.rst`, `.adoc`), the open question's
+  recommended answer is a Markdown copy at a path the user approves, recorded as a change; otherwise
+  stop with verification incomplete and derive no baseline
 - `combined`, `kit`, `unstructured`, `structured`, `flat` or `named`: the specification exists; mode
   extend, in that layout. Read its index and conventions before drafting. The standard documents it
   lacks are reported in the plan and to the user and are not created; the user asks for them when wanted
@@ -127,7 +130,9 @@ change with a deletion record per old file (`references/format.md`, section 6).
 ### 2. Baseline: derive the specification from the code
 
 1. Record the commit the baseline describes (`git rev-parse HEAD`) and whether the tree is clean; the
-   index names that commit
+   index names that commit. When the tree is not clean, the index and architecture status lines name
+   the commit "with uncommitted changes to <paths, or a count>", because the survey below reads the
+   working tree, not the commit alone
 2. Survey the repository by reading only the files this lists. It withholds, each with its reason,
    the files the plugin's sensitive-file rule keeps from the external reviewer
    (`${CLAUDE_PLUGIN_ROOT}/docs/user-guide/external-review.md`, "What is sent, and what is withheld"),
@@ -159,8 +164,10 @@ list, and do not merge two requirements to shorten it.
 When the baseline is drafted for a request (an implementing skill's first run in the project), the
 request's own requirements are separate items after the baseline's, each with its own record in the
 plan. Their `*Source:*` may name the paths the plan's tasks create (their Owns); sync never adds one
-later. A document that the change also alters (the test cases, the feature list) is drafted as it will
-read after the change, because a drafted file is frozen.
+later. A document that the change also alters (the feature list) is drafted as it will
+read after the change, because a drafted file is frozen. `TEST-CASES.md` stays sync-owned, not
+drafted: its statuses and test paths describe tests that do not exist yet at drafting time, so it is
+written only after the tests exist.
 
 ### 3. Extend: draft what a request changes
 
@@ -177,7 +184,8 @@ read after the change, because a drafted file is frozen.
    `ai-planning/<slug>.spec/` and edit the copy (a symlink or a path outside the repository is a stop:
    standing rules). Answered open questions are struck in the draft of that file with a pointer to the
    item. A drafted file is frozen at approval, so the index's version and date line and any living
-   document the draft holds read as they will after the change; a new item's `*Source:*` may name the
+   document the draft holds (`TEST-CASES.md` excepted; it is sync-owned, not drafted) read as they will
+   after the change; a new item's `*Source:*` may name the
    paths the plan's tasks create
 
 A feature specification under `ai-planning/` or a request in plain words is handled the same way: each
@@ -316,7 +324,10 @@ For a run on its own, plain text below the heading, only the lines that apply:
 
 The caller names the mode, the plan's slug and, for extend, the request. Do that mode's section only
 (baseline: sections 1 to 4; extend: 1, 3 and 4; apply: 7; sync: 8), write no plan and no ledger, and
-before approval write only under `ai-planning/<slug>.spec/`. End with this block:
+before approval write only under `ai-planning/<slug>.spec/`. When the draft is complete, run section
+5's `spec-layout.py digest` command and `spec-layout.py check --repo "$PWD" --draft
+ai-planning/<slug>.spec` (without `--plan`), and report them as `DIGEST` and `CHECK` below. End with
+this block:
 
     SPEC-HANDLING: <mode> DONE | NEEDS_CONTEXT | BLOCKED
     LAYOUT: <layout> in <root>/ (format <n>); missing documents: <names>   (or: none)

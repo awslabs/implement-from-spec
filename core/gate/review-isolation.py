@@ -403,22 +403,10 @@ def spelled_named(path):
 
 def within_root(path, root):
     """Whether path is root or lies below it, both spelled on disk (spelled). A root that does not exist yet (a
-    snapshot directory before the first snapshot) keeps the spelling given below its deepest existing directory, and
-    so does path: there the names are compared folded, but only where that directory finds names under another
-    spelling (ifs_paths.name_folds is True), since only then are the two one place."""
-    if under(path, root):
-        return True
-    anchor = root
-    while not os.path.lexists(anchor):
-        parent = os.path.dirname(anchor)
-        if parent == anchor:
-            return False
-        anchor = parent
-    missing = [part for part in root[len(anchor):].split(os.sep) if part]
-    if not missing or not under(path, anchor) or load_paths().name_folds(anchor) is not True:
-        return False
-    rest = [part for part in path[len(anchor):].split(os.sep) if part]
-    return len(rest) >= len(missing) and all(fold(a) == fold(b) for a, b in zip(rest, missing))
+    snapshot directory before the first snapshot) is compared folded below its deepest existing directory, where that
+    directory finds names under another spelling (ifs_paths.within_root, shared with the approval gate). An answer
+    that cannot be had counts as outside: the allowed roots fail closed."""
+    return load_paths().within_root(path, root)
 
 
 def fold(text):

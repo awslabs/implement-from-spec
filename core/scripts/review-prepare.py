@@ -611,6 +611,16 @@ def external_args(manifest: dict, runner: dict, directory: str, diff_copy) -> li
     return args
 
 
+def run_plugin_script(argv: list, timeout: int) -> subprocess.CompletedProcess:
+    """Runs one of the plugin's own scripts and captures its text output: the one place this module starts a
+    process. argv must start with this interpreter and -I; raises what subprocess.run raises."""
+    if argv[:2] != [sys.executable, "-I"]:
+        raise ValueError("run_plugin_script runs this interpreter with -I only")
+    # Argument list of this interpreter and a script under the plugin's core/, no shell: nothing to inject into
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)  # nosec B603
+
+
 def show_config(setting_flags: list) -> tuple:
     """(mode, policy): the effective external_review mode and external_review_policy as
     `spec-external-review.py --show-config` prints them with the user's setting flags. The mode is None when
@@ -618,7 +628,7 @@ def show_config(setting_flags: list) -> tuple:
     skills treat as required, so a review whose external stage dies before its status line stays incomplete."""
     argv = [sys.executable, "-I", EXTERNAL_SCRIPT, "--show-config", *setting_flags]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=EXTERNAL_TIMEOUT_S, check=False)
+        proc = run_plugin_script(argv, EXTERNAL_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"review-prepare: spec-external-review.py --show-config did not run: {exc}", file=sys.stderr)
         return None, "unknown"
@@ -637,7 +647,7 @@ def run_external_off(args: list, setting_flags: list, directory: str) -> tuple:
     argv = [sys.executable, "-I", EXTERNAL_SCRIPT, *args, *setting_flags]
     shown = shlex.join(["python3", "-I", EXTERNAL_SCRIPT, *args, *setting_flags])
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=EXTERNAL_TIMEOUT_S, check=False)
+        proc = run_plugin_script(argv, EXTERNAL_TIMEOUT_S)
         code, out, err = proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
         code, out, err = None, "", f"review-prepare: no answer within {EXTERNAL_TIMEOUT_S} s"
@@ -678,8 +688,7 @@ def register_gate(snap, directory: str, gate: dict) -> dict:
     argv = [sys.executable, "-I", gate["script"], "register", "--snapshot", directory]
     command = shown(shlex.join(["python3", "-I", gate["script"], "register", "--snapshot", directory]))
     try:
-        proc = subprocess.run(  # nosec B603 - argument list: this interpreter and a script under the plugin's core/
-            argv, capture_output=True, text=True, timeout=REGISTER_TIMEOUT_S, check=False)
+        proc = run_plugin_script(argv, REGISTER_TIMEOUT_S)
         # Split at newlines only: splitlines() also breaks at U+2028 and the like, which shown() must escape.
         lines = [line for line in proc.stdout.split("\n") if line.strip()]
         problem = f"exit {proc.returncode}" if proc.returncode else None if lines else "it printed no line"
