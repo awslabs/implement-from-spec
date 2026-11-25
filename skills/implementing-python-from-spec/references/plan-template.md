@@ -65,8 +65,14 @@ Per handler: duplicate-event behaviour, conditional writes and transactions with
 mapping, retries and timeouts, partial batch failures, what the caller sees on each failure.
 
 ## 5. Dependencies
-New packages with version, reason and the lock file they go into; lock file changes and how they are
-regenerated; anything removed. The target Lambda runtime and why it is supported.
+New or changed packages with their PyPI name, exact version, reason and the lock file they go into; lock
+file changes and how they are regenerated; anything removed. Beside each one: where its version comes
+from (the specification, the project's declarations or lock file, or "the plan's own choice"), and the
+dependency check's result (`dependency-audit.py check pypi:<name>==<version>`), in one of three forms:
+"no advisory matches this version in the dataset of <date>"; the match, with its advisory ids, the
+reported fix and the open question or approval line that raises it; or "not checked (<reason>)". When a
+project rule requires the user's explicit approval for a kind of dependency, quote the rule next to it.
+The target Lambda runtime and why it is supported. "none" when nothing changes.
 
 ## 6. Test strategy
 Every test named now, with the item IDs it proves: unit tests per module, property tests where an
@@ -75,9 +81,12 @@ tests the items require and where they run.
 
 ## Open questions
 Each question the change depends on that an item, a project rule or `specification/open-questions.md`
-leaves open, and each user instruction a project rule forbids: its source (file and ID or line), the
-options, the recommended answer the design follows (the rule's side, for a forbidden instruction), and
-what changes with each other answer. The approval request lists them; approve accepts the recommended
+leaves open, each user instruction a project rule forbids, and each advisory match on a version the
+specification or the project asked for: its source (file and ID or line, or "dependency check"), the
+options, the recommended answer the design follows (the rule's side, for a forbidden instruction; the
+reported fix, for an advisory match), and what changes with each other answer. When the recommended
+answer changes what a specification item states (the reported fix for a version an item names), the item
+is drafted changed and recorded under `## Specification changes`. The approval request lists them; approve accepts the recommended
 answers. "none" when nothing is open.
 
 ## Review focus

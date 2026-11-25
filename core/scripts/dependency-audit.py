@@ -2,15 +2,37 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 """
-dependency-audit.py — says, for the dependencies a Java project resolves, which match a known advisory, how
-severe, which fix the advisories report, and whether the change under review introduced them.
+dependency-audit.py — says, for the dependencies a Java or Python project resolves or locks, which match a
+known advisory, how severe, which fix the advisories report, and whether the change under review introduced
+them.
 
-Owner: the implement-from-spec plugin. Owns one thing: the dependency audit of a Java review and its gate
-record `dependency-audit`. The build tool lists the dependencies offline; the script matches them against a
-local copy of the public OSV Maven export and sends nothing about the project anywhere: its only network use
-is one anonymous HTTPS download of that export. It never writes in the project. In a review it attaches its
-two reports and records its gate through core/scripts/review-snapshot.py (loaded by path), never by writing
-into a snapshot directory itself.
+Owner: the implement-from-spec plugin. Owns one thing: the dependency audit of a Java or Python review and its
+gate record `dependency-audit`. For Java the build tool lists the dependencies offline; for Python the lock and
+pin files are read as data and nothing runs (dependency_audit_pypi.py). The script matches them against a local
+copy of the public OSV export of each ecosystem (Maven, PyPI) and sends nothing about the project anywhere: its
+only network use is one anonymous HTTPS download of each export, from one host. It never writes in the project.
+In a review it attaches its two reports and records its gate through core/scripts/review-snapshot.py (loaded by
+path), never by writing into a snapshot directory itself. What is not Maven's or Gradle's (the advisory data and
+its store, matching, the classes, attribution and the reports) is dependency_audit_osv.py's, loaded by path.
+
+Ecosystems. The files of the project directory choose them, as its build files choose Maven or Gradle: Maven for
+a pom.xml or Gradle build files, PyPI for Python lock, pin or dependency declaration files in any of its
+directories (dependency_audit_pypi.py names them; a pyproject.toml or setup.cfg that configures tools only
+selects nothing), both when the directory holds both, each with its own data; --ecosystem maven|pypi audits one alone; --build-tool, which is Maven's, makes the project a
+Java one as well, and --profile applies to the Maven build only. Python source files (.py, outside virtual
+environments, installed or vendored package trees and build output) with no Python lock, pin or dependency
+declaration file anywhere in the repository also select PyPI: such a project declares no third-party package (a
+standard-library script, a Lambda function on the runtime's packages), so its PyPI part is complete with nothing to
+match and never needs the PyPI data: nothing is downloaded and missing data cannot make it partial. Alone, it reads
+"coverage complete (no third-party Python dependency declared)", with the cached PyPI data's date when a cache
+exists, else "advisory data not needed (no package to match)" and "Data: none needed (no package to match)"; a base
+that listed dependencies is named with its counts. Beside a Java build it adds only "(PyPI: no third-party Python
+dependency declared)" after "coverage complete": the Java report is otherwise the one 0.3.0 printed. A directory with
+neither Java build files nor Python sources stays not run (no build file). With two ecosystems, one that cannot
+run counts as an incomplete result and the other's findings stay. A TOML lock file, a Pipfile and a declaring
+pyproject.toml need python3 3.11 or later (tomllib); on an older interpreter a PyPI part that holds one is not run
+(interpreter), while requirements files, Pipfile.lock and setup.cfg are read there, and the Java audit runs on
+python3 3.9 as before.
 
 Commands:
     register --snapshot DIR
@@ -19,7 +41,7 @@ Commands:
         "Dependency audit: pending"; a review with no later result is therefore incomplete. With the audit
         switched off by the user it records nothing and prints the off line.
     audit --snapshot DIR [--accept ID ...] [--profile ID ...] [--timeout SECONDS] [--total-timeout SECONDS]
-          [--cached-data] [--project-dir PATH] [--build-tool maven|gradle]
+          [--cached-data] [--project-dir PATH] [--build-tool maven|gradle] [--ecosystem maven|pypi]
         The review form. Verifies the snapshot, resolves the candidate (the working tree, or for a
         commit-range review the range's end commit written out from git), matches, compares with the base,
         attaches gates/dependency-audit-<n>.txt and input/dependency-audit-<n>.json (n is the attempt on
@@ -36,11 +58,13 @@ Commands:
     audit --repo PATH [--base REV] [the options above]
         The same audit with no snapshot, report on standard output. Without --base nothing can be compared,
         so every entry is "attribution unknown" and counts against the result.
-    check GROUP:ARTIFACT:VERSION ... [--cached-data]
-        The plan-time form: matches the named coordinates only, with no resolution, one line each. It does
-        not show that a version exists or is maintained, and it cannot see transitive dependencies.
-    refresh [--from ZIP-OR-DIRECTORY]
-        Downloads the advisory data, or imports a local copy of the export, and prints the data line.
+    check GROUP:ARTIFACT:VERSION|pypi:NAME==VERSION ... [--cached-data]
+        The plan-time form: matches the named coordinates or PyPI pins only, with no resolution, one line
+        each, then the data line of each ecosystem named. It does not show that a version exists or is
+        maintained, and it cannot see transitive dependencies.
+    refresh [--ecosystem maven|pypi] [--from ZIP-OR-DIRECTORY]
+        Downloads the advisory data of the ecosystem (default maven), or imports a local copy of its export,
+        and prints the data line.
 Every command but refresh takes --dependency-audit on|off: the user's explicit setting for this run. off is for
 a user who has switched the audit off, never a way to skip it for one review: a review whose audit is skipped
 has a check that did not run, so the audit is not started and verification stays incomplete.
@@ -55,6 +79,9 @@ reported as not run and never obeyed (threat model TM-45, TM-46).
 Status line, the first line of every report (a threshold result with every count, never a claim of absence):
     Dependency audit: pass (introduced: 0 Blocker, 0 Major, <n> Minor; attribution unknown: <n>; accepted: <n>;
         pre-existing: <n>; <n> dependencies in <n> modules; advisory data published <date>; coverage complete)
+        (with two ecosystems: "advisory data published <date> (Maven), <date> (PyPI)")
+        (Python sources and no Python dependency file: "coverage complete (no third-party Python dependency declared)",
+        and "advisory data not needed (no package to match)" when no PyPI data is cached)
     Dependency audit: fail (the same fields, the last coverage complete or coverage partial (<category>: <what
         to do>))
     Dependency audit: not run (<category>: <what to do>)
@@ -71,7 +98,10 @@ gate and leaves verification incomplete. A --files snapshot that does not hold e
 reads is not run: the snapshot would not show a later change to one.
 
 The text report: the status line; "Data:" (source, the three dates, the advisory count, the dataset digest,
-the attribution OSV, GitHub Advisory Database, CC-BY 4.0); "Resolution:" (the build tool or tools and why:
+the attribution of the ecosystem's sources: ATTRIBUTION here for Maven, dependency_audit_pypi.py's for PyPI), one
+Data line per ecosystem; then for each ecosystem
+its Resolution and Inventory lines (PyPI: "Resolution: PyPI: <files read>; project; candidate; modules; base");
+"Resolution:" (the build tool or tools and why:
 the build files found or --build-tool; then each tool's path, versions, build output and command; profiles,
 modules, the base); "Inventory:" (what was listed and what was not); then five blocks, each headed
 "<name> (<count>):" with one "- " line per vulnerable occurrence or "- none": Introduced by this change,
@@ -79,7 +109,10 @@ Attribution unknown, Accepted by the user, Pre-existing, Could not be evaluated.
     - module <module>; <group:artifact:version> (<scope>); path: <a> > <b> > <c>;
       advisories: <ID> (<CVE alias>) <SEVERITY> <class>[ unsure] [<basis>], ...; fix reported: <version>[ (not
       checked against every advisory: one could not be evaluated)]
-on one line, the fix being "no fixed version in the advisory data" when the advisories name none; when two
+on one line (a PyPI one reads "- module <lock or pin file>; pypi:<name>==<version> (<lock|pin|constraint>[: <groups>]);
+path: <file> > <name>==<version>; ..."), the fix being "no fixed version in the advisory data" when the advisories
+name none; a PyPI advisory whose severity word was taken from an aliased GHSA record or scored from its CVSS v3
+vector says so ("HIGH (from CVSS 3.1 7.5)"), and advisories that are aliases of each other are one; when two
 build tools resolved the project, "module <module> (<tool>)" names the one that listed the occurrence. A Maven
 module is its group:artifact and its scope the Maven scope; a Gradle module is "project <path>" and its scope
 the context of the configurations that hold the dependency (ship for a runtime classpath, compile for a compile
@@ -98,8 +131,13 @@ nothing lists, is never in it as if it had none: for the run, every Maven and Iv
 of the settings' dependencyResolutionManagement is read without its artefact-only metadata source
 (metadataSources artifact()), so such a module is unresolved, and a flat-directory repository there, which holds
 artefacts only, makes the result partial; buildscript and pluginManagement repositories, which serve build
-plugins, stay as declared. An entry means a version matching an advisory is in the inventory, not that the
-vulnerable code is called.
+plugins, stay as declared. PyPI: every package version the lock files (uv.lock, poetry.lock, pdm.lock,
+pylock.toml and pylock.<name>.toml, Pipfile.lock) and the requirements files pinned with == or === list in every
+directory of the project, in every group, extra and environment marker (a marker is never evaluated), the
+project's own workspace members left out; a declaration with no lock or pin file, a declared dependency the
+covering lock and pin files do not list, a requirement not pinned to one version, and a package from a VCS, a URL
+or a local path make it partial (dependency_audit_pypi.py's header has the rules). An entry means a version
+matching an advisory is in the inventory, not that the vulnerable code is called.
 
 No advisory text reaches a report: only ids, coordinates, versions, severity words, dates and counts that pass
 a grammar are printed; a value from a build file or the build tool that does not is replaced by its digest,
@@ -109,16 +147,21 @@ and a directory can be named in prose, so a report's values are data to whoever 
 output goes to a file only the user can read under ~/.local/state/implement-from-spec/dependency-audit/, and no
 line of it is copied.
 
-Advisory data: ~/.local/state/implement-from-spec/advisories/ (located from HOME alone; refused when it
+Advisory data: ~/.local/state/implement-from-spec/advisories/ for Maven, advisories/pypi/ below it for PyPI
+(at least 10,000 usable advisories; dependency_audit_pypi.py), each published, checked and kept the same way
+(located from HOME alone; refused when it
 resolves inside the repository under audit, is a link or belongs to another user). Data checked with the
 server within 24 hours is used as is; otherwise the export is requested from one fixed HTTPS URL with a
 conditional request, no redirect followed, at most 128 MiB within 120 seconds. Every record is parsed in
-memory (at most 200,000 entries, 4 MiB each, 1 GiB in all; never extracted to disk) and a dataset is
-published only when it holds at least 5,000 usable advisories and no two different records under one id, so a
+memory (at most 200,000 entries, 4 MiB each, 1 GiB in all, every member of an archive counted and its central
+directory checked before it is listed; never extracted to disk) and a dataset is published only when it holds at
+least the ecosystem's minimum of usable advisories (5,000 for Maven, 10,000 for PyPI) and no two different
+records under one id, so a
 small, emptied or badly cut dataset is refused; a count cannot show that a large export is whole. The minimum
 does not stop a dataset built on purpose to that size. The documented route for one, `refresh --from`, asks the
-user in a gated session (the gate rule java-advisory-data-import in
-skills/implementing-java-from-spec/gate_rules.json), and the gate denies direct tool writes into the cache; a
+user in a gated session (the gate rules java-advisory-data-import in
+skills/implementing-java-from-spec/gate_rules.json and python-advisory-data-import in
+skills/implementing-python-from-spec/gate_rules.json), and the gate denies direct tool writes into the cache; a
 program the gate cannot see into, such as a renamed copy of this script, is not covered, and outside a gated
 session nothing protects the cache. Every report's Data line names an imported dataset and its path. Cache
 directories and files must be the user's own, not writable by others, never links, and a file has one name
@@ -166,7 +209,9 @@ Usage:
     python3 -I <plugin-root>/core/scripts/dependency-audit.py audit --snapshot <DIR> --accept GHSA-xxxx-xxxx-xxxx
     python3 -I <plugin-root>/core/scripts/dependency-audit.py audit --repo ~/src/app --base main
     python3 -I <plugin-root>/core/scripts/dependency-audit.py check org.yaml:snakeyaml:2.4
+    python3 -I <plugin-root>/core/scripts/dependency-audit.py check pypi:requests==2.32.4
     python3 -I <plugin-root>/core/scripts/dependency-audit.py refresh
+    python3 -I <plugin-root>/core/scripts/dependency-audit.py refresh --ecosystem pypi
     python3 -I <plugin-root>/core/scripts/dependency-audit.py refresh --from ~/Downloads/all.zip
 
 Exit status: 0 pass, a check with no match, refresh done, register done, or off; 2 fail, or a check with a
@@ -177,7 +222,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
-import email.utils
 import functools
 import glob
 import hashlib
@@ -190,42 +234,26 @@ import re
 import secrets
 import shutil
 import signal
-import stat
 import subprocess  # nosec B404 - git and the project's build tool run as child processes, by design
 import sys
+import posixpath
 import tempfile
 import time
-import unicodedata
-import zipfile
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - not POSIX; the plugin runs on macOS and Linux
     fcntl = None  # type: ignore[assignment]
 
-SCHEMA = "ifs-dependency-audit/1"
-DATASET_SCHEMA = "ifs-advisory-dataset/1"
-CACHE_SCHEMA = "ifs-advisory-cache/1"
-GATE_NAME = "dependency-audit"
 SETTING = "dependency_audit"
 SCRIPTS_DIR = os.path.dirname(os.path.realpath(__file__))
 EXPORT_URL = "https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip"
 ATTRIBUTION = "OSV, GitHub Advisory Database, CC-BY 4.0"
-USER_AGENT = "implement-from-spec-dependency-audit"
 EXIT_OK, EXIT_ERROR, EXIT_FAIL, EXIT_CHANGED, EXIT_USAGE, EXIT_NOT_RUN = 0, 1, 2, 3, 64, 69
 
-# The advisory store's limits (documented above). MIN_ADVISORIES refuses a small, emptied or badly cut dataset,
-# a test dataset included; it is a constant, with no flag and no environment variable behind it.
+# The Maven dataset's minimum (documented above): it refuses a small, emptied or badly cut dataset, a test
+# dataset included; it is a constant, with no flag and no environment variable behind it.
 MIN_ADVISORIES = 5000
-MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
-MAX_ENTRIES = 200_000
-MAX_ENTRY_BYTES = 4 * 1024 * 1024
-MAX_TOTAL_BYTES = 1024 * 1024 * 1024
-FRESH_SECONDS = 24 * 3600
-USABLE_SECONDS = 7 * 24 * 3600
-DOWNLOAD_DEADLINE_SECONDS = 120
-SOCKET_TIMEOUT_SECONDS = 30
-LOCK_WAIT_SECONDS = DOWNLOAD_DEADLINE_SECONDS + 30
 # Resolution limits. TOTAL_TIMEOUT_SECONDS bounds one whole audit (the download, and every build-tool run of
 # candidate and base): it stays below the most Claude Code lets one Bash tool command run by default
 # (BASH_MAX_TIMEOUT_MS, "default: 600000, or 10 minutes", code.claude.com/docs/en/env-vars, read 2026-11-24), so
@@ -243,32 +271,17 @@ ATTEMPT_REASON = "pending: an audit of this snapshot started and has not recorde
 COVERAGE_GATE = "dependency-audit-coverage"
 
 
-class Stop(Exception):
-    """A typed stop: exit code and message."""
-
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-
-
-class NotRun(Exception):
-    """The audit could not run: a category and the one action that remedies it."""
-
-    def __init__(self, category: str, remedy: str) -> None:
-        super().__init__(f"{category}: {remedy}")
-        self.category = category
-        self.remedy = remedy
-
-
-def load_sibling(filename: str, module_name: str, directory: str = SCRIPTS_DIR):
+def load_sibling(filename: str, module_name: str, directory: str = SCRIPTS_DIR, inject=None):
     """A script of this directory (or of `directory`), loaded by its path: hyphenated names cannot be imported,
-    and under python3 -I this directory is not on sys.path, so a planted module cannot stand in for it."""
+    and under python3 -I this directory is not on sys.path, so a planted module cannot stand in for it.
+    `inject` names modules set in the new module before its code runs, so two modules loaded here share one
+    instance of a third (one NotRun class, one registry of ecosystems) instead of each loading its own copy."""
     path = os.path.join(directory, filename)
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
+    module.__dict__.update(inject or {})
     # No __pycache__ in the plugin's directory: an installed plugin is read-only content.
     previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
     try:
@@ -278,71 +291,34 @@ def load_sibling(filename: str, module_name: str, directory: str = SCRIPTS_DIR):
     return module
 
 
-def sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-MIB = 1024 * 1024
-
-
-def mib(size: int) -> str:
-    """A size for a message, in MiB: at most one decimal from 1 MiB up, six below it."""
-    value = size / MIB
-    return (f"{value:.1f}" if value >= 1 else f"{value:.6f}").rstrip("0").rstrip(".") + " MiB"
+# The ecosystem-neutral half of the audit (the advisory data and its store, matching, classes, attribution and
+# the reports) and the PyPI inventory, each loaded once by path; the PyPI module is given this same shared module.
+osv = load_sibling("dependency_audit_osv.py", "ifs_dependency_audit_osv")
+pypi = load_sibling("dependency_audit_pypi.py", "ifs_dependency_audit_pypi", inject={"osv": osv})
+# The shared names this script's own Maven and Gradle code and its commands call, bound once; every other shared
+# name is used as osv.<name>, tests included, so each has one binding and a patch of it reaches every caller.
+Stop, NotRun, RefreshFailed = osv.Stop, osv.NotRun, osv.RefreshFailed
+GATE_NAME, INPUT_LIMIT, ID_GRAMMAR, WORD_RE = osv.GATE_NAME, osv.INPUT_LIMIT, osv.ID_GRAMMAR, osv.WORD_RE
+sha256, mib, shown, withheld, safe, safe_path, named_list, time_limit_remedy = \
+    osv.sha256, osv.mib, osv.shown, osv.withheld, osv.safe, osv.safe_path, osv.named_list, osv.time_limit_remedy
+inside, fold, nfd, name_rules, read_small, file_sha256 = \
+    osv.inside, osv.fold, osv.nfd, osv.name_rules, osv.read_small, osv.file_sha256
+state_home, default_cache_dir, private_dir = osv.state_home, osv.default_cache_dir, osv.private_dir
+data_record, data_line, match_package, INVENTORY_MEANING, CLASS_ORDER = \
+    osv.data_record, osv.data_line, osv.match_package, osv.INVENTORY_MEANING, osv.CLASS_ORDER
+base_occurrences, gate_status, empty_result = osv.base_occurrences, osv.gate_status, osv.empty_result
+one_line, not_run_line, off_line, status_line, occurrence_line, render_text, render_json = \
+    osv.one_line, osv.not_run_line, osv.off_line, osv.status_line, osv.occurrence_line, osv.render_text, \
+    osv.render_json
 
 
 # ---------------------------------------------------------------- what may appear in a report
-# A report is read by a model, so nothing reaches it that an advisory, a build file or the build tool could
-# word freely. A value is printed only when it passes its grammar; one that does not is replaced by a digest
-# of itself (the real text stays in the private build output). Paths, which no grammar can cover, are escaped
-# and capped instead.
-UNSAFE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
-class _AdvisoryIdGrammar:
-    """An advisory id (GHSA-xxxx-xxxx-xxxx, CVE-2024-1234, PYSEC-2021-1): a prefix of a letter and up to 15
-    letters or digits, then one to six parts of one to 32 letters or digits, each after a dash. Checked by
-    splitting at the dashes rather than with one regex whose quantified group holds a quantifier, so no
-    input can make the check backtrack; match() is the regex interface the callers use."""
-    PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9]{0,15}")
-    PART = re.compile(r"[A-Za-z0-9]{1,32}")
-
-    def match(self, value) -> bool:
-        parts = value.split("-") if isinstance(value, str) else []
-        return 2 <= len(parts) <= 7 and bool(self.PREFIX.fullmatch(parts[0])) and \
-            all(self.PART.fullmatch(part) for part in parts[1:])
-
-
-ID_GRAMMAR = _AdvisoryIdGrammar()
-NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")  # a groupId or an artifactId
-VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$")
-WORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")  # a scope, a type, a classifier, a configuration
-TOOL_VERSION_RE = re.compile(r"^[0-9][A-Za-z0-9_.+-]{0,31}$")
-PROFILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
-HEX_RE = re.compile(r"^[0-9a-f]{40,64}$")
-PLAIN_PATH_RE = re.compile(r"^[A-Za-z0-9_./+@-]{1,240}$")
-SEVERITY_WORDS = ("CRITICAL", "HIGH", "MODERATE", "MEDIUM", "LOW")
-MAX_SHOWN = 240
-
-
-def shown(text) -> str:
-    """text for a report line: every UNSAFE_RE character as \\n, \\t, \\xNN or \\uNNNN, a backslash doubled
-    first, and capped, so a path cannot start a line of its own or reorder the text."""
-    named = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
-
-    def esc(m):
-        ch = m.group(0)
-        return named.get(ch) or ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
-    out = UNSAFE_RE.sub(esc, str(text).replace("\\", "\\\\"))
-    return out if len(out) <= MAX_SHOWN else out[:MAX_SHOWN] + "..."
-
-
-def withheld(kind: str, value) -> str:
-    digest = sha256(str(value).encode("utf-8", "surrogatepass"))[:12]
-    return f"({kind} withheld, sha256 {digest})"
-
-
-def safe(value, pattern, kind: str) -> str:
-    """value when it passes its grammar, else a placeholder naming what was withheld and its digest."""
-    return value if isinstance(value, str) and pattern.match(value) else withheld(kind, value)
+# The grammars of what Maven, Gradle and their build files name; the shared ones (advisory ids, paths) and the
+# rule for a value that fails its grammar are dependency_audit_osv.py's.
+NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z")  # a groupId or an artifactId
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}\Z")
+TOOL_VERSION_RE = re.compile(r"^[0-9][A-Za-z0-9_.+-]{0,31}\Z")
+PROFILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\Z")
 
 
 def safe_coordinate(package: str) -> str:
@@ -350,20 +326,6 @@ def safe_coordinate(package: str) -> str:
     if sep and NAME_RE.match(group) and NAME_RE.match(artifact):
         return package
     return withheld("coordinate", package)
-
-
-def safe_path(path: str) -> str:
-    """A repository-relative path for a report: as it is when plain, else withheld (a directory can be named
-    like an instruction)."""
-    return path if PLAIN_PATH_RE.match(path) else withheld("path", path)
-
-
-def iso_date(seconds) -> str:
-    """The UTC date of a timestamp, 'unknown' when there is none."""
-    try:
-        return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).strftime("%Y-%m-%d")
-    except (TypeError, ValueError, OverflowError, OSError):  # no timestamp, or one no calendar holds
-        return "unknown"
 
 
 # ---------------------------------------------------------------- the setting
@@ -392,108 +354,6 @@ def saved_setting():
         return str(saved[0][SETTING]), saved[1], list(cfg.files)
     return None, "", list(cfg.files)
 
-
-def inside(path: str, root: str) -> bool:
-    """Whether path is root or lies below it, for every name of either: on a volume that ignores letter case or
-    Unicode normalisation /p/Repo and /p/repo are one directory, which comparing strings would miss. Both are
-    resolved first; then each existing component of path, from the deepest up, is compared by identity (lstat's
-    st_dev and st_ino, never following a link) with root, or, for a root not created yet, with its deepest
-    existing directory, below which the names must match root's in letter case and normalisation folded (fold),
-    as they would on a volume that ignores both. So a component that is root under another spelling makes path
-    inside, and so does a new file below it. What cannot be read counts as inside, since every caller refuses
-    what is inside: an lstat that fails for any reason but a missing name, and a link among the resolved
-    components (the path changed after it was resolved)."""
-    try:
-        real, base = os.path.realpath(path), os.path.realpath(root)
-        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
-            return True
-        anchor, missing = existing_prefix(base)
-        if anchor is None:
-            return True
-        target = os.lstat(anchor)
-        if stat.S_ISLNK(target.st_mode):
-            return True
-        names = [part for part in real.split(os.sep) if part]
-        for depth in range(len(names), -1, -1):
-            try:
-                st = os.lstat(os.sep + os.sep.join(names[:depth]))
-            except (FileNotFoundError, NotADirectoryError):
-                continue  # not created yet: a directory above it decides
-            if stat.S_ISLNK(st.st_mode):
-                return True
-            if (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino):
-                below = names[depth:depth + len(missing)]
-                return len(below) == len(missing) and all(fold(a) == fold(b) for a, b in zip(below, missing))
-        return False
-    except (OSError, ValueError):
-        return True
-
-
-def existing_prefix(path: str) -> tuple:
-    """(the deepest existing directory at or above the absolute path, the names below it), or (None, []) when
-    that cannot be read: an lstat that fails for any reason but a missing name."""
-    names = [part for part in path.split(os.sep) if part]
-    for depth in range(len(names), -1, -1):
-        prefix = os.sep + os.sep.join(names[:depth])
-        try:
-            os.lstat(prefix)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except (OSError, ValueError):
-            return None, []
-        return prefix, names[depth:]
-    return None, []
-
-
-def fold(name: str) -> str:
-    """name as a volume that ignores letter case and Unicode normalisation compares it: the Unicode canonical
-    caseless match, "NFD(toCasefold(NFD(X))) = NFD(toCasefold(NFD(Y)))" (The Unicode Standard, section 3.13,
-    D145, read 2026-11-24), with format characters (Unicode category Cf) dropped first, since HFS+ skips some of
-    them when it compares names."""
-    if name.isascii():
-        return name.lower()
-    visible = "".join(ch for ch in name if unicodedata.category(ch) != "Cf")
-    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", visible).casefold())
-
-
-def nfd(name: str) -> str:
-    return unicodedata.normalize("NFD", name)
-
-
-def name_rules(directory: str) -> tuple:
-    """(case, normalisation): whether the file system under `directory` takes two names that differ only in
-    letter case (only in Unicode normalisation form) for one; True, False, or None when that cannot be
-    established. The volume itself is asked: a directory is created there under a name with a letter of each
-    kind, looked up under its other spellings and removed again, so the answer holds for an empty directory,
-    whatever the operating system."""
-    try:
-        probe = tempfile.mkdtemp(prefix=".ifs-name-probe-\u00e9-", dir=directory)
-    except (OSError, ValueError, UnicodeError):
-        return None, None
-    try:
-        head, name = os.path.split(probe)
-        return (one_name(probe, os.path.join(head, name.swapcase())),
-                one_name(probe, os.path.join(head, nfd(name))))
-    finally:
-        with contextlib.suppress(OSError):
-            os.rmdir(probe)
-
-
-def one_name(path: str, other: str):
-    """Whether `other` names the directory `path`: True or False, None when that cannot be read. A directory
-    has one name only (no hard link reaches one), so the same identity under both shows the volume took the
-    two spellings for one."""
-    try:
-        here = os.lstat(path)
-    except (OSError, ValueError):
-        return None
-    try:
-        there = os.lstat(other)
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-    except (OSError, ValueError):
-        return None
-    return (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
 
 
 def resolve_setting(flag, environ, repo, saved=saved_setting) -> Setting:
@@ -667,684 +527,39 @@ def compare_versions(a: str, b: str) -> int:
     return _compare_item(parse_version(a), parse_version(b))
 
 
-# ---------------------------------------------------------------- the advisory dataset and its index
-EVENT_KINDS = ("introduced", "fixed", "last_affected", "limit")
-# The range type whose versions Maven's ordering compares. A SEMVER range is ordered by SemVer 2.0.0, whose rules
-# differ from Maven's (build metadata, pre-release identifiers), so it is not evaluated: its entry is opaque.
-VERSIONED_RANGES = ("ECOSYSTEM",)
-
-
-class DataError(Exception):
-    """The advisory data is not what the export holds: nothing is published from it."""
-
-
+# ---------------------------------------------------------------- the Maven forms of the shared functions
+# The advisory data, its store and matching are dependency_audit_osv.py's, given an ecosystem; these are their
+# Maven forms, which the Java path and its tests use. MAVEN itself is defined with the report wording below.
 def normalise_entry(affected) -> dict | None:
-    """One Maven `affected` entry as the matcher reads it, None for another ecosystem. `opaque` marks an entry
-    holding something the matcher does not understand (a range type, an event, no version information at
-    all): it can still match by what was understood, and otherwise is reported, never dropped."""
-    package = affected.get("package") if isinstance(affected, dict) else None
-    ecosystem = package.get("ecosystem") if isinstance(package, dict) else None
-    if not isinstance(ecosystem, str) or not (ecosystem == "Maven" or ecosystem.startswith("Maven:")):
-        return None
-    name = package.get("name")
-    if not isinstance(name, str) or not name:
-        raise DataError("a Maven entry without a package name")
-    opaque = False
-    versions = affected.get("versions") or []
-    if not isinstance(versions, list) or not all(isinstance(v, str) for v in versions):
-        versions, opaque = [], True
-    ranges = []
-    listed = affected.get("ranges") or []
-    if not isinstance(listed, list):
-        listed, opaque = [], True
-    for rng in listed:
-        kind = rng.get("type") if isinstance(rng, dict) else None
-        if kind == "GIT":
-            continue  # commits, not versions: says nothing the matcher could use or get wrong
-        events = rng.get("events") if isinstance(rng, dict) else None
-        pairs = []
-        if kind in VERSIONED_RANGES and isinstance(events, list):
-            for event in events:
-                if isinstance(event, dict) and len(event) == 1:
-                    (key, bound), = event.items()
-                    if key in EVENT_KINDS and isinstance(bound, str) and bound:
-                        pairs.append([key, bound])
-                        continue
-                pairs = None
-                break
-        if not pairs or not well_formed(pairs):
-            opaque = True
-            continue
-        ranges.append(pairs)
-    if not versions and not ranges:
-        opaque = True
-    return {"package": name, "versions": versions, "ranges": ranges, "opaque": opaque}
-
-
-def well_formed(pairs: list) -> bool:
-    """Whether a range's events can be read one way only: at least one introduced, fixed or last_affected but
-    not both (OSV schema, ossf.github.io/osv-schema, read 2026-11-24), and no two events of different kinds at
-    versions Maven orders as equal, whose order would then be the record's order and not the versions'."""
-    kinds = {key for key, _bound in pairs}
-    if "introduced" not in kinds or {"fixed", "last_affected"} <= kinds:
-        return False
-    for i, (key, bound) in enumerate(pairs):
-        for other_key, other_bound in pairs[i + 1:]:
-            if key != other_key and _event_order([key, bound], [other_key, other_bound]) == 0:
-                return False
-    return True
+    return osv.normalise_entry(affected, MAVEN)
 
 
 def normalise_record(raw) -> dict | None:
-    """One OSV record reduced to the facts the audit uses (no summary, details or references are kept, so no
-    advisory text is even stored); None for a withdrawn record or one with no Maven entry."""
-    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not raw["id"]:
-        raise DataError("a record without an id")
-    if raw.get("withdrawn"):
-        return None
-    affected = raw.get("affected") or []
-    if not isinstance(affected, list):
-        raise DataError(f"record {raw['id'][:40]!r}: affected is not a list")
-    entries = [e for e in (normalise_entry(a) for a in affected) if e is not None]
-    if not entries:
-        return None
-    specific = raw.get("database_specific")
-    word = specific.get("severity") if isinstance(specific, dict) else None
-    word = word.upper() if isinstance(word, str) and word.upper() in SEVERITY_WORDS else ""
-    aliases = raw.get("aliases") or []
-    aliases = sorted({a for a in aliases if isinstance(a, str)}) if isinstance(aliases, list) else []
-    modified = raw.get("modified") if isinstance(raw.get("modified"), str) else ""
-    return {"id": raw["id"], "aliases": aliases, "severity": word, "modified": modified, "affected": entries}
+    return osv.normalise_record(raw, MAVEN)
 
 
 def build_dataset(records, minimum: int = MIN_ADVISORIES) -> dict:
-    """The dataset of an iterable of parsed OSV records; DataError when it holds fewer than `minimum` usable
-    advisories, or two different records under one id (which one is current cannot be told, and keeping
-    either could drop an affected range or a withdrawal); a record repeated byte for byte is read once.
-    `minimum` is an argument for the unit tests only: no command passes one."""
-    advisories, withdrawn, seen = [], 0, {}
-    for raw in records:
-        record = normalise_record(raw)
-        digest = sha256(json.dumps(raw, sort_keys=True, ensure_ascii=True).encode("ascii"))
-        if raw["id"] in seen:
-            if seen[raw["id"]] != digest:
-                raise DataError(f"two different records with the id {shown(raw['id'][:40])}")
-            continue
-        seen[raw["id"]] = digest
-        if raw.get("withdrawn"):
-            withdrawn += 1
-        if record is not None:
-            advisories.append(record)
-    if len(advisories) < minimum:
-        raise DataError(f"{len(advisories)} usable advisories, fewer than the minimum of {minimum}")
-    advisories.sort(key=lambda r: r["id"])
-    return {"schema": DATASET_SCHEMA, "advisories": advisories, "withdrawn": withdrawn}
-
-
-def dataset_bytes(dataset: dict) -> bytes:
-    """Canonical, so one export gives one digest on every machine."""
-    return json.dumps(dataset, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-
-
-def newest_modified(dataset: dict) -> str:
-    return max((r["modified"] for r in dataset["advisories"]), default="")
-
-
-class Index:
-    """The dataset by `group:artifact`: every affected entry kept apart, with the advisory it belongs to."""
-
-    def __init__(self, dataset: dict) -> None:
-        self.count = len(dataset["advisories"])
-        self.by_package: dict = {}
-        for advisory in dataset["advisories"]:
-            for entry in advisory["affected"]:
-                self.by_package.setdefault(entry["package"], []).append((advisory, entry))
-
-    def entries(self, package: str) -> list:
-        return self.by_package.get(package, [])
-
-
-# ---------------------------------------------------------------- matching and the reported fix
-def _event_order(a: list, b: list) -> int:
-    # "0" is OSV's word for "from the first version", whatever the ecosystem's ordering makes of it.
-    if (a[0] == "introduced" and a[1] == "0") != (b[0] == "introduced" and b[1] == "0"):
-        return -1 if a[1] == "0" and a[0] == "introduced" else 1
-    return compare_versions(a[1], b[1])
-
-
-def range_state(events: list, version: str) -> tuple:
-    """(affected, fix): whether `version` lies inside the range, and the fixed event that closes the interval
-    it lies in. limit is an exclusive upper bound like fixed, but names no fix."""
-    affected, fix = False, None
-    for kind, bound in sorted(events, key=functools.cmp_to_key(_event_order)):
-        order = 1 if (kind == "introduced" and bound == "0") else compare_versions(version, bound)
-        if kind == "introduced":
-            if order >= 0:
-                affected, fix = True, None
-        elif kind == "last_affected":
-            if order > 0:
-                affected = False
-        elif order >= 0:
-            affected = False
-        elif affected and fix is None and kind == "fixed":
-            fix = bound
-    return affected, fix
+    return osv.build_dataset(records, MAVEN, minimum)
 
 
 def match_entry(entry: dict, version: str) -> tuple:
-    """(basis, fix) of `version` against one affected entry: basis is 'range', 'enumerated version', 'both',
-    'not evaluable' (nothing understood matched, and the entry holds something that was not understood) or
-    None; fix is the highest fixed event closing a matching range."""
-    listed = version in entry["versions"]
-    in_range, fix = False, None
-    for events in entry["ranges"]:
-        hit, bound = range_state(events, version)
-        if hit:
-            in_range = True
-            if bound is not None and (fix is None or compare_versions(bound, fix) > 0):
-                fix = bound
-    if listed or in_range:
-        return ("both" if listed and in_range else "range" if in_range else "enumerated version"), fix
-    return ("not evaluable" if entry["opaque"] else None), None
+    return osv.match_entry(entry, version, MAVEN)
 
 
-def reported_fix(entries: list, version: str, start) -> tuple:
-    """(fix, checked) to report for an artifact: `start` (the highest fixed event of the ranges that matched)
-    matched again against every entry for the artifact, moving up to a later fixed event while it is still
-    affected. fix is None when the data names no version that is unaffected; checked is False when an entry
-    for the artifact could not be evaluated at the fix, which then is the advisories' word only."""
-    later = sorted({bound for _adv, entry in entries for events in entry["ranges"] for kind, bound in events
-                    if kind == "fixed" and compare_versions(bound, version) > 0},
-                   key=functools.cmp_to_key(compare_versions))
-    candidate = start
-    for _ in range(len(later) + 1):
-        if candidate is None:
-            return None, True
-        hits = [match_entry(entry, candidate) for _adv, entry in entries]
-        opaque = any(basis == "not evaluable" for basis, _fix in hits)
-        hits = [(basis, fix) for basis, fix in hits if basis not in (None, "not evaluable")]
-        if not hits:
-            return candidate, not opaque
-        closing = [fix for _basis, fix in hits if fix is not None]
-        above = [v for v in later if compare_versions(v, candidate) > 0]
-        candidate = max(closing, key=functools.cmp_to_key(compare_versions)) if closing else \
-            above[0] if above else None
-    return None, True
+class Index(osv.Index):
+    """The Maven dataset by `group:artifact`."""
 
+    def __init__(self, dataset: dict) -> None:
+        super().__init__(dataset, MAVEN)
 
-def review_class(advisory: dict, basis: str) -> tuple:
-    """(class, unsure) of one match: the GitHub severity word decides; a malicious-package record is a
-    Blocker; an unknown word, and an entry that could not be evaluated, are Major and unsure, so doubt never
-    lowers a class."""
-    if basis == "not evaluable":
-        return "Major", True
-    if advisory["id"].startswith("MAL-"):
-        return "Blocker", False
-    word = advisory["severity"]
-    if word in ("CRITICAL", "HIGH"):
-        return "Blocker", False
-    if word in ("MODERATE", "MEDIUM"):
-        return "Major", False
-    if word == "LOW":
-        return "Minor", False
-    return "Major", True
 
+class Store(osv.Store):
+    """The Maven advisory cache, the cache directory itself."""
 
-CLASS_ORDER = {"Blocker": 0, "Major": 1, "Minor": 2}
-
-
-def match_package(index: Index, package: str, version: str) -> dict:
-    """Every advisory matching `package` at `version`, one per advisory id (its strongest basis), and the fix
-    to report for the artifact."""
-    entries = index.entries(package)
-    found: dict = {}
-    start = None
-    for advisory, entry in entries:
-        basis, fix = match_entry(entry, version)
-        if basis is None:
-            continue
-        if fix is not None and (start is None or compare_versions(fix, start) > 0):
-            start = fix
-        known = found.get(advisory["id"])
-        if known is None or known["basis"] == "not evaluable":
-            cls, unsure = review_class(advisory, basis)
-            found[advisory["id"]] = {"id": advisory["id"], "aliases": advisory["aliases"],
-                                     "severity": advisory["severity"] or "UNKNOWN", "class": cls,
-                                     "unsure": unsure, "basis": basis}
-        elif basis != "not evaluable" and known["basis"] != basis:
-            known["basis"] = "both"
-    advisories = sorted(found.values(), key=lambda a: (CLASS_ORDER[a["class"]], a["id"]))
-    fix, checked = reported_fix(entries, version, start) if advisories else (None, True)
-    return {"advisories": advisories, "fix": fix, "fix_checked": checked}
-
-
-# ---------------------------------------------------------------- the advisory store
-class FetchError(Exception):
-    """The download did not give a usable answer."""
-
-
-class RefreshFailed(Exception):
-    """A refresh or import that published nothing; the dataset published before it is untouched."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-
-def state_home() -> str:
-    """The plugin's state directory, located from HOME alone: CLAUDE_PLUGIN_DATA and XDG_STATE_HOME are two
-    more variables a repository's settings could point at a directory it controls."""
-    return os.path.join(os.path.expanduser("~"), ".local", "state", "implement-from-spec")
-
-
-def default_cache_dir() -> str:
-    return os.path.join(state_home(), "advisories")
-
-
-def then_run(what: str) -> str:
-    """The command a state-entry remedy ends with: refresh for the advisory cache, the audit otherwise."""
-    return "run refresh" if what == "advisory cache" else "run the audit again"
-
-
-def check_owned(path: str, directory: bool, what: str = "advisory cache") -> None:
-    """A state entry (the advisory cache, the build output directory) must be the user's own, writable by no
-    one else, never a link, and a file has one name only: anyone else who could write it could plant advisory
-    data or read the build output, and a second name is a way in that this path's checks do not see."""
-    check_stat(os.lstat(path), path, directory, what)
-
-
-def check_stat(st, path: str, directory: bool, what: str) -> None:
-    then = then_run(what)
-    kind_ok = stat.S_ISDIR(st.st_mode) if directory else stat.S_ISREG(st.st_mode)
-    if not kind_ok:
-        kind = "directory" if directory else "regular file"
-        raise NotRun(f"{what} refused", f"{shown(path)} is a link or not a {kind}: remove it and {then}")
-    if st.st_uid != os.geteuid():
-        raise NotRun(f"{what} refused", f"{shown(path)} belongs to another user: remove it and {then}")
-    if st.st_mode & 0o022:
-        raise NotRun(f"{what} refused", f"{shown(path)} can be written by other users: run `chmod go-w "
-                                        f"{shown(path)}`, then {then}")
-    if not directory and st.st_nlink != 1:
-        raise NotRun(f"{what} refused", f"{shown(path)} has another name (a hard link): remove it and {then}")
-
-
-def read_private(path: str, what: str = "advisory cache", limit: int = MAX_TOTAL_BYTES) -> bytes:
-    """The bytes of a state file, checked on the descriptor that is read, so the file checked is the file
-    read: opened without following a link or blocking on a special file."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    with os.fdopen(fd, "rb") as fh:
-        check_stat(os.fstat(fh.fileno()), path, False, what)
-        return fh.read(limit)
-
-
-def private_dir(path: str, repo, what: str) -> str:
-    """`path` as a directory of the user's own, created 0700; refused when it resolves inside the repository
-    under audit, where the change itself could have written it."""
-    if repo and inside(path, repo):
-        raise NotRun(f"{what} refused", f"{shown(path)} resolves inside the repository under audit: run the audit "
-                                        "with HOME set to your own home directory")
-    try:
-        os.makedirs(path, mode=0o700, exist_ok=True)
-    except OSError as exc:
-        raise NotRun(f"{what} refused", f"{shown(path)} cannot be created ({exc.strerror}): create it as a "
-                                        f"directory of your own, then {then_run(what)}")
-    check_owned(path, directory=True, what=what)
-    return path
-
-
-def write_private(path: str, data: bytes) -> None:
-    """Atomically, 0600, never through a link."""
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-
-
-def no_redirect_opener():
-    """A urllib opener that follows no redirect: the export is read from the one fixed URL or not at all."""
-    import urllib.request  # here, not at the top: register and a fresh cache never need the network modules
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-            raise FetchError(f"the server answered with a redirect ({code}), which is never followed")
-
-    return urllib.request.build_opener(NoRedirect)
-
-
-def read_limited(stream, limit: int, deadline: float, clock=time.monotonic) -> bytes:
-    """Everything `stream` holds, refused past `limit` bytes or `deadline` seconds."""
-    started, chunks, size = clock(), [], 0
-    while True:
-        if clock() - started > deadline:
-            raise FetchError(f"no complete answer within {int(deadline)} seconds")
-        chunk = stream.read(1 << 16)
-        if not chunk:
-            return b"".join(chunks)
-        size += len(chunk)
-        if size > limit:
-            raise FetchError(f"the download is larger than {mib(limit)}")
-        chunks.append(chunk)
-
-
-def http_fetch(url: str, headers: dict, limit: int = MAX_DOWNLOAD_BYTES,
-               deadline: float = DOWNLOAD_DEADLINE_SECONDS) -> tuple:
-    """(status, body, {"last-modified", "etag"}) of one HTTPS GET: no redirect followed, at most `limit` bytes
-    within `deadline` seconds, certificates verified by Python's default context (TM-29). 304 is an answer."""
-    if not url.startswith("https://"):
-        raise FetchError("refusing a download that is not https")
-    import urllib.error
-    import urllib.request
-    request = urllib.request.Request(url, headers=dict(headers, **{"User-Agent": USER_AGENT}))
-    try:
-        # https-only is enforced above (the scheme check B310 asks for).
-        timeout = min(SOCKET_TIMEOUT_SECONDS, deadline)  # a peer trickling bytes is held to the deadline too
-        with no_redirect_opener().open(request, timeout=timeout) as resp:  # nosec B310
-            body = read_limited(resp, limit, deadline)
-            return resp.status, body, {"last-modified": resp.headers.get("Last-Modified"),
-                                       "etag": resp.headers.get("ETag")}
-    except urllib.error.HTTPError as exc:
-        if exc.code == 304:
-            return 304, b"", {}
-        raise FetchError(f"HTTP {exc.code}")
-    except FetchError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - URLError, a timeout, TLS, a cut connection: all one outcome
-        raise FetchError(type(exc).__name__)  # the kind is enough; the text is not printed
-
-
-def parse_record(data: bytes):
-    try:
-        return json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        raise DataError("a record that is not JSON")
-
-
-class Limits:
-    """How much of an archive or a directory is read before it is refused."""
-
-    def __init__(self, entries: int = MAX_ENTRIES, entry_bytes: int = MAX_ENTRY_BYTES,
-                 total_bytes: int = MAX_TOTAL_BYTES) -> None:
-        self.entries, self.entry_bytes, self.total_bytes = entries, entry_bytes, total_bytes
-        self.seen = self.total = 0
-
-    def charge(self, size: int) -> None:
-        self.seen += 1
-        self.total += size
-        if self.seen > self.entries:
-            raise DataError(f"more than {self.entries} entries")
-        if size > self.entry_bytes:
-            raise DataError(f"an entry larger than {mib(self.entry_bytes)}")
-        if self.total > self.total_bytes:
-            raise DataError(f"more than {mib(self.total_bytes)} in all")
-
-
-def read_archive(source, limits: Limits):
-    """The parsed records of the export zip (bytes, or a path), read in memory: nothing is extracted to disk,
-    and the limits apply to what is actually read, whatever sizes the archive declares."""
-    try:
-        with zipfile.ZipFile(io.BytesIO(source) if isinstance(source, bytes) else source) as archive:
-            for info in archive.infolist():
-                if info.is_dir() or not info.filename.endswith(".json"):
-                    continue
-                with archive.open(info) as fh:
-                    data = fh.read(limits.entry_bytes + 1)
-                limits.charge(len(data))
-                yield parse_record(data)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError, RuntimeError, NotImplementedError) as exc:
-        raise DataError(f"not a readable zip archive ({type(exc).__name__})")
-    except Exception as exc:  # noqa: BLE001 - zlib.error and the like: a corrupt member
-        if isinstance(exc, DataError):
-            raise
-        raise DataError(f"a corrupt archive ({type(exc).__name__})")
-
-
-def read_directory(path: str, limits: Limits):
-    """The parsed records of an unpacked export: every *.json under `path`, links never followed. A directory
-    that cannot be listed, a linked directory and a record that is not a regular file stop the import: a
-    traversal that skipped part of the export would publish less than it holds."""
-    def refuse(exc):
-        raise DataError(f"a directory that cannot be read ({exc.strerror})")
-
-    for current, dirs, files in os.walk(path, followlinks=False, onerror=refuse):
-        dirs.sort()
-        if any(os.path.islink(os.path.join(current, d)) for d in dirs):
-            raise DataError("a linked directory in the export, which is not followed")
-        for name in sorted(files):
-            if not name.endswith(".json"):
-                continue
-            try:
-                fd = os.open(os.path.join(current, name),
-                             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-                with os.fdopen(fd, "rb") as fh:
-                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                        raise DataError("a record that is not a regular file")
-                    data = fh.read(limits.entry_bytes + 1)
-            except OSError as exc:
-                raise DataError(f"a record that cannot be read ({exc.strerror})")
-            limits.charge(len(data))
-            yield parse_record(data)
-
-
-class Store:
-    """The advisory cache: one published dataset (datasets/<sha256>.json) named by current.json, which holds
-    its digest, its count and three dates kept apart: when the server last changed the export (published),
-    when the plugin last checked with the server (checked) and when the dataset was validated. The clock, the
-    network and the minimum are arguments so the tests need no environment knob."""
-
-    def __init__(self, directory: str, repo=None, fetch=http_fetch, now=time.time,
-                 minimum: int = MIN_ADVISORIES, limits=Limits, deadline=None) -> None:
-        self.directory, self.repo, self.fetch, self.now = directory, repo, fetch, now
-        self.minimum, self.limits = minimum, limits
-        self.deadline = deadline  # time.monotonic() by which an audit must end, None for refresh and check
-
-    def seconds_left(self, most: float) -> float:
-        return most if self.deadline is None else min(most, self.deadline - time.monotonic())
-
-    # -- files
-    def prepare(self) -> None:
-        private_dir(self.directory, self.repo, "advisory cache")
-        private_dir(os.path.join(self.directory, "datasets"), self.repo, "advisory cache")
-
-    def _dataset_path(self, digest: str) -> str:
-        return os.path.join(self.directory, "datasets", digest + ".json")
-
-    def read_meta(self):
-        """current.json when it names a dataset, else None (nothing published, or a record nobody can use:
-        the next refresh replaces it)."""
-        path = os.path.join(self.directory, "current.json")
-        if not os.path.lexists(path):
-            return None
-        if os.path.islink(path):
-            check_owned(path, directory=False)  # refused by name
-        try:
-            meta = json.loads(read_private(path, limit=1024 * 1024).decode("utf-8"))
-        except (OSError, UnicodeDecodeError, ValueError):
-            return None
-        ok = (isinstance(meta, dict) and meta.get("schema") == CACHE_SCHEMA
-              and isinstance(meta.get("sha256"), str) and HEX_RE.match(meta["sha256"])
-              and isinstance(meta.get("advisories"), int) and isinstance(meta.get("checked"), (int, float))
-              and isinstance(meta.get("validated"), (int, float)) and meta.get("source") in ("download", "import")
-              and isinstance(meta.get("published"), str) and isinstance(meta.get("origin"), str)
-              and isinstance(meta.get("withdrawn", 0), int))
-        return meta if ok else None
-
-    def load(self, meta: dict) -> dict:
-        """The published dataset, its digest checked again: a file edited or swapped since it was validated is
-        refused, and so is one below the minimum."""
-        path = self._dataset_path(meta["sha256"])
-        if os.path.islink(path):
-            check_owned(path, directory=False)  # refused by name
-        try:
-            data = read_private(path)
-        except OSError:
-            raise NotRun("advisory data missing", "the published dataset is gone: run refresh")
-        if sha256(data) != meta["sha256"]:
-            raise NotRun("advisory data digest mismatch", "the dataset changed after it was validated: run refresh")
-        try:
-            dataset = json.loads(data.decode("ascii"))
-        except (UnicodeDecodeError, ValueError):
-            dataset = None
-        if not isinstance(dataset, dict) or dataset.get("schema") != DATASET_SCHEMA \
-                or not isinstance(dataset.get("advisories"), list):
-            raise NotRun("advisory data unreadable", "run refresh")
-        if len(dataset["advisories"]) < self.minimum or len(dataset["advisories"]) != meta["advisories"]:
-            raise NotRun("advisory data too small", f"{len(dataset['advisories'])} advisories, fewer than the "
-                                                    f"minimum of {self.minimum} or than the cache records: run refresh")
-        return dataset
-
-    def _publish(self, dataset: dict, source: str, origin: str, published: str, extra: dict) -> dict:
-        data = dataset_bytes(dataset)
-        digest = sha256(data)
-        now = self.now()
-        meta = dict(extra, schema=CACHE_SCHEMA, sha256=digest, advisories=len(dataset["advisories"]),
-                    withdrawn=dataset["withdrawn"], source=source, origin=origin, published=published,
-                    newest_record=newest_modified(dataset), checked=now, validated=now)
-        previous = self.read_meta()
-        write_private(self._dataset_path(digest), data)
-        self._write_meta(meta)
-        # The previous generation is kept: an audit reads current.json and then its dataset without the lock,
-        # and may have read the metadata this publication just replaced.
-        keep = {digest + ".json"} | ({previous["sha256"] + ".json"} if previous else set())
-        for name in os.listdir(os.path.join(self.directory, "datasets")):
-            if name not in keep:
-                with contextlib.suppress(OSError):
-                    os.unlink(os.path.join(self.directory, "datasets", name))
-        return meta
-
-    def _write_meta(self, meta: dict) -> None:
-        write_private(os.path.join(self.directory, "current.json"),
-                      (json.dumps(meta, indent=2, sort_keys=True) + "\n").encode("utf-8"))
-
-    @contextlib.contextmanager
-    def lock(self):
-        """Refresh and import hold it, so two at once publish one after the other, never interleaved."""
-        path = os.path.join(self.directory, ".lock")
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-                     0o600)
-        try:
-            check_stat(os.fstat(fd), path, False, "advisory cache")
-            limit = time.monotonic() + LOCK_WAIT_SECONDS
-            total = self.deadline is not None and self.deadline < limit
-            limit = min(limit, self.deadline) if self.deadline is not None else limit
-            while fcntl:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() > limit:
-                        if total:
-                            raise NotRun("time limit", time_limit_remedy("the audit reached its total limit while "
-                                                                         "another refresh held the advisory cache"))
-                        raise NotRun("advisory cache busy", "another refresh holds its lock: run the command again")
-                    time.sleep(0.1)
-            yield
-        finally:
-            os.close(fd)
-
-    # -- refresh and import
-    def refresh(self, force: bool = False) -> tuple:
-        """(metadata, what happened): 'fresh' (checked within 24 hours, or by another refresh while this one
-        waited for the lock), 'not modified' (a 304: only the check date moves) or 'downloaded'. RefreshFailed
-        leaves the published dataset as it was."""
-        before = self.read_meta()
-        with self.lock():
-            meta = self.read_meta()
-            if meta and (meta != before or (not force and 0 <= self.now() - meta["checked"] < FRESH_SECONDS)):
-                return meta, "fresh"
-            headers = {}
-            if meta and meta["source"] == "download":
-                for header, key in (("If-Modified-Since", "last_modified"), ("If-None-Match", "etag")):
-                    value = meta.get(key)
-                    if isinstance(value, str) and re.match(r"^[\x20-\x7e]{1,200}$", value):
-                        headers[header] = value
-            try:
-                left = self.seconds_left(DOWNLOAD_DEADLINE_SECONDS)
-                if left < 1:
-                    raise FetchError("the audit reached its total time limit before the download")
-                status, body, got = self.fetch(EXPORT_URL, headers, deadline=left)
-                if status == 304 and meta:
-                    meta = dict(meta, checked=self.now())
-                    self._write_meta(meta)
-                    return meta, "not modified"
-                if status != 200:
-                    raise FetchError(f"HTTP {status}")
-                dataset = build_dataset(read_archive(body, self.limits()), self.minimum)
-            except (FetchError, DataError) as exc:
-                raise RefreshFailed(str(exc))
-            try:
-                published = iso_date(email.utils.mktime_tz(email.utils.parsedate_tz(got.get("last-modified") or "")))
-            except (TypeError, ValueError, OverflowError):
-                published = "unknown"
-            if published == "unknown":  # no usable Last-Modified header: the newest record dates the export
-                published = newest_modified(dataset)[:10]
-            extra = {"last_modified": got.get("last-modified"), "etag": got.get("etag"), "archive_sha256": sha256(body)}
-            return self._publish(dataset, "download", EXPORT_URL, published, extra), "downloaded"
-
-    def import_from(self, path: str) -> dict:
-        """Publishes a local copy of the export (the zip, or a directory of its records), held to the same
-        limits and the same minimum as a download. Its publication date is its newest record's."""
-        path = os.path.abspath(os.path.expanduser(path))
-        with self.lock():
-            try:
-                reader = read_directory if os.path.isdir(path) else read_archive
-                records = reader(path, self.limits())
-                dataset = build_dataset(records, self.minimum)
-            except DataError as exc:
-                raise RefreshFailed(str(exc))
-            return self._publish(dataset, "import", path, newest_modified(dataset)[:10], {})
-
-    def dataset_for_audit(self, cached_only: bool = False) -> tuple:
-        """(dataset, metadata, notes) for an audit, or NotRun: fresh data as it is; otherwise a refresh; when
-        that fails, data checked within 7 days, with a note; older than that, or none, and no audit."""
-        self.prepare()
-        meta = self.read_meta()
-        notes = []
-        age = self.now() - meta["checked"] if meta else None
-        if meta is None or not 0 <= age < FRESH_SECONDS:
-            reason = "--cached-data"
-            if not cached_only:
-                try:
-                    meta, _what = self.refresh()
-                    return self.load(meta), meta, notes
-                except RefreshFailed as exc:
-                    reason = f"the refresh failed: {exc.reason}"
-            command = ("run `dependency-audit.py refresh` with network access, or `refresh --from <zip>` with a "
-                       "copy of the export")
-            if meta is None:
-                raise NotRun("no advisory data", f"{reason}; {command}")
-            if not 0 <= age < USABLE_SECONDS:
-                raise NotRun("advisory data too old", f"last checked {iso_date(meta['checked'])}, more than 7 days "
-                                                      f"ago ({reason}); {command}")
-            notes.append(f"advisory data not checked with the server ({reason}); using data last checked "
-                         f"{iso_date(meta['checked'])}, published {safe_date(meta['published'])}")
-        return self.load(meta), meta, notes
-
-
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def safe_date(value) -> str:
-    return value if isinstance(value, str) and DATE_RE.match(value) else "unknown"
-
-
-def data_record(meta: dict) -> dict:
-    """What the reports say about the dataset, every value a date, a count, a digest or an escaped path."""
-    return {"source": "download" if meta["source"] == "download" else "import", "origin": shown(meta["origin"]),
-            "published": safe_date(meta["published"]), "checked": iso_date(meta["checked"]),
-            "validated": iso_date(meta["validated"]), "advisories": int(meta["advisories"]),
-            "sha256": meta["sha256"] if HEX_RE.match(str(meta["sha256"])) else "unknown"}
-
-
-def data_line(data: dict) -> str:
-    return (f"Data: OSV Maven export, {data['source']} ({data['origin']}); published {data['published']}; "
-            f"last checked {data['checked']}; validated {data['validated']}; {data['advisories']} advisories; "
-            f"dataset sha256 {data['sha256'][:16]}; {ATTRIBUTION}")
+    def __init__(self, directory: str, repo=None, fetch=None, now=time.time,
+                 minimum: int = MIN_ADVISORIES, limits=osv.Limits, deadline=None) -> None:
+        super().__init__(directory, MAVEN, repo=repo, fetch=fetch, now=now, minimum=minimum, limits=limits,
+                         deadline=deadline)
 
 
 # ---------------------------------------------------------------- materialisation and resolution
@@ -1408,7 +623,6 @@ DESCRIPTOR_RE = re.compile(r"The POM for (\S+) is (?:(missing), no dependency in
 # The lines that follow an unreadable-POM warning when Maven adds the reasons: one "[<severity>] <problem>" line
 # per problem of that POM, then an empty line.
 PROBLEM_LINE_RE = re.compile(r"^\[(?:FATAL|ERROR|WARNING)\] ")
-MAX_NAMED = 3  # coordinates a not-run line names, before "and N more"
 
 
 def is_resolution_input(rel: str, project: str = "") -> bool:
@@ -1578,40 +792,6 @@ def worktree_files(snap, root: str, git: bool) -> list:
     return found
 
 
-INPUT_LIMIT = 16 * MIB  # the most of one resolution input that is read to compare candidate and base
-
-
-def read_small(path: str, limit: int = INPUT_LIMIT):
-    """The bytes of a regular file, None when it is absent, a link, special or over `limit`."""
-    try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    except OSError:
-        return None
-    with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            return None
-        data = fh.read(limit + 1)
-    return data if len(data) <= limit else None
-
-
-def file_sha256(path: str):
-    """The sha256 of a regular file of any size, read in pieces; None when it is a link, special or unreadable."""
-    try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    except OSError:
-        return None
-    with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            return None
-        digest = hashlib.sha256()
-        try:
-            for piece in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(piece)
-        except OSError:
-            return None
-    return digest.hexdigest()
-
-
 def worktree_inputs(root: str, names: list, project: str) -> dict:
     """{path: sha256} of the resolution inputs in a working tree; a link or an unreadable file is recorded by
     what it is, so it never equals a regular file at the base."""
@@ -1771,18 +951,6 @@ def safe_artifact(text: str) -> str:
             and all(WORD_RE.match(p) for p in parts[2:-1]) and VERSION_RE.match(parts[-1]):
         return text
     return withheld("dependency", text)
-
-
-def named_list(values: list) -> str:
-    """Values for a not-run line: the first MAX_NAMED, cut short at MAX_SHOWN characters, then how many more."""
-    unique = list(dict.fromkeys(values))
-    shown_values: list = []
-    for value in unique[:MAX_NAMED]:
-        if shown_values and len(", ".join(shown_values + [value])) > MAX_SHOWN:
-            break
-        shown_values.append(value)
-    rest = len(unique) - len(shown_values)
-    return ", ".join(shown_values) + (f" and {rest} more" if rest else "")
 
 
 DESCRIPTOR_NOTES = {"missing": "the POM of {} was not found offline",
@@ -1980,13 +1148,6 @@ def run_build_tool(argv: list, cwd: str, timeout: float, log: str, environ) -> t
     finally:
         os.close(fd)
     return code, text
-
-
-def time_limit_remedy(what: str) -> str:
-    """The remedy of a time limit, naming both limits: a run is cut at the smaller of its own limit and what is
-    left of the audit's."""
-    return (f"{what}: raise --timeout, the limit of each build-tool run, or --total-timeout, the limit of the whole "
-            "audit")
 
 
 def tree_problem(parsed: dict, online: str, log: str):
@@ -2743,8 +1904,6 @@ def _resolve_directory(ctx: dict, project_dir: str, label: str, selection: tuple
 
 
 # ---------------------------------------------------------------- attribution and classification
-BLOCKS = (("introduced", "Introduced by this change"), ("unknown", "Attribution unknown"),
-          ("accepted", "Accepted by the user"), ("pre_existing", "Pre-existing"))
 INVENTORY = {
     "Maven": ("the dependencies of every module of the build, in every scope, as Maven resolved them for the default "
               "build configuration and, each in a run of its own, the profiles named. Not in it: build plugins, "
@@ -2755,8 +1914,6 @@ INVENTORY = {
                "trees, which Gradle's resolution result does not hold), shaded or relocated content, included builds. "
                "A module without metadata counts as unresolved, never as a module with no dependencies."),
 }
-INVENTORY_MEANING = ("An entry means a version matching an advisory is in the inventory, not that the vulnerable code "
-                     "is called; with no entry, the result is no matching advisory in this dataset.")
 
 
 def inventory_line(resolution) -> str:
@@ -2766,31 +1923,6 @@ def inventory_line(resolution) -> str:
     what = INVENTORY[tools[0]] if len(tools) == 1 else \
         f"for Maven, {INVENTORY['Maven']} For Gradle, {INVENTORY['Gradle']}"
     return f"Inventory: {what} {INVENTORY_MEANING}"
-
-
-def base_occurrences(modules: list) -> dict:
-    """{module: {(package, version): whether any occurrence ships}} of a resolved base."""
-    found: dict = {}
-    for module in modules:
-        seen = found.setdefault(module["id"], {})
-        for node in module["nodes"]:
-            key = (node["package"], node["version"])
-            seen[key] = seen.get(key, False) or node["ships"]
-    return found
-
-
-def attribution(module: dict, node: dict, base) -> str:
-    """Whose an occurrence is, so that old vulnerabilities in untouched dependencies never block a change that
-    neither added nor newly shipped them. `base` is None when no base was resolved: the occurrence is then
-    unknown and counts as the change's. Against a resolved base it is the change's when the base lacks that
-    module, coordinate and version, or had it only where it does not ship while the candidate ships it; an
-    occurrence whose scope narrowed is not new."""
-    if base is None:
-        return "unknown"
-    was = base.get(module["id"], {}).get((node["package"], node["version"]))
-    if was is None or (node["ships"] and not was):
-        return "introduced"
-    return "pre_existing"
 
 
 def module_label(module_id: str) -> str:
@@ -2827,94 +1959,9 @@ def occurrence(module: dict, node: dict, advisories: list, fix, fix_checked: boo
             "coordinate": safe_coordinate(node["package"]),
             "version": safe(node["version"], VERSION_RE, "version"), "scope": scope_label(node),
             "path": [path_label(package, version) for package, version in node["path"]],
-            "advisories": [{"id": safe(a["id"], ID_GRAMMAR, "advisory id"),
-                            "aliases": [alias for alias in a["aliases"] if ID_GRAMMAR.match(alias)][:3],
-                            "severity": a["severity"], "class": a["class"], "unsure": a["unsure"], "basis": a["basis"]}
-                           for a in advisories],
+            "advisories": osv.advisory_entries(advisories),
             "class": worst["class"],
             "fix": safe(fix, VERSION_RE, "version") if fix else None, "fix_checked": fix_checked}
-
-
-def evaluate(index: Index, modules: list, base, accept: list) -> dict:
-    """The four blocks of a report from an inventory: every occurrence matching an advisory goes to exactly
-    one of introduced, unknown and pre_existing with the advisories the user has not accepted, and to accepted
-    with those the user has. `accept` holds advisory ids or aliases; one that occurs nowhere is returned."""
-    wanted = {a.lower() for a in accept}
-    used: set = set()
-    blocks: dict = {key: [] for key, _title in BLOCKS}
-    dependencies = set()
-    for module in modules:
-        for node in module["nodes"]:
-            dependencies.add((module["id"], node["package"], node["version"]))
-            matched = match_package(index, node["package"], node["version"])
-            if not matched["advisories"]:
-                continue
-            taken, left = [], []
-            for advisory in matched["advisories"]:
-                names = {advisory["id"].lower(), *(alias.lower() for alias in advisory["aliases"])} & wanted
-                used |= names
-                (taken if names else left).append(advisory)
-            if taken:
-                blocks["accepted"].append(occurrence(module, node, taken, matched["fix"], matched["fix_checked"]))
-            if left:
-                blocks[attribution(module, node, base)].append(occurrence(module, node, left, matched["fix"],
-                                                                           matched["fix_checked"]))
-    for entries in blocks.values():
-        entries.sort(key=lambda e: (CLASS_ORDER[e["class"]], e["module"], e["coordinate"], e["version"]))
-    return {"blocks": blocks, "dependencies": len(dependencies),
-            "unused_accepts": sorted(a for a in accept if a.lower() not in used)}
-
-
-def gate_status(blocks: dict, complete: bool) -> str:
-    """fail when an occurrence that is the change's, or whose attribution is unknown, is a Blocker or a Major
-    the user has not accepted, so the state cannot read clean while an introduced vulnerability is open;
-    otherwise pass only with complete coverage: a partial result keeps what it found and is otherwise not run,
-    so it never reads as clean."""
-    if any(e["class"] in ("Blocker", "Major") for key in ("introduced", "unknown") for e in blocks[key]):
-        return "fail"
-    return "pass" if complete else "not-run"
-
-
-# ---------------------------------------------------------------- rendering
-def one_line(text: str) -> str:
-    """The last guard of every status and report line: no control or bidirectional character survives."""
-    return UNSAFE_RE.sub(lambda m: "\\u%04x" % ord(m.group(0)), text)
-
-
-def not_run_line(category: str, remedy: str) -> str:
-    return one_line(f"Dependency audit: not run ({category}: {remedy})")
-
-
-def off_line(source: str) -> str:
-    return one_line(f"Dependency audit: off (configuration: {shown(source)})")
-
-
-def status_line(result: dict) -> str:
-    if result["status"] == "not-run":
-        return not_run_line(*result["problem"])
-    counts, blocks = result["counts"], result["blocks"]
-    coverage = "coverage complete" if result.get("coverage") != "partial" else \
-        f"coverage partial ({': '.join(result['problem'])})"
-    by_class = {name: sum(1 for e in blocks["introduced"] if e["class"] == name) for name in CLASS_ORDER}
-    return one_line(
-        f"Dependency audit: {result['status']} (introduced: {by_class['Blocker']} Blocker, {by_class['Major']} Major, "
-        f"{by_class['Minor']} Minor; attribution unknown: {len(blocks['unknown'])}; "
-        f"accepted: {len(blocks['accepted'])}; "
-        f"pre-existing: {len(blocks['pre_existing'])}; {counts['dependencies']} dependencies in {counts['modules']} "
-        f"modules; advisory data published {result['data']['published']}; {coverage})")
-
-
-def occurrence_line(entry: dict, labelled: bool = False) -> str:
-    """One report line; `labelled` names the build tool after the module, for a result two tools resolved."""
-    advisories = ", ".join(
-        f"{a['id']}{' (' + ', '.join(a['aliases']) + ')' if a['aliases'] else ''} {a['severity']} {a['class']}"
-        f"{' unsure' if a['unsure'] else ''} [{a['basis']}]" for a in entry["advisories"])
-    fix = f"fix reported: {entry['fix']}" if entry["fix"] else "no fixed version in the advisory data"
-    if entry["fix"] and not entry.get("fix_checked", True):
-        fix += " (not checked against every advisory: one could not be evaluated)"
-    tool = f" ({entry['tool']})" if labelled and entry.get("tool") else ""
-    return (f"- module {entry['module']}{tool}; {entry['coordinate']}:{entry['version']} ({entry['scope']}); "
-            f"path: {' > '.join(entry['path'])}; advisories: {advisories}; {fix}")
 
 
 def tool_text(info: dict) -> str:
@@ -2940,39 +1987,16 @@ def resolution_line(resolution: dict) -> str:
             f"{', '.join(resolution['modules'][:40]) or 'none'}; base: {resolution['base']}")
 
 
-def render_text(result: dict) -> str:
-    lines = [result["status_line"]]
-    lines.append(data_line(result["data"]) if result.get("data") else "Data: none loaded")
-    lines.append(resolution_line(result.get("resolution")))
-    lines.append(inventory_line(result.get("resolution")))
-    labelled = bool(result.get("resolution")) and len(result["resolution"]["tools"]) > 1
-    for key, title in BLOCKS:
-        entries = result["blocks"][key]
-        lines += ["", f"{title} ({len(entries)}):",
-                  *([occurrence_line(e, labelled) for e in entries] or ["- none"])]
-    notes = result["not_evaluated"]
-    lines += ["", f"Could not be evaluated ({len(notes)}):", *([f"- {n}" for n in notes] or ["- none"])]
-    if result.get("attempt"):
-        lines += ["", f"Report: attempt {result['attempt']} on snapshot {result['snapshot'][:12]}, "
-                      f"gates/{GATE_NAME}-{result['attempt']}.txt and input/{GATE_NAME}-{result['attempt']}.json"]
-    return "\n".join(one_line(line) for line in lines) + "\n"
-
-
-def render_json(result: dict) -> bytes:
-    keep = ("schema", "snapshot", "attempt", "status", "status_line", "problem", "coverage", "counts", "data",
-            "resolution", "inputs", "blocks", "not_evaluated", "accepted_ids")
-    body = {k: result.get(k) for k in keep}
-    return (json.dumps(body, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
+MAVEN = osv.register(osv.Ecosystem(
+    name="Maven", accepts=lambda name: name == "Maven" or name.startswith("Maven:"), export_url=EXPORT_URL,
+    minimum=MIN_ADVISORIES, label="OSV Maven export", attribution=ATTRIBUTION, compare=compare_versions,
+    occurrence=occurrence, resolution_line=resolution_line, inventory_line=inventory_line,
+    refresh_command="refresh",
+    refresh_remedy=("run `dependency-audit.py refresh` with network access, or `refresh --from <zip>` with a copy "
+                    "of the export")))
 
 
 # ---------------------------------------------------------------- the audit
-def empty_result(snapshot_id) -> dict:
-    return {"schema": SCHEMA, "snapshot": snapshot_id, "attempt": None, "status": "not-run", "problem": None,
-            "counts": {"dependencies": 0, "modules": 0}, "data": None, "resolution": None,
-            "inputs": {"candidate": {}, "base": None}, "blocks": {key: [] for key, _t in BLOCKS},
-            "not_evaluated": [], "accepted_ids": []}
-
-
 def resolve_base(snap, ctx: dict) -> tuple:
     """(base occurrences or None, the base's inputs or None, what the report says about the base). The base is
     always resolved from its own revision: no list of file names covers everything a build reads to choose
@@ -2994,45 +2018,373 @@ def resolve_base(snap, ctx: dict) -> tuple:
             f"resolved from {rev[:12]} with {inventory['selection']}")
 
 
+# ---------------------------------------------------------------- the PyPI side
+# The PyPI inventory (dependency_audit_pypi.py) reads files, never runs a tool: from the working tree through these
+# checks, or from a revision through git, the way materialise reads one, but without writing anything out.
+PYPI = pypi.PYPI
+
+
+class WorkTreeFiles:
+    """The working tree's files for the PyPI inventory: the paths a candidate holds (worktree_files) and a reader
+    that reads nothing else: a path that is not one of them (a git-ignored file, a file inside .git) is refused,
+    a link is followed only to another of them, and the file is opened without following a link, at most
+    INPUT_LIMIT bytes. The check is made on names, so it cannot stop a process that changes the working tree while
+    the audit reads it (the user's own processes, TM-34)."""
+
+    def __init__(self, snap, root: str, git: bool) -> None:
+        self.root, self.real_root = root, os.path.realpath(root)
+        # git ls-files --cached still names a tracked file the working tree deleted: it is not in the candidate
+        self.paths = {p for p in worktree_files(snap, root, git) if os.path.lexists(os.path.join(root, *p.split("/")))}
+
+    def read(self, rel: str) -> tuple:
+        if rel not in self.paths or pypi.in_git_dir(rel):
+            return None, "is not one of the candidate's files"
+        path = os.path.join(self.root, *rel.split("/"))
+        if not os.path.lexists(path):
+            return None, "is missing"
+        try:
+            target = os.path.relpath(os.path.realpath(path), self.real_root).replace(os.sep, "/")
+        except (OSError, ValueError):  # cannot be resolved, or on another drive: refused, never read
+            return None, "is a link that leaves the repository"
+        if target == ".." or target.startswith("../") or os.path.isabs(target):
+            return None, "is a link that leaves the repository"
+        if target not in self.paths or pypi.in_git_dir(target):
+            return None, "is a link to a file that is not one of the candidate's files"
+        data = read_small(os.path.join(self.real_root, *target.split("/")))
+        return (data, None) if data is not None else (None, f"is not a regular file of at most {mib(INPUT_LIMIT)}")
+
+    def close(self) -> None:
+        pass
+
+
+class RevisionFiles:
+    """A revision's files for the PyPI inventory, read with git ls-tree and git cat-file (no attribute or filter
+    applies): a link is followed inside the revision only, at most MAX_LINK_HOPS links, and a submodule or a
+    file over INPUT_LIMIT is not read."""
+
+    def __init__(self, snap, root: str, rev: str) -> None:
+        self.snap, self.root = snap, root
+        self.entries = {path: (mode, oid, size) for mode, oid, size, path in list_tree(snap, root, rev)}
+        self.paths = {p for p, (mode, _o, _s) in self.entries.items() if mode in ("100644", "100755", "120000")}
+        self.blobs = None
+
+    def read(self, rel: str) -> tuple:
+        for _hop in range(pypi.MAX_LINK_HOPS + 1):
+            found = None if pypi.in_git_dir(rel) else self.entries.get(rel)
+            if found is None or found[0] not in ("100644", "100755", "120000"):
+                return None, "is missing" if found is None else "is not a regular file"
+            mode, oid, size = found
+            if size > INPUT_LIMIT:
+                return None, f"is over {mib(INPUT_LIMIT)}"
+            if self.blobs is None:
+                self.blobs = BlobReader(self.snap, self.root)
+            data = self.blobs.read(oid)
+            if mode != "120000":
+                return data, None
+            pointer = os.fsdecode(data)
+            rel = posixpath.normpath(posixpath.join(posixpath.dirname(rel), pointer)) if pointer and \
+                not pointer.startswith("/") else ""
+            if not rel or rel == ".." or rel.startswith("../"):
+                return None, "is a link that leaves the repository"
+        return None, "is a chain of links longer than the audit follows"
+
+    def close(self) -> None:
+        if self.blobs is not None:
+            self.blobs.__exit__(None, None, None)
+            self.blobs = None
+
+
+def pypi_files(snap, ctx: dict, rev):
+    return WorkTreeFiles(snap, ctx["root"], ctx["git"]) if rev is None else RevisionFiles(snap, ctx["root"], rev)
+
+
+def pypi_inputs(files, project: str, budget) -> dict:
+    """{path: sha256} of every file of the side that can change the Python inventory (pypi.is_input), a file
+    that cannot be read recorded by what it is; each read charged to the side's budget (a file the inventory read
+    already is not charged again), so a repository of many such files stops at its limits."""
+    found = {}
+    for rel in sorted(p for p in files.paths if pypi.is_input(p, project) and not pypi.in_git_dir(p)):
+        budget.check_time()
+        data, _reason = files.read(rel)
+        if data is not None:
+            budget.charge(rel, len(data))
+        found[rel] = sha256(data) if data is not None else "not a readable regular file"
+    return found
+
+
+def pypi_budget(ctx: dict):
+    """A new budget for one pass over a PyPI side, ending at the audit's deadline."""
+    return pypi.Budget(deadline=ctx.get("deadline"))
+
+
+def pypi_tree(snap, ctx: dict, rev, label: str) -> tuple:
+    """(inventory, inputs) of the PyPI side of a working tree (rev None) or of a revision."""
+    files = pypi_files(snap, ctx, rev)
+    try:
+        where = shown(ctx["project_shown"]) if rev is None else f"{safe_path(ctx['project'] or '.')} of {rev[:12]}"
+        budget = pypi_budget(ctx)
+        return pypi.inventory(files, ctx["project"], where, budget), pypi_inputs(files, ctx["project"], budget)
+    finally:
+        files.close()
+
+
+def pypi_base(snap, ctx: dict) -> tuple:
+    """(base occurrences or None, the base's inputs or None, what the report says about the base) of the PyPI
+    side: the base revision's own files read the same way. A base without any Python dependency file has none of
+    the candidate's occurrences, which are then the change's; a module the base could not read whole leaves its
+    occurrences attribution unknown, and the modules it did read still attribute theirs."""
+    rev = ctx["base"]
+    if rev is None:
+        return None, None, "none given (every entry is attribution unknown)"
+    try:
+        files = RevisionFiles(snap, ctx["root"], rev)
+        budget = pypi_budget(ctx)
+        try:
+            if not pypi.selected(files, ctx["project"], budget):
+                return {}, pypi_inputs(files, ctx["project"], budget), (f"read from {rev[:12]}: no Python lock, pin "
+                                                                        "or declaration file there")
+            inventory = pypi.inventory(files, ctx["project"], f"{safe_path(ctx['project'] or '.')} of {rev[:12]}",
+                                       budget)
+            inputs = pypi_inputs(files, ctx["project"], budget)
+        finally:
+            files.close()
+    except NotRun as exc:
+        return None, None, f"not read from {rev[:12]} ({exc.category}): every entry is attribution unknown"
+    unread = [m for m in inventory["modules"] if not m["complete"]]
+    text = f"read from {rev[:12]}" + (f"; {len(unread)} of its modules not read whole, whose entries are attribution "
+                                      "unknown" if unread else "")
+    return pypi.base_occurrences(inventory["modules"]), inputs, text
+
+
+# ---------------------------------------------------------------- which ecosystems a project has
+ECOSYSTEM_CHOICES = {"maven": "Maven", "pypi": "PyPI"}  # the --ecosystem values
+
+
+def java_build_files(snap, ctx: dict, rev) -> bool:
+    """Whether the project directory holds a Maven or Gradle build file, in the working tree or at `rev`."""
+    project = ctx["project"]
+    names = ("pom.xml", *GRADLE_BUILD_FILES)
+    if rev is None:
+        directory = os.path.join(ctx["root"], project) if project else ctx["root"]
+        return any(os.path.isfile(os.path.join(directory, name)) for name in names)
+    prefix = project + "/" if project else ""
+    return any(mode in ("100644", "100755", "120000") and path.startswith(prefix) and path[len(prefix):] in names
+               for mode, _o, _s, path in list_tree(snap, ctx["root"], rev))
+
+
+def select_ecosystems(snap, ctx: dict) -> list:
+    """The ecosystems an audit covers, as the files found decide, like the Maven and Gradle choice: Maven for its
+    build files, PyPI for Python lock, pin or declaration files (pypi.selected), both when the project holds both,
+    since either may be what it ships; --ecosystem names one alone. Python sources with no Python dependency file
+    anywhere in the repository (pypi.undeclared) select PyPI too, whose part then passes with nothing to match.
+    A project with neither is audited as a Java
+    one, whose resolution then says what is missing. --build-tool, which is Maven's, makes it a Java project as
+    well, without leaving its Python files unread."""
+    chosen = ctx.get("ecosystem")
+    if chosen:
+        return [MAVEN if chosen == "maven" else PYPI]
+    rev = ctx["candidate"]
+    try:
+        java = ctx.get("build_tool") is not None or java_build_files(snap, ctx, rev)
+        files = pypi_files(snap, ctx, rev)
+    except NotRun:
+        return [MAVEN]  # the revision cannot be read: the audit then says so, as its result
+    try:
+        budget = pypi_budget(ctx)
+        python = bool(pypi.selected(files, ctx["project"], budget) or pypi.undeclared(files, ctx["project"], budget))
+    except NotRun:
+        python = True  # past the budget or the deadline: the PyPI side runs, and stops with the same reason
+    finally:
+        files.close()
+    if python and java:
+        return [MAVEN, PYPI]
+    if python:
+        return [PYPI]
+    ctx["nothing_found"] = True
+    return [MAVEN]
+
+
+# ---------------------------------------------------------------- the audit of each ecosystem, then together
+def run_side(snap, ctx: dict, ecosystem, store, side: dict) -> None:
+    """One ecosystem's part of an audit, written into `side` as each step finishes, so a NotRun leaves what was
+    established: the data, its notes, the inventory and inputs of the candidate, and the base. Maven loads its
+    data first, as it always has; PyPI reads its files first, which is cheap and needs no network, so a project
+    whose files cannot be read never waits for a download."""
+    if ecosystem is MAVEN:
+        dataset, meta, notes = store.dataset_for_audit(ctx["cached_only"])
+        side.update(data=data_record(meta), notes=notes)
+        inventory, inputs = resolve_tree(snap, ctx, ctx["candidate"], "candidate")
+        side["inputs"] = inputs
+        base, base_inputs, base_text = resolve_base(snap, ctx)
+        index = Index(dataset)
+    else:
+        inventory, inputs = pypi_tree(snap, ctx, ctx["candidate"], "candidate")
+        side["inputs"] = inputs
+        if any(m["nodes"] for m in inventory["modules"]):
+            dataset, meta, notes = store.dataset_for_audit(ctx["cached_only"])
+            side.update(data=data_record(meta), notes=notes)
+            index = osv.Index(dataset, PYPI)
+        else:
+            # Nothing to match: no data is needed, so none is downloaded and none can be missing (a Java review
+            # of a repository with a helper script must not depend on the PyPI export). A project that declares
+            # nothing names the cached PyPI data when there is some, read without a refresh.
+            index = osv.Index({"advisories": []}, PYPI)
+            if inventory.get("absent"):
+                meta = cached_meta(store, ctx["root"])
+                if meta:
+                    side["data"] = data_record(meta)
+        base, base_inputs, base_text = pypi_base(snap, ctx)
+        removed = [m for m, found in (base or {}).items() if found]
+        if inventory.get("absent") and removed:
+            # The change removed every Python dependency file the base had: what the base listed is not the
+            # change's, and the removal is in the diff for the reviewer to judge.
+            count = sum(len(base[m]) for m in removed)
+            base_text += (f"; the base listed {count} dependencies in {len(removed)} modules, and the change "
+                          "removed every Python dependency file")
+    side.update(inventory=inventory, base=base, base_inputs=base_inputs, base_text=base_text, index=index)
+
+
+def cached_meta(store, repo):
+    """The published metadata of an ecosystem's cache, read as it is (no refresh, no directory created), or None
+    when there is none, it cannot be used, or it lies inside the repository under audit. Its directories are
+    checked as an audit's own read checks them (private_dir, without creating them): the user's own, writable by
+    no one else, no link, so another user cannot plant the Data line."""
+    try:
+        if inside(store.directory, repo):
+            return None
+        directories = ([os.path.dirname(store.directory)] if store.ecosystem.cache_subdir else []) + [store.directory]
+        for directory in directories:
+            if not os.path.lexists(directory):
+                return None
+            osv.check_owned(directory, directory=True)
+        return store.read_meta()
+    except (NotRun, OSError):
+        return None
+
+
+def side_resolution(ctx: dict, side: dict) -> dict:
+    """The report's resolution record of one ecosystem that ran."""
+    inventory = side["inventory"]
+    record = {"selection": inventory["selection"]}
+    if side["ecosystem"] is MAVEN:
+        record.update(profiles=ctx["profiles"],
+                      # escaped here, once, so the JSON report carries the values the text report prints
+                      tools=[dict(i, path=shown(i["path"]), log=shown(i["log"])) if "path" in i else i
+                             for i in inventory["tools"]])
+    else:
+        record = {"ecosystem": "PyPI", "selection": inventory["selection"], "tools": []}
+    modules = inventory["modules"]
+    labels = [module_label(m["id"]) for m in modules] if side["ecosystem"] is MAVEN else \
+        [safe_path(m["id"]) for m in modules]
+    record.update(project=shown(ctx["project_shown"]),
+                  candidate=f"revision {ctx['candidate'][:12]}" if ctx["candidate"] else "the working tree",
+                  modules=labels, coverage="complete" if inventory["complete"] else "partial", base=side["base_text"])
+    return record
+
+
+def nothing_found(ctx: dict, exc):
+    """The not-run of a project holding no build file of any ecosystem, naming both kinds of file."""
+    if ctx.get("nothing_found") and exc.category == "no build file" and not ctx.get("build_tool"):
+        return NotRun("no build file", f"no pom.xml, no Gradle build and no Python lock, pin or dependency "
+                                       f"declaration file in {shown(ctx['project_shown'])}: name the directory that "
+                                       "holds one with --project-dir")
+    return exc
+
+
 def run_audit(snap, ctx: dict, store: Store) -> dict:
     """The audit of one candidate, as a result that always renders: a NotRun at any step becomes its status,
-    with whatever was established before it."""
+    with whatever was established before it. With two ecosystems each runs on its own: one that cannot run
+    counts as an incomplete result, the other's findings stay, and the result is complete only when both are.
+    `store` is the Maven store; ctx["stores"] holds the others."""
     result = empty_result(ctx.get("snapshot_id"))
     result["accepted_ids"] = sorted(ctx["accept"])
+    ecosystems = ctx.get("ecosystems") or [MAVEN]
+    if ecosystems != [MAVEN]:
+        result["ecosystems"] = [e.name for e in ecosystems]  # for a report that stops before any resolution
+    stores = dict(ctx.get("stores") or {}, Maven=store)
+    sides = []
     try:
-        dataset, meta, notes = store.dataset_for_audit(ctx["cached_only"])
-        result["data"] = data_record(meta)
-        result["not_evaluated"] += notes
-        inventory, inputs = resolve_tree(snap, ctx, ctx["candidate"], "candidate")
-        result["inputs"]["candidate"] = {safe_path(p): digest for p, digest in sorted(inputs.items())}
-        base, base_inputs, base_text = resolve_base(snap, ctx)
-        if base_inputs is not None:
-            result["inputs"]["base"] = {safe_path(p): digest for p, digest in sorted(base_inputs.items())}
-        modules = inventory["modules"]
-        found = evaluate(Index(dataset), modules, base, ctx["accept"])
-        result["blocks"] = found["blocks"]
-        result["counts"] = {"dependencies": found["dependencies"], "modules": len(modules)}
-        result["not_evaluated"] += inventory["notes"]
-        result["not_evaluated"] += [f"module {module_label(m)}: no dependency tree was parsed"
-                                    for m in inventory.get("unparsed", [])]
-        result["not_evaluated"] += [f"accepted id {safe(a, ID_GRAMMAR, 'advisory id')} matches no entry of this audit"
-                                    for a in found["unused_accepts"]]
-        result["resolution"] = {
-            "selection": inventory["selection"], "profiles": ctx["profiles"], "project": shown(ctx["project_shown"]),
-            # escaped here, once, so the JSON report carries the values the text report prints
-            "tools": [dict(i, path=shown(i["path"]), log=shown(i["log"])) if "path" in i else i
-                      for i in inventory["tools"]],
-            "candidate": f"revision {ctx['candidate'][:12]}" if ctx["candidate"] else "the working tree",
-            "modules": [module_label(m["id"]) for m in modules],
-            "coverage": "complete" if inventory["complete"] else "partial", "base": base_text}
-        result["status"] = gate_status(result["blocks"], inventory["complete"])
-        result["coverage"] = "complete" if inventory["complete"] else "partial"
-        if not inventory["complete"]:
-            result["problem"] = list(inventory["problem"])
+        for ecosystem in ecosystems:
+            side = {"ecosystem": ecosystem}
+            sides.append(side)
+            try:
+                run_side(snap, ctx, ecosystem, stores[ecosystem.name], side)
+            except NotRun as exc:
+                if len(ecosystems) == 1:
+                    result["data"] = side.get("data")
+                    result["not_evaluated"] += side.get("notes", [])
+                    if "inputs" in side:
+                        result["inputs"]["candidate"] = {safe_path(p): d for p, d in sorted(side["inputs"].items())}
+                    raise nothing_found(ctx, exc)
+                side["problem"] = (exc.category, exc.remedy)
+        assemble(result, ctx, sides)
     except NotRun as exc:
         result["status"], result["problem"] = "not-run", [exc.category, exc.remedy]
     result["status_line"] = status_line(result)
     return result
+
+
+def assemble(result: dict, ctx: dict, sides: list) -> None:
+    """The result of the sides that ran: their occurrences evaluated together, their notes in order, one data and
+    one resolution record each (a list of them when two ecosystems ran), and the problem of the first incomplete
+    side, which names its ecosystem when there are two."""
+    ran = [side for side in sides if "inventory" in side]
+    # A PyPI side that found Python sources and no dependency file, beside another ecosystem, adds only its
+    # coverage note: no data, inputs, resolution or counts, so a Java review of a repository with a helper script
+    # reads exactly as it did before the PyPI audit existed.
+    silent = [s for s in ran if s["inventory"].get("absent")] if len(sides) > 1 else []
+    sides = [s for s in sides if s not in silent]
+    ran = [s for s in ran if s not in silent]
+    two = len(sides) > 1
+    candidate_inputs, base_inputs = {}, None
+    for side in sides:
+        candidate_inputs.update(side.get("inputs") or {})
+        if side.get("base_inputs") is not None:
+            base_inputs = dict(base_inputs or {}, **side["base_inputs"])
+    result["inputs"]["candidate"] = {safe_path(p): digest for p, digest in sorted(candidate_inputs.items())}
+    if base_inputs is not None:
+        result["inputs"]["base"] = {safe_path(p): digest for p, digest in sorted(base_inputs.items())}
+    found = osv.evaluate_sides([(s["index"], s["inventory"]["modules"], s["base"]) for s in ran], ctx["accept"],
+                               deadline=ctx.get("deadline"))
+    result["blocks"] = found["blocks"]
+    result["counts"] = {"dependencies": found["dependencies"],
+                        "modules": sum(len(s["inventory"]["modules"]) for s in ran)}
+    for side in sides:
+        result["not_evaluated"] += side.get("notes", [])
+        if "problem" in side:
+            result["not_evaluated"].append(f"the {side['ecosystem'].name} dependencies were not audited: "
+                                           f"{side['problem'][0]}: {side['problem'][1]}")
+            continue
+        result["not_evaluated"] += side["inventory"]["notes"]
+        result["not_evaluated"] += [f"module {module_label(m)}: no dependency tree was parsed"
+                                    for m in side["inventory"].get("unparsed", [])]
+    result["not_evaluated"] += [f"accepted id {safe(a, ID_GRAMMAR, 'advisory id')} matches no entry of this audit"
+                                for a in found["unused_accepts"]]
+    resolutions, data = [], []
+    for side in sides:
+        name = side["ecosystem"].name
+        if "problem" in side:
+            resolutions.append({"ecosystem": name, "not_run": list(side["problem"])})
+        else:
+            record = side_resolution(ctx, side)
+            resolutions.append(dict(record, ecosystem=name) if two else record)
+        if side.get("data"):
+            data.append(dict(side["data"], ecosystem=name) if two else side["data"])
+    result["resolution"] = resolutions if two else resolutions[0]
+    result["data"] = data if two else (data[0] if data else None)
+    incomplete = [s for s in sides if "problem" in s or not s["inventory"]["complete"]]
+    result["status"] = gate_status(result["blocks"], not incomplete)
+    result["coverage"] = "partial" if incomplete else "complete"
+    if not incomplete and silent:
+        result["coverage_note"] = f"PyPI: {pypi.ABSENT}"
+    elif not incomplete and any(s["inventory"].get("absent") for s in sides):
+        result["coverage_note"] = pypi.ABSENT
+    if not data and not incomplete:
+        result["data_note"] = "not needed (no package to match)"
+    if incomplete:
+        first = incomplete[0]
+        category, remedy = first["problem"] if "problem" in first else first["inventory"]["problem"]
+        result["problem"] = [category, f"the {first['ecosystem'].name} dependencies: {remedy}" if two else remedy]
 
 
 # ---------------------------------------------------------------- the snapshot: attach, then record
@@ -3178,7 +2530,7 @@ def project_context(args, snap, root: str, git: bool) -> dict:
         if not (PROFILE_RE if value in args.profile else ID_GRAMMAR).match(value):
             raise Stop(EXIT_USAGE, f"not a profile id or an advisory id: {shown(value)}")
     return {"root": root, "git": git, "project": project, "project_shown": project or ".",
-            "build_tool": args.build_tool, "total_timeout": args.total_timeout,
+            "build_tool": args.build_tool, "ecosystem": args.ecosystem, "total_timeout": args.total_timeout,
             "deadline": time.monotonic() + args.total_timeout,
             "profiles": list(args.profile), "accept": list(args.accept), "timeout": args.timeout,
             "cached_only": args.cached_data, "environ": os.environ, "candidate": None, "base": None}
@@ -3204,11 +2556,13 @@ def cmd_audit(args, snap) -> int:
         return stop[0]
     ctx = project_context(args, snap, root, git)
     store = Store(default_cache_dir(), repo=root, deadline=ctx["deadline"])
+    ctx["stores"] = {"PyPI": osv.Store(osv.cache_dir(PYPI), PYPI, repo=root, deadline=ctx["deadline"])}
     if not args.snapshot:
         if args.base:
             if not git:
                 raise Stop(EXIT_USAGE, "--base needs a git work tree")
             ctx["base"] = snap.resolve_commit(root, args.base, "--base")
+        ctx["ecosystems"] = select_ecosystems(snap, ctx)
         result = run_audit(snap, ctx, store)
         sys.stdout.write(render_text(result))
         return exit_code(result["status"])
@@ -3220,6 +2574,8 @@ def cmd_audit(args, snap) -> int:
               "new snapshot and run the audit on it", file=sys.stderr)
         return EXIT_CHANGED
     ctx.update(snapshot_id=manifest["id"], base=manifest["base"])
+    if manifest["mode"] == "range":
+        ctx["candidate"] = manifest["source"]["to_commit"]
     # This attempt supersedes any earlier result on the snapshot at once: an attempt that crashes or is killed
     # leaves the gate pending, never an earlier pass standing for a run that did not finish.
     code, said = record_gate(snap, directory, "not-run", f"dependency-audit.py audit --snapshot {shown(directory)}",
@@ -3227,6 +2583,7 @@ def cmd_audit(args, snap) -> int:
     if code != EXIT_OK:
         print(not_run_line("gate not recorded", shown(said or f"record-gate exited {code}")))
         return EXIT_CHANGED if code == EXIT_CHANGED else EXIT_NOT_RUN
+    ctx["ecosystems"] = select_ecosystems(snap, ctx) if manifest["mode"] != "diff-file" else [MAVEN]
     uncovered = uncovered_inputs(snap, ctx, manifest)
     if setting.state == "refused":  # recorded, so the review is incomplete and says why
         result = dict(empty_result(manifest["id"]), problem=[REFUSED, setting.source])
@@ -3245,8 +2602,6 @@ def cmd_audit(args, snap) -> int:
                                "audit the dependencies"])
         result["status_line"] = status_line(result)
     else:
-        if manifest["mode"] == "range":
-            ctx["candidate"] = manifest["source"]["to_commit"]
         result = run_audit(snap, ctx, store)
         if manifest["mode"] == "files":
             files_snapshot_partial(result)
@@ -3260,7 +2615,16 @@ def uncovered_inputs(snap, ctx: dict, manifest: dict) -> list:
         return []
     names = worktree_files(snap, ctx["root"], ctx["git"])
     held = set(manifest["source"].get("files") or [])
-    return sorted(p for p in worktree_inputs(ctx["root"], names, ctx["project"]) if p not in held)
+    inputs = set(worktree_inputs(ctx["root"], names, ctx["project"])) if MAVEN in ctx["ecosystems"] else set()
+    if PYPI in ctx["ecosystems"]:
+        files = WorkTreeFiles(snap, ctx["root"], ctx["git"])
+        try:
+            python = bool(pypi.selected(files, ctx["project"], pypi_budget(ctx)))
+        except NotRun:
+            python = True  # doubt: the files are inputs
+        if python:  # a project that declares nothing has no Python input to hold
+            inputs |= {p for p in names if pypi.is_input(p, ctx["project"])}
+    return sorted(p for p in inputs if p not in held)
 
 
 def files_snapshot_partial(result: dict) -> None:
@@ -3278,56 +2642,87 @@ def files_snapshot_partial(result: dict) -> None:
                              "working tree, one created later included, can change what the build resolves "
                              "without the snapshot showing it: take a snapshot of the working tree or of a "
                              "commit range to audit the dependencies"]
-    result["coverage"] = result["resolution"]["coverage"] = "partial"
+    result["coverage"] = "partial"
+    for record in osv.records(result["resolution"]):
+        if "coverage" in record:
+            record["coverage"] = "partial"
     result["status"] = gate_status(result["blocks"], False)
     result["status_line"] = status_line(result)
 
 
-def check_line(index: Index, coordinate: str) -> tuple:
-    """(whether it matched, its line) for one GROUP:ARTIFACT:VERSION."""
-    group, artifact, version = coordinate.split(":")
-    matched = match_package(index, f"{group}:{artifact}", version)
+def check_line(index, coordinate: str) -> tuple:
+    """(whether it matched, its line) for one GROUP:ARTIFACT:VERSION or pypi:<name>==<version>."""
+    if index.ecosystem is PYPI:
+        name, version = pypi.parse_pin(coordinate)
+        named = {"package": name, "version": version, "scope": "pin", "optional": False, "path": [], "ships": True}
+        label = pypi.occurrence
+        module = {"id": "check"}
+    else:
+        group, artifact, version = coordinate.split(":")
+        name = f"{group}:{artifact}"
+        named = new_node(group, artifact, "jar", "", version, "compile", False, [])
+        label = occurrence
+        module = {"id": name}
+    matched = match_package(index, name, version)
     if not matched["advisories"]:
         return False, f"{coordinate}: no matching advisory in this dataset"
-    named = new_node(group, artifact, "jar", "", version, "compile", False, [])
-    listed = occurrence({"id": f"{group}:{artifact}"}, named, matched["advisories"], matched["fix"],
-                        matched["fix_checked"])
+    listed = label(module, named, matched["advisories"], matched["fix"], matched["fix_checked"])
     text = occurrence_line(listed)
     return True, f"{coordinate}: {len(listed['advisories'])} matching " + text[text.index("advisories: "):]
 
 
+def check_ecosystem(coordinate: str):
+    """The ecosystem a check argument names, None when it is neither form."""
+    if coordinate.lower().startswith("pypi:"):
+        return PYPI if pypi.parse_pin(coordinate) else None
+    parts = coordinate.split(":")
+    if len(parts) == 3 and NAME_RE.match(parts[0]) and NAME_RE.match(parts[1]) and VERSION_RE.match(parts[2]):
+        return MAVEN
+    return None
+
+
 def cmd_check(args, snap) -> int:
+    wanted = []
     for coordinate in args.coordinates:
-        parts = coordinate.split(":")
-        if len(parts) != 3 or not (NAME_RE.match(parts[0]) and NAME_RE.match(parts[1]) and VERSION_RE.match(parts[2])):
-            raise Stop(EXIT_USAGE, f"not GROUP:ARTIFACT:VERSION: {shown(coordinate)}")
+        ecosystem = check_ecosystem(coordinate)
+        if ecosystem is None:
+            raise Stop(EXIT_USAGE, f"not GROUP:ARTIFACT:VERSION or pypi:<name>==<version>: {shown(coordinate)}")
+        wanted.append(ecosystem)
     repo = git_root(snap, os.getcwd())
     stop = setting_stop(resolve_setting(args.dependency_audit, os.environ, repo))
     if stop:
         print(stop[1])
         return stop[0]
-    try:
-        dataset, meta, notes = Store(default_cache_dir(), repo=repo).dataset_for_audit(args.cached_data)
-    except NotRun as exc:
-        print(not_run_line(exc.category, exc.remedy))
-        return EXIT_NOT_RUN
-    index = Index(dataset)
-    lines = [check_line(index, c) for c in args.coordinates]
+    loaded = {}
+    for ecosystem in (e for e in (MAVEN, PYPI) if e in wanted):
+        store = Store(default_cache_dir(), repo=repo) if ecosystem is MAVEN else \
+            osv.Store(osv.cache_dir(PYPI), PYPI, repo=repo)
+        try:
+            dataset, meta, notes = store.dataset_for_audit(args.cached_data)
+        except NotRun as exc:
+            print(not_run_line(exc.category, exc.remedy))
+            return EXIT_NOT_RUN
+        loaded[ecosystem.name] = (osv.Index(dataset, ecosystem), meta, notes)
+    lines = [check_line(loaded[e.name][0], c) for e, c in zip(wanted, args.coordinates)]
     hits = sum(1 for hit, _line in lines if hit)
     print(f"Dependency check: {hits} of {len(lines)} coordinates match an advisory (named coordinates only: "
           "transitive dependencies are not seen)")
     for _hit, line in lines:
         print(one_line(line))
-    print(one_line(data_line(data_record(meta))))
-    for note in notes:
-        print(one_line(f"Note: {note}"))
+    for _index, meta, _notes in loaded.values():
+        print(one_line(data_line(data_record(meta))))
+    for _index, _meta, notes in loaded.values():
+        for note in notes:
+            print(one_line(f"Note: {note}"))
     return EXIT_FAIL if hits else EXIT_OK
 
 
 def cmd_refresh(args, snap) -> int:
     if args.source is not None and not args.source.strip():
         raise Stop(EXIT_USAGE, "--from needs the path of the export's zip or of a directory of its records")
-    store = Store(default_cache_dir(), repo=git_root(snap, os.getcwd()))
+    repo = git_root(snap, os.getcwd())
+    store = Store(default_cache_dir(), repo=repo) if args.ecosystem == "maven" else \
+        osv.Store(osv.cache_dir(PYPI), PYPI, repo=repo)
     try:
         store.prepare()
         if args.source:
@@ -3356,7 +2751,7 @@ class Parser(argparse.ArgumentParser):
 
 def build_parser() -> Parser:
     parser = Parser(prog="dependency-audit.py", formatter_class=argparse.RawDescriptionHelpFormatter,
-                    description="Audit a Java project's resolved dependencies against the public OSV advisory data.",
+                    description="Audit a Java or Python project's dependencies against the public OSV advisory data.",
                     epilog="Status line" + __doc__.split("Status line", 1)[1])
     sub = parser.add_subparsers(dest="command_name", metavar="{register,audit,check,refresh}", parser_class=Parser)
     sub.required = True
@@ -3385,13 +2780,18 @@ def build_parser() -> Parser:
     audit.add_argument("--build-tool", choices=tuple(BUILD_TOOLS), metavar="{maven,gradle}",
                        help="the build tool the project uses, which then resolves alone (default: Maven for a "
                             "pom.xml, Gradle for Gradle build files, both when there are both)")
+    audit.add_argument("--ecosystem", choices=tuple(ECOSYSTEM_CHOICES), metavar="{maven,pypi}",
+                       help="audit this ecosystem alone (default: Maven for Maven or Gradle build files, PyPI for "
+                            "Python lock, pin or dependency declaration files, both when there are both)")
     audit.add_argument("--dependency-audit", **setting)
     check = sub.add_parser("check", help="match named coordinates, with no resolution")
-    check.add_argument("coordinates", nargs="+", metavar="GROUP:ARTIFACT:VERSION")
+    check.add_argument("coordinates", nargs="+", metavar="GROUP:ARTIFACT:VERSION|pypi:NAME==VERSION")
     check.add_argument("--cached-data", action="store_true", help="never contact the server for advisory data")
     check.add_argument("--dependency-audit", **setting)
     refresh = sub.add_parser("refresh", help="download the advisory data, or import a local copy")
     refresh.add_argument("--from", dest="source", metavar="ZIP-OR-DIRECTORY")
+    refresh.add_argument("--ecosystem", choices=tuple(ECOSYSTEM_CHOICES), default="maven", metavar="{maven,pypi}",
+                         help="the ecosystem whose OSV export is downloaded or imported (default maven)")
     return parser
 
 
@@ -3407,6 +2807,8 @@ def main(argv=None) -> int:
             build_parser().error("--base goes with --repo: a snapshot carries its own base")
         if args.timeout < 1 or args.total_timeout < 1:
             build_parser().error("--timeout and --total-timeout must be at least 1 second")
+        if args.ecosystem == "pypi" and (args.build_tool or args.profile):
+            build_parser().error("--build-tool and --profile apply to the Maven ecosystem, not to --ecosystem pypi")
     handler = {"register": cmd_register, "audit": cmd_audit, "check": cmd_check, "refresh": cmd_refresh}
     try:
         return handler[args.command_name](args, snap)

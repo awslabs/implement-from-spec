@@ -104,20 +104,21 @@ user: the advisory they meant is still open, under another id.
 
 ## 4. Fix rounds
 
-A dependency finding's fix is the version change its Fix names; the user may accept the advisory
-instead (section 3). Each round's audit runs on `<NEW>` with every `--accept` the user gave and any
-`--profile` or `--build-tool` the user named, against the same base, since the preparation's arguments
-are the same. A dependency finding is `closed` only when the round's report has complete coverage (its
-status line ends `coverage complete`) and no longer lists it: a partial result, a fail ending `coverage
-partial (...)` included, cannot show it is gone, and a not-run result never has complete coverage.
-Compare the
-`dataset sha256` on the two reports' `Data:` lines: the
-script does not compare them itself. When they differ, the advisory data changed between the rounds:
-say so in the round's section, and an entry the earlier report did not list is a new finding under the
-next F-number. When the digests differ, the audit's own comparison between the two reports closes an
-earlier entry on absence alone, coordinate and version unchanged included: the later report simply no
-longer lists it, with no re-check against the previous dataset (a known limitation; see CHANGELOG). The
-review does not take that at face value: keep such an entry `open` in the review, noted "advisory no
-longer in the dataset (dataset changed)", for the user to accept or confirm — this is a manual rule of
-the review, not something the audit enforces. A finding is confirmed closed in the review only when the
-version itself changed, or the fix is otherwise confirmed.
+A dependency finding's fix is the version change its Fix names; the user may accept the advisory instead
+(section 3). Each round's audit runs on `<NEW>` with every option this review's first audit run carried
+(every `--accept` the user gave, and any `--profile`, `--build-tool`, `--project-dir`, `--timeout`,
+`--total-timeout` and `--dependency-audit on`) and by the same interpreter, against the same base, since
+the preparation's arguments are the same. A dependency finding is `closed` only when the round's report
+has complete coverage (the last field of its status line begins `coverage complete`, which includes the
+`(PyPI: no third-party Python dependency declared)` note a repository with Python sources adds) and no
+longer lists it: a partial result, a fail ending `coverage partial (...)` included, cannot show it is
+gone, and a not-run result never has complete coverage. Compare the `dataset sha256` on the two reports'
+`Data:` lines: the script does not compare them itself. When they differ, the advisory data changed
+between the rounds: say so in the round's section, and an entry the earlier report did not list is a new
+finding under the next F-number. When the digests differ, the audit's own comparison between the two
+reports closes an earlier entry on absence alone, coordinate and version unchanged included: the later
+report simply no longer lists it, with no re-check against the previous dataset (a known limitation; see
+CHANGELOG). The review does not take that at face value: keep such an entry `open` in the review, noted
+"advisory no longer in the dataset (dataset changed)", for the user to accept or confirm — this is a
+manual rule of the review, not something the audit enforces. A finding is confirmed closed in the review
+only when the version itself changed, or the fix is otherwise confirmed.

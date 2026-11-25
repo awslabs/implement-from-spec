@@ -178,7 +178,9 @@ Results on 2026-10-16:
 ## Python minimum (decided 2026-10-16)
 
 The minimum is the `python3` that macOS ships by default: on macOS 27.0.1 that is the Command Line
-Tools' Python 3.9.6, behind `/usr/bin/python3`. The core's test suites pass on it.
+Tools' Python 3.9.6, behind `/usr/bin/python3`. The core's test suites pass on it. One part needs more
+(2026-11-25): the PyPI dependency audit reads TOML lock files with `tomllib`, which needs 3.11; on an
+older python3 that part alone is recorded as not run ("Python security review" below).
 
 Note for development shells running under Rosetta: `/usr/bin/python3` fails there because the Command
 Line Tools are arm64-only. Run `arch -arm64 /Library/Developer/CommandLineTools/usr/bin/python3` to test
@@ -1175,3 +1177,187 @@ Evidence a maintainer needs:
   (https://github.com/github/advisory-database and https://google.github.io/osv.dev/data/, read
   2026-11-24). The data is downloaded at run time and never vendored, and every report prints the
   attribution "OSV, GitHub Advisory Database, CC-BY 4.0"
+
+## Python security review: a security reviewer and a PyPI dependency audit (decided 2026-11-25)
+
+A Python review gets what a Java review got in 0.3.0: a dedicated security reviewer with a current rule
+catalogue, and the dependency audit, extended to PyPI, with its plan-time check. Why: the same as for Java
+(see "Java security review" above); in addition, the Python review's security lens also held the AWS
+runtime and logging groups, so security shared one reviewer's attention with two other subjects. What
+users see: [user-guide/python.md](user-guide/python.md).
+
+### The security reviewer
+
+- **The security lens becomes the security reviewer.** The dispatch manifest's lens "security and AWS
+  runtime" gave way to a `security` entry on `code-reviewer`, model fixed at `opus` as Java's is; the AWS
+  runtime and logging groups (7 and 9) and PY-ARC-03 moved to the failure-handling lens, whose subject
+  (what happens when a call fails, retries, times out or runs twice) they share. Group 8 of
+  `review-dimensions.md` is a pointer, and PY-SEC-01 to PY-SEC-11 keep their numbers in the new
+  catalogue. Why: one reviewer per subject, as for Java, and stable identifiers for earlier findings and
+  eval graders. Cost: the failure-handling lens reads three more groups; the catalogue's ownership list
+  (which `review-dimensions.md` check's security consequence each rule owns) is kept in step by hand
+- **One catalogue file, packed.** `skills/reviewing-python-changes/references/security-dimensions.md`
+  holds 103 rules in 14 groups. It was built from five research tracks (injection, deserialisation and
+  XML; cryptography, authentication and authorisation; the web surface, files, outbound requests and
+  platform mechanisms with AI agents; the AWS SDK, Lambda and known-vulnerable usage; dependencies and
+  the supply chain), each rule drafted with the pages it rests on read on 2026-11-25, then assembled:
+  overlapping drafts merged into one rule (a merged id is cited by the id that absorbed it; none was
+  cited elsewhere, so no alias is kept), each rule cut to one exact quote and `Also:` sources named by
+  short forms against the family roots its Sources section lists, and its fields packed into one
+  paragraph. Why one file rather than one per group: the reviewer reads the header, Contents and How to
+  apply, then only the groups whose trigger is met, so splitting would save no reading while it would
+  spread the triggers, the ownership list and the outcome rules over several files and several reads,
+  and the Java catalogue is one file too. Why packed: the full drafts were roughly twice the length,
+  mostly second and third quotes; a reviewer that applies every rule of every triggered group pays for
+  each line on every review and fix round. Cost: a rule carries one quote, so a reader who wants the rest
+  of the evidence opens the source; the packed form is denser to read than the Java catalogue's field
+  lists
+- **Groups by trigger, four always.** Injection; cryptography, randomness, TLS and secrets; files,
+  resources and denial of service; and input validation, outbound requests, logs and failure apply to
+  every change. Unlike Java, dependencies and the build supply chain is triggered (the change touches a
+  dependency, build or installer file): its rules judge those files (indexes, hashes, pins, install
+  steps, publishing), so a change that touches none gives them nothing to read, and the known
+  vulnerabilities of the locked packages are the audit's on every review whatever the change touches.
+  The rest follows the Java design: a trigger that cannot be ruled out is met, and the `Groups:` line
+  gives every group's outcome
+- **The interpreter is part of the finding.** The dependency audit's inventory holds packages, not the
+  interpreter, and several standard-library fixes reached 3.11 to 3.13 only in point releases (the tar
+  extraction filter, `ipaddress` and URL parsing among them). The Known-vulnerable usage rules therefore
+  read the release the repository pins (`requires-python`, `.python-version`, an image tag, a Lambda
+  runtime) and grade from it, `unsure` where nothing pins it. Cost: a deployment that pins its
+  interpreter outside the repository leaves those findings for the main conversation to verify
+- **Security defaults for the implementer.** `implementing-python-from-spec`'s `python-practices.md`
+  states the form of the catalogue's rules that applies while code is written, as `java-practices.md`
+  does for Java, and the plan runs the dependency check (below) before approval. Why: a defect avoided
+  while writing costs no fix round
+
+### The PyPI dependency audit
+
+- **Lock and pin files only, never an installer.** The inventory is read from `uv.lock`, `poetry.lock`,
+  `pdm.lock`, `pylock.toml` and `pylock.<name>.toml` (PEP 751), `Pipfile.lock` and requirements files
+  pinned with `==` or `===`, as data. Nothing runs: no pip, uv, Poetry, PDM or Pipenv, no build backend,
+  no `setup.py` (its literal `setup()` lists are read with `ast`), nothing imported from the project. Why: resolving a Python project's dependencies can
+  mean building a source distribution, which runs the repository's code, and the repository under review
+  is untrusted; pip-audit's own security model says as much: "If you wouldn't `pip install` it, you
+  should not `pip audit` it", and it "cannot guarantee that arbitrary dependency resolutions occur
+  statically" (https://github.com/pypa/pip-audit, "Security model", read 2026-11-25). This is unlike
+  the Java audit, which runs the build tool with the trust the tests have: a Java build resolves from
+  metadata without building, while a Python resolution may build. A lock file also lists what ships
+  without a resolver: every package with its version. Cost: a project that declares dependencies with
+  no lock or pin file is partial until it commits one (the remedy names the commands that write one); an
+  unpinned requirement, a VCS, URL, local-path or editable package, and a lock entry from such a source
+  name no version the data can place, so each makes the result partial; and the audit trusts the lock
+  file as written, beyond a check by name: a dependency the declarations name that the lock and pin
+  files covering them do not list makes the result partial (`lock file out of date`; main dependencies
+  always, a marker-narrowed one included, so a pin file compiled for one platform reads partial for
+  another's, the fail-closed choice; groups and extras only against a lock file, since a requirements
+  file may be compiled from the main set alone; only the same directory's project counts as its own),
+  and so does a declaration the audit cannot read, unless a lock file that locks every group covers it
+  (`declarations not read`: a `setup.py` list built in code, a dynamic field other than setuptools'
+  `file =` list, which is read; a `pyproject.toml` that does not parse always), but a locked version outside the declared range is audited as it stands (the security
+  reviewer's PY-DEP-04 judges staleness; `uv.lock` is also checked for holding the project
+  `pyproject.toml` names)
+- **Fail closed on doubt.** A `pyproject.toml` or `setup.cfg` that configures tools only selects nothing, so a Java
+  repository with formatter settings is not made a Python project; one that cannot be parsed selects the
+  PyPI audit, so doubt runs the audit rather than skipping it. On an interpreter without `tomllib` its table
+  headers decide (a `[project]`, `[dependency-groups]`, `[tool.poetry...]` or `[tool.pdm...]` table, a
+  `[tool.uv]` `dev-dependencies` or `sources` key, or a line too doubtful to judge, a quoted key, an inline
+  table at `tool` or a file of more than 100,000 lines declares), so a Java
+  repository's tool settings leave its audit as it was there too. A file that cannot be read, a lock version the parser does not know, an
+  option in a requirements file it does not read (every word of an option line is read, as pip reads them),
+  a declaration field or package list of the wrong type, and a `-r` or `-c` that leaves the repository all make
+  the result partial with a category and a remedy (the one exception, a project that declares nothing,
+  is the next item). Why: a missing input must never read as a clean result. Cost: a Java project that keeps a declaring `pyproject.toml` is incomplete on python3 3.9 and 3.10
+  until it runs a newer python3 or names `--ecosystem maven`
+- **No dependency file is a complete, empty inventory.** Python sources with no Python lock, pin or
+  dependency declaration file anywhere in the repository (virtual environments, installed or vendored
+  package trees, caches and build output left out; a `pyproject.toml` that configures tools only counts
+  as no declaration) pass with nothing to match, `coverage complete (no third-party Python dependency
+  declared)`. No advisory data is needed, so none is downloaded (`advisory data not needed (no package to
+  match)`), and beside a Java build the PyPI side adds only its coverage note, so a Java review of a
+  repository with a helper script reads as it did in 0.3.0 and does not depend on the PyPI export. A
+  directory with neither Python sources nor a Java build, or whose Python sources have a dependency file
+  only outside the directory `--project-dir` names, stays `not run (no build file)`. Why
+  (the maintainer's decision, 2026-11-25): a standard-library script or a Lambda function that uses only
+  the runtime's packages is normal, and an audit that could never pass on such a project would make every
+  review of it incomplete for a gap no remedy closes; what the audit cannot see there is the security
+  reviewer's (third-party imports nothing declares, PY-DEP-10; packages the runtime or a layer provides,
+  PY-DEP-11; a lock file the change removes, PY-DEP-04, which the `base:` part makes visible by naming
+  what the base listed). Cost: an undeclared third-party import is caught only by a reviewer reading the
+  code, not by the gate
+- **python3 3.11 for the PyPI inventory only.** Every supported lock file but `Pipfile.lock` is TOML, and
+  `tomllib` arrived in Python 3.11; a hand-written TOML parser for hostile input is a second parser to
+  get wrong. On an older interpreter a PyPI side that holds a TOML lock file, a `Pipfile` or a declaring
+  `pyproject.toml` is `not run (interpreter: ...)` naming the version found, while requirements files,
+  `Pipfile.lock` and `setup.cfg`, which need no TOML parser, are read there, while the Java audit, `check pypi:<name>==<version>` (which reads no lock file) and the rest of
+  the plugin keep the 3.9 minimum ("Python minimum" above), and both shared modules still import on 3.9.
+  Cost: on macOS's default python3 a Python review of a TOML-locked project stays incomplete until a
+  newer python3 is on PATH
+- **Markers are not evaluated; every group counts and ships.** An environment marker narrows where a
+  package installs, not whether the project ships it, and the audit cannot know every platform and Python
+  release the project deploys to; development groups, extras and optional sections are in the inventory
+  too, because the tools that read them run in CI or on a developer's machine. Every PyPI occurrence
+  counts as shipping when the base is compared. Why: an over-report the user can accept costs less than a
+  vulnerability hidden by a marker the audit evaluated for the wrong platform. Cost: a package locked for
+  another platform is reported; the user accepts its advisory
+- **Per-module attribution.** Each lock or pin file is a module, compared with the same file at the base:
+  an occurrence is the change's when its module, package and version are not there. A base module that
+  could not be read whole leaves only its own occurrences "attribution unknown", where for Java a base
+  that does not resolve leaves every entry unknown. Why: PyPI modules are independent files, so one
+  unreadable file at the base says nothing about the others, while one Maven reactor or Gradle build
+  resolves or fails as a whole. The base is read from git without being written out, since nothing has
+  to run on it
+- **PEP 440, hand-written.** Version parsing, normalisation and ordering follow the version-specifiers
+  specification with a scanner that moves forward only (no regex, a 128-character cap), and names follow
+  PEP 503. Checked against a committed vector of the specification's examples and 300 versions of the
+  export, ordered once by the `packaging` library outside the plugin; the same one-off run agreed with
+  `packaging` on all 45,388 distinct version strings of the export of 2026-11-25. Why not `packaging`:
+  the plugin has no third-party runtime dependency ("Standard library only"). A range bound PEP 440
+  cannot parse makes the range opaque, a Major marked unsure, never unaffected
+- **Local versions.** A local version (`2.5.1+cpu`) is matched as itself and as its public version, and
+  every advisory it matches is marked unsure without lowering its class. Why: advisories name public
+  versions, so matching the local text alone would miss every one, while a local build may carry a
+  backported fix that the audit cannot see
+- **Severity: an aliased GHSA word, else the CVSS 3.x score, else Major unsure.** PyPI Advisory Database
+  (`PYSEC`) records carry no severity word, and the export holds most vulnerabilities twice, as a
+  `PYSEC` and a `GHSA` record. A record without a word takes the strongest word of the dataset's GHSA
+  records it is an alias of; else the rating of its CVSS v3.0 or v3.1 base score, computed with the base
+  equations of the FIRST 3.1 specification (section 7.1, Appendix A's Roundup, section 5's rating scale,
+  read 2026-11-25); a CVSS v4-only or unparsable vector leaves no word, a Major marked unsure. The report
+  says where the word came from. Advisories of one occurrence that are aliases of each other are one
+  entry, its class decided by its members whose class is sure, a record's own word or one taken from a
+  GHSA record outranking a scored one, and accepting any id of the set accepts the entry. Why: without
+  filling, most PyPI entries would be Major unsure whatever their real severity, and without merging
+  one vulnerability would appear twice with contradicting classes. Cost: a computed score is the base
+  score only, with no environmental or temporal metric; Maven matching is unchanged (no merging, no
+  filling)
+- **One shared module, two ecosystem modules.** What is not Maven's or Gradle's (the advisory store, OSV
+  record reduction, matching through an ecosystem's ordering, the classes, attribution and the text and
+  JSON reports) moved from `dependency-audit.py` into `core/scripts/dependency_audit_osv.py`; the PyPI
+  inventory, PEP 440 and the PyPI ecosystem are `core/scripts/dependency_audit_pypi.py`; the script keeps
+  the commands, the setting, the gate records and Maven and Gradle. Both modules are loaded by path, the
+  shared one injected into the PyPI one, so all use one instance of it. Why: one implementation of the
+  store, the limits and the report contract for both ecosystems, rather than a fork that drifts; Java
+  reports stayed byte for byte as in 0.3.0, apart from the not-run line of a directory with no build file
+  of any kind and the usage line of `check`, which now name the Python files too. Cost: three files to
+  read where there was one
+- **The advisory data per ecosystem.** The OSV PyPI export, from the same host as the Maven export, into
+  its own cache directory below the Maven one (`advisories/pypi/`), with its own dataset, metadata and
+  lock, so the gate's existing protection of `advisories/` covers it without a new root. Every store
+  limit is shared; the minimum is the ecosystem's: 10,000 usable advisories for PyPI (the export held
+  26,440 on 2026-11-25, 12,095 of them malicious-package records, so the minimum stays below the 14,345
+  others), 5,000 for Maven. `refresh` takes `--ecosystem`, default `maven`, so the Java forms keep their
+  meaning. An import asks first through the Python skill's command rule `python-advisory-data-import`,
+  which matches an import of either ecosystem, while the Java skill's `java-advisory-data-import` now
+  leaves out an import whose last `--ecosystem` names `pypi` (the script reads only the last one); the gate applies every implementing skill's rules in a
+  gated session, so an import asks in either kind of session
+- **Lock files are hostile input.** At most 16 MiB a file, 200 distinct files and 64 MiB in all for one
+  pass over a side (the files read to choose the ecosystems and to record the inputs' digests included),
+  100,000 packages a file and in all, 100,000 lines a requirements file, and the audit's deadline checked
+  before each file; only the candidate's files are read (never a git-ignored file or anything inside
+  `.git`), a file is opened without following a link and must be a regular file, a link is followed only
+  to another of the candidate's files (in a revision at most 8 links), a `-r` or `-c` likewise, 16 levels
+  deep at most; only
+  UTF-8 is read; no value read reaches a shell (there is none) or a report without passing its grammar.
+  Why: the lock files come from the repository under review, like every other input (threat model
+  TM-80)

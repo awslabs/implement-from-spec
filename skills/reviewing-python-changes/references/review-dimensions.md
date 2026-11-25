@@ -17,7 +17,7 @@ prescribes is not a finding. Facts with versions or defaults were read on 2026-1
 - 5. Error handling (PY-ERR)
 - 6. Concurrency and resources (PY-CON)
 - 7. AWS runtime: Lambda, boto3, DynamoDB, Powertools (PY-AWS)
-- 8. Security (PY-SEC)
+- 8. Security (PY-SEC): moved to `references/security-dimensions.md`
 - 9. Logging and observability (PY-LOG)
 - 10. Performance (PY-PRF)
 - 11. Tests (PY-TST)
@@ -27,21 +27,24 @@ prescribes is not a finding. Facts with versions or defaults were read on 2026-1
 
 ## How to apply
 
-**Groups per lens.** Each of the five lens subagents loads `implement-from-spec:code-reviewer` and receives
-its brief from `references/review-lenses.md` verbatim plus the groups below. The lens brief stays the
-contract; these groups are the depth inside it.
+**Groups per lens.** Each lens subagent loads `implement-from-spec:code-reviewer` and receives its brief
+from `references/review-lenses.md` verbatim plus the groups below. The lens brief stays the contract;
+these groups are the depth inside it.
 
 - Specification fidelity: group 1, and every check whose *Look for* names an item's `Interface:` or
   `Acceptance:`, plus temporal compatibility of the interfaces and stored formats the change alters
-- Failure handling: groups 5 and 6, plus PY-AWS-02, PY-AWS-07 and PY-AWS-08, plus temporal
-  compatibility at run time (mixed versions, migration order, replay, rollback after new writes,
-  partial deployment)
+- Failure handling: groups 5, 6, 7 and 9, plus PY-ARC-03, plus temporal compatibility at run time
+  (mixed versions, migration order, replay, rollback after new writes, partial deployment)
 - Types and design: groups 2, 3, 4, 10 and 12
-- Security and AWS runtime: groups 7, 8 and 9, plus PY-ARC-03. There is no separate Python
-  application-security reviewer: this lens is the security reviewer for Python. The plugin's
-  `iac-security-reviewer` reviews infrastructure (CloudFormation, and CDK apps written in Python through
-  `reviewing-cdk-changes`), not application code
 - Tests: group 11
+
+Safety/security is not a lens of this file. The dedicated security reviewer (`security`) applies
+`references/security-dimensions.md`, which holds the former group 8 (PY-SEC-01 to PY-SEC-11, same
+identifiers) and the rest of the Python security catalogue, and reads here only the checks whose
+security consequence that file's How to apply ("Ownership") assigns to one of its rules. A lens that
+meets a security defect reports it as one out-of-lens head line for Safety/security. The plugin's
+`iac-security-reviewer` reviews infrastructure (CloudFormation, and CDK apps written in Python through
+`reviewing-cdk-changes`), not application code.
 
 A finding that belongs to another lens is still reported, as one out-of-lens head line naming the owning
 lens (`references/review-lenses.md` section 6), with no Why, Evidence or Fix.
@@ -77,7 +80,9 @@ default and when it escalates; the orchestrator sets the final class from the co
   exposed; code that cannot run on the declared runtime (syntax, an API or a pinned dependency newer
   than the floor, an `async` handler, a return the runtime cannot serialise on the main path); a test
   suite that would pass with the feature broken, or a unit or default-selected test that can reach real
-  AWS; a red quality gate; an undeclared dependency
+  AWS; a red quality gate; an unplanned dependency (an import of a package the approved plan does not
+  name) or an undeclared one (imported but in no dependency file), whoever reports it (an undeclared
+  runtime-provided `boto3` is Minor, PY-DEP-11 of `references/security-dimensions.md`)
 - **Major**: wrong behaviour on a realistic but non-documented path; a type hole that hides a real
   path; a trust boundary without a strict model; logic in the handler; a client per invocation;
   implicit retry mode or default timeouts; missing pagination; high-cardinality dimensions; a missing
@@ -922,155 +927,55 @@ Retired 2026-10-16: merged into PY-ARC-03
 
 ## 8. Security (PY-SEC)
 
-### PY-SEC-01 Shell and process execution
+Moved 2026-11-25 to `references/security-dimensions.md`, the catalogue of the dedicated security reviewer,
+with the same identifiers and strengthened text. That file's How to apply lists the checks of this file
+whose security consequence one of its rules owns; cite the rule there, not here.
 
-- **Look for:** `subprocess.*(..., shell=True)`, `os.system`, `os.popen`, or argument lists whose
-  executable or arguments come from request data, file contents or model (LLM) output
-- **Why it matters:** shell metacharacters in the input run arbitrary commands with the function's
-  role; an argument list removes shell interpretation only, so an input-chosen executable or an
-  argument starting with `-` still changes what runs
-- **Instead:** argument lists without a shell, an allowlisted executable, `--` before positional input
-  and validated values; `shlex.quote` only where a shell is unavoidable
-- **Severity:** Blocker with untrusted input; Major otherwise
-- **Source:** https://docs.python.org/3/library/subprocess.html#security-considerations — "this library
-  will not implicitly choose to call a system shell"; Bandit `B602`, `B605`; Ruff `S602`, `S605`
+### PY-SEC-01 Shell, process execution and argument injection
 
-### PY-SEC-02 eval, exec and dynamic import
+Moved 2026-11-25: `references/security-dimensions.md`, Injection
 
-- **Look for:** `eval`, `exec` or `compile` on strings from input or model output; `importlib.import_module`
-  or `getattr(module, name)` with input-controlled names; `ast.literal_eval` on untrusted input
-- **Why it matters:** arbitrary code execution; `ast.literal_eval` runs no code, but a small input can
-  exhaust memory or the C stack and crash the process
-- **Instead:** `json.loads` into a model for data, `ast.literal_eval` only on bounded trusted input, an
-  explicit dispatch dict for names
-- **Severity:** Blocker with untrusted input; Major otherwise
-- **Source:** https://docs.python.org/3/library/ast.html#ast.literal_eval — "A relatively small input
-  can lead to memory exhaustion or to C stack exhaustion"; Bandit `B307`, `B102`; Ruff `S307`
+### PY-SEC-02 eval, exec, dynamic import and configuration that runs code
 
-### PY-SEC-03 Unsafe deserialisation and parsers
+Moved 2026-11-25: `references/security-dimensions.md`, Injection
 
-- **Look for:** `pickle.loads`, `shelve`, `marshal`, `jsonpickle` or `joblib.load` on data from S3,
-  queues, caches or users; `yaml.load` without `SafeLoader`; `xml.etree`, `minidom` or `xmlrpc` on
-  attacker-controlled XML
-- **Why it matters:** unpickling and unsafe YAML instantiate arbitrary objects (code execution); XML
-  parsers on old Expat versions are open to entity-expansion attacks
-- **Instead:** JSON with a pydantic model; `yaml.safe_load`; `defusedxml` for untrusted XML
-- **Severity:** Blocker for pickle or unsafe YAML on untrusted data; Minor for XML on a current Expat
-  (Python documents Expat below 2.7.2 as possibly vulnerable)
-- **Source:** https://docs.python.org/3/library/pickle.html — "Only unpickle data you trust";
-  https://docs.python.org/3/library/xml.html#xml-security; Bandit `B301`, `B506`, `B314`; Ruff `S301`,
-  `S506`
+### PY-SEC-03 Unsafe deserialisation: pickle and the formats built on it
+
+Moved 2026-11-25: `references/security-dimensions.md`, Deserialisation and data binding; its YAML part is
+now PY-SEC-30 and its XML part PY-SEC-33 (XML)
 
 ### PY-SEC-04 SQL and query injection
 
-- **Look for:** SQL built with f-strings, `%`, `.format` or `+` and passed to `cursor.execute`,
-  SQLAlchemy `text()`, the Redshift Data API or Athena `StartQueryExecution` without parameters
-- **Why it matters:** input becomes query syntax
-- **Instead:** driver parameters (`cursor.execute(sql, params)`), bound parameters in `text()`, the
-  `Parameters` or `ExecutionParameters` arguments of the AWS APIs
-- **Severity:** Blocker with untrusted input; Major otherwise
-- **Source:** Bandit `B608`; Ruff `S608` — "Possible SQL injection vector through string-based query
-  construction"
+Moved 2026-11-25: `references/security-dimensions.md`, Injection
 
 ### PY-SEC-05 Path traversal and archive extraction
 
-- **Look for:** request data, S3 keys or model output joined into a local path
-  (`os.path.join(base, name)`, `base / name`) without resolving and checking containment;
-  `tarfile.extractall()` without the `'data'` filter, or availability inferred from the version
-  number; `zipfile.extractall` on untrusted archives without size limits
-- **Why it matters:** `../` or absolute names read or overwrite files outside the intended directory,
-  and members can escape it or exhaust `/tmp`; where an attacker can also write in the directory, a
-  resolved-path check races with a symlink swapped in before use (TOCTOU)
-- **Instead:** `p = (base / name).resolve()` then `p.is_relative_to(base.resolve())` (3.9+), rejecting
-  `..`, absolute paths and NUL, in a directory only this code writes; `extractall(filter="data")` after
-  `hasattr(tarfile, "data_filter")`, failing closed without it; limit member count and total size
-- **Severity:** Blocker with untrusted input
-- **Source:** https://docs.python.org/3/library/tarfile.html#tarfile-extraction-filter — "may be
-  backported to older versions as security updates" (default `'data'` from 3.14);
-  https://cwe.mitre.org/data/definitions/367.html; Bandit `B202`; Ruff `S202`
+Moved 2026-11-25: `references/security-dimensions.md`, Files, resources and denial of service
 
 ### PY-SEC-06 Hard-coded secrets
 
-- **Look for:** passwords, tokens, API keys or connection strings as literals in source, in defaults
-  (`os.environ.get("API_KEY", <literal default>)`), in test fixtures that look real, or in sample events
-- **Why it matters:** the secret is in version control and every artifact built from it
-- **Instead:** Secrets Manager or Parameter Store through the project's helper; no default for a
-  secret, so a missing one fails fast; obvious placeholders (`<from Secrets Manager>`) in fixtures
-- **Severity:** Blocker (the lens brief's class)
-- **Source:** Bandit `B105`, `B106`, `B107`; Ruff `S105` to `S107`
+Moved 2026-11-25: `references/security-dimensions.md`, Cryptography, randomness, TLS and secrets
 
-### PY-SEC-07 TLS verification and HTTP timeouts
+### PY-SEC-07 TLS certificate and host-name verification, protocol versions
 
-- **Look for:** `verify=False`, `ssl._create_unverified_context()`, `urllib3.disable_warnings`, `http://`
-  endpoints for credentials or data; `requests` calls with no effective `timeout=`; HTTPX clients or
-  calls with `timeout=None`
-- **Why it matters:** disabled verification allows interception; Requests has no default timeout and
-  can hang until the function times out; HTTPX defaults to 5 seconds of inactivity, and neither
-  library's timeout bounds the whole call
-- **Instead:** default verification (or a pinned CA bundle), HTTPS, `timeout=(connect, read)` for
-  Requests or an `httpx.Timeout` on the client, and an overall deadline from the remaining time
-- **Severity:** Blocker for disabled verification on a production path; Major for a missing timeout
-- **Source:** https://requests.readthedocs.io/en/latest/user/advanced/#timeouts — "By default, requests
-  do not time out unless a timeout value is set explicitly."; https://www.python-httpx.org/advanced/timeouts/
-  — "raise a TimeoutException after 5 seconds of network inactivity"; Bandit `B501`, `B113`; Ruff
-  `S501`, `S113`
+Moved 2026-11-25: `references/security-dimensions.md`, Cryptography, randomness, TLS and secrets; its
+HTTP-timeout part is now PY-SEC-43
 
-### PY-SEC-08 Server-side request forgery
+### PY-SEC-08 Server-side requests to caller-chosen destinations
 
-- **Look for:** URLs from request data or model output passed to `requests.get`, `httpx`,
-  `urllib.request.urlopen` (which also accepts `file:`) or an SDK `endpoint_url` without a scheme and
-  host allowlist; redirects followed (Requests' default) without validating each hop; a host check
-  followed by a second DNS lookup at connect time
-- **Why it matters:** the caller makes the function reach internal endpoints, metadata services or
-  local files with its network position and role, whether or not the response is returned
-- **Instead:** parse with `urllib.parse`, allow only `https` and listed hosts, resolve once, reject
-  private and link-local addresses and connect to the validated address; disable redirects or validate
-  every hop; a fixed egress path (proxy, VPC endpoint policy) for model-chosen URLs
-- **Severity:** Blocker when request or model input controls the destination unchecked; Major for a
-  partial check
-- **Source:** https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html
-  — "Domain allowlisting alone does not prevent DNS rebinding."; https://requests.readthedocs.io/en/latest/user/quickstart/
-  (redirection); Bandit `B310`; Ruff `S310`
+Moved 2026-11-25: `references/security-dimensions.md`, Input validation, outbound requests, logs and failure
 
-### PY-SEC-09 Insecure randomness and hashing
+### PY-SEC-09 Insecure randomness and weak hashing
 
-- **Look for:** `random.random`, `random.choice` or `uuid1` for tokens, IDs that must be unguessable,
-  passwords or nonces; `hashlib.md5` or `sha1` for signatures, integrity or passwords
-- **Why it matters:** `random` is predictable, and MD5 and SHA-1 collide
-- **Instead:** `secrets.token_urlsafe()`, `uuid4`; `hashlib.sha256`, `hmac.compare_digest`; a password <!-- pragma: allowlist secret - names a password KDF, no value -->
-  KDF; `usedforsecurity=False` for non-security hashing
-- **Severity:** Major; Blocker when the value guards authentication
-- **Source:** https://docs.python.org/3/library/secrets.html — "designed for modelling and simulation,
-  not security or cryptography"; Bandit `B311`, `B324`; Ruff `S311`, `S324`
+Moved 2026-11-25: `references/security-dimensions.md`, Cryptography, randomness, TLS and secrets
 
 ### PY-SEC-10 Sensitive data in logs, traces, errors and reprs
 
-- **Look for:** `logger.info(event)`, `log_event=True`, logging `record["body"]`, headers, credentials
-  or document content; Powertools Tracer capturing responses of handlers that return sensitive data;
-  exception messages with PII returned to callers; pydantic models holding secrets as `str` (their
-  `repr` prints them)
-- **Why it matters:** logs and traces are widely readable and long-lived, so sensitive data spreads
-  beyond its controls
-- **Instead:** log identifiers, not payloads; `capture_response=False`; generic client-facing errors;
-  `SecretStr` for secrets; Powertools data masking where the project uses it
-- **Severity:** Blocker (the lens brief's class)
-- **Source:** https://docs.aws.amazon.com/powertools/python/latest/core/logger/ — "disabled by default
-  to prevent sensitive info being logged"; https://docs.aws.amazon.com/powertools/python/latest/core/tracer/
+Moved 2026-11-25: `references/security-dimensions.md`, Input validation, outbound requests, logs and failure
 
 ### PY-SEC-11 Resource or tool selection without authorisation
 
-- **Look for:** tenant IDs, object keys, account IDs, tool names or action arguments from the request
-  or model output used because they pass the schema; a handler or Strands tool acting with the
-  function's role without checking that the authenticated caller may reach that resource or action
-- **Why it matters:** well-formed input can still point a privileged handler or agent at another
-  caller's data or a forbidden action (insecure direct object reference)
-- **Instead:** take identity from the trusted authentication context (authoriser claims, AgentCore
-  identity); check resource and action permission in the code that acts; constrain agent tools in code
-  (a `BeforeToolCallEvent` hook), not by prompt or guardrail
-- **Severity:** Blocker when unauthorised access or side effects are reachable; `unsure` when the
-  authoriser is outside the change
-- **Source:** https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html — "Permission
-  should be validated correctly on every request"; `python-practices.md` section 9; shared ARC-12
+Moved 2026-11-25: `references/security-dimensions.md`, Authorisation
 
 ## 9. Logging and observability (PY-LOG)
 
@@ -1350,12 +1255,16 @@ Retired 2026-10-16: cut; commented-out code and shadowed builtins are the gate's
   gate (`ruff format --check`, `ruff check`); report them only when unselected or suppressed
 - Type errors mypy reports: the gate (`mypy --strict` or the project's command); review the holes mypy
   cannot see (PY-TYP-01)
-- Dependency vulnerabilities and lock-file integrity: `pip-audit` and `uv lock --check` in the gate when
-  the project uses them; an unplanned dependency or lock change is the Specification fidelity lens
-  (`review-focus.md`)
+- Dependency vulnerabilities and supply-chain safety: the security reviewer (the PY-DEP rules of
+  `references/security-dimensions.md`) and the required `dependency-audit` gate, which reads lock and pin
+  files only, never installs, and whose entries the main conversation turns into findings under
+  PY-DEP-01 (`references/dependency-audit.md`); the project's own `pip-audit` and `uv lock --check` stay
+  optional gate commands, run by the quality gate when the project uses them; an unplanned dependency or
+  lock change is the Specification fidelity lens (`review-focus.md`)
 - Lambda runtime and SDK choice (deprecated or preview runtimes, the AWS SDK for Python developer
-  preview), Strands model pinning, guardrails and `strands.experimental`: the Security and AWS runtime
-  lens brief and `python-practices.md` sections 1, 5 and 9
+  preview), Strands model pinning, guardrails and `strands.experimental`: the brief of the lens that holds
+  group 7 and `python-practices.md` sections 1, 5 and 9; a runtime or interpreter line past its support is
+  also PY-DEP-02 of `references/security-dimensions.md`
 - DynamoDB transaction mechanics (`CancellationReasons` by index, client request tokens, fences on a
   different item): the Failure handling lens brief and `python-practices.md` section 6
 - Infrastructure security (IAM policies, encryption, network exposure), including CDK apps written in

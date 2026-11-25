@@ -416,7 +416,7 @@ followed by `Runner: skill=implement-from-spec:running-external-review model=<mo
 policy=<optional|required|unknown> brief=<snapshot DIR>/briefs/external-review.md`, whose `policy` is the
 `external_review_policy` that `spec-external-review.py --show-config` resolves from the same settings the
 runner's script reads, `unknown` when the preparation could not read it (the external stage, below, acts
-on it). For a stack whose manifest lists `required_gates` (Java lists `dependency-audit`), the
+on it). For a stack whose manifest lists `required_gates` (Java and Python list `dependency-audit`), the
 preparation also runs each such gate's own script (`register --snapshot <snapshot DIR>`) and prints the
 line it returns: `Dependency audit: pending` when the gate is recorded as not run, pending, so that only
 the gate's own result replaces the record and a review in which it never ran is incomplete, never clean;
@@ -440,9 +440,11 @@ dispatch.
   so a result recorded by mistake is corrected by recording the right one after it. `record-gate` is
   refused (exit 3) once the candidate has changed, so a gate result never outlives its snapshot;
   `gates <snapshot DIR>` lists them for the report
-- **Java's dependency audit** is a gate that records itself. The main conversation runs
+- **The dependency audit** (Java and Python) is a gate that records itself. The main conversation runs
   `python3 -I "<PLUGIN_ROOT>/core/scripts/dependency-audit.py" audit --snapshot <snapshot DIR>` after
-  the project's tests, because reviewers may not run commands or use the network; the script attaches
+  the project's tests or quality gate, because reviewers may not run commands or use the network (for
+  Java it lists the dependencies with the project's build tool; for Python it reads the lock and pin
+  files as data, running nothing of the project); the script attaches
   its reports (`gates/dependency-audit-<n>.txt`, `input/dependency-audit-<n>.json`) through `attach` and
   then records `dependency-audit` as `pass`, `fail` (an occurrence the change introduced, or whose
   attribution is unknown, at Blocker or Major and not accepted by the user) or `not-run` with a
@@ -528,7 +530,7 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
   the reviewers: each one's skill, `model` (`"lens"` takes the risk's `lens_model`), brief sections (a
   file and an exact heading, or the whole file) and assigned lens or check groups; an entry marked
   `"handoff": true` runs only when the risk names its skill; `runner` names the external stage's skill,
-  model and focus file; `required_gates`, in Java's manifest only, names each gate the preparation
+  model and focus file; `required_gates`, in the Java and Python manifests, names each gate the preparation
   registers and the plugin script that registers it. The preparation writes each brief from it: the
   brief template plus the
   referenced sections verbatim, with the repository path, the change mode, the plan, the specification
@@ -577,7 +579,11 @@ or the ledger) last, after tracing, as testimony to confirm, never as evidence.
   review, both `code-reviewer` on `opus`: the code reviewer (`claude-stage`: six dimensions, contract
   files and documentation fidelity) and the security reviewer (`security`: the Safety/security
   dimension for every file of the change, the security consequence of a defect one of the code
-  reviewer's checks describes included), beside the hand-off reviewers the risk names
+  reviewer's checks describes included), beside the hand-off reviewers the risk names. Python's names
+  four lenses (specification fidelity, failure handling with the AWS runtime and logging groups, types
+  and design, tests) and the security reviewer (`security`: the Safety/security dimension for every file
+  of the change from its security catalogue, the security consequence of a defect a lens's check
+  describes included), all `code-reviewer` on `opus` and all on every review
 - **External stage** (GPT stage): run on every review: by the preparation script when the setting is
   off, by the runner subagent otherwise. The script itself reads the plugin's settings and decides
   whether anything is sent. The preparation runs `spec-external-review.py --show-config` with the same
@@ -687,7 +693,7 @@ already shows (code only for the expression the Fix changes). One line per findi
 
 For example:
 
-    [Blocker] src/functions/copy-complete-notify/handler.py:138 - Security and AWS runtime (PY-SEC-05) - the event's object key reaches staging_path unchecked, so `../` escapes /tmp/staging (SPEC-NF014). Why: a crafted upload key writes outside the staging root in the notifier Lambda. Evidence: an object key with `../`; src/functions/intake-copy/handler.py:43, handler.py:138, src/shared/staging.py:15 +4 steps: intake-copy/handler.py:85, handler.py:46, handler.py:100, handler.py:139; the scratch copy is written outside /tmp/staging. Fix: resolve the joined path and refuse it unless it stays under STAGING_ROOT; reject absolute and `..` keys at intake
+    [Blocker] src/functions/copy-complete-notify/handler.py:138 - Safety/security (PY-SEC-05) - the event's object key reaches staging_path unchecked, so `../` escapes /tmp/staging (SPEC-NF014). Why: a crafted upload key writes outside the staging root in the notifier Lambda. Evidence: an object key with `../`; src/functions/intake-copy/handler.py:43, handler.py:138, src/shared/staging.py:15 +4 steps: intake-copy/handler.py:85, handler.py:46, handler.py:100, handler.py:139; the scratch copy is written outside /tmp/staging. Fix: resolve the joined path and refuse it unless it stays under STAGING_ROOT; reject absolute and `..` keys at intake
     [Nit] scripts/report.py:12 - Types and design (PY-IDM-05) - status compared with bare strings. Why: a typo silently matches nothing. Fix: a `Status` StrEnum
 
 - **Lane**: the brief's assignment names the reviewer's lens or check groups. A finding inside them is
@@ -750,8 +756,9 @@ finding cites and look for counter-evidence (a guard, a caller that never passes
   and rule; a red gate still makes the recommendation Blocked); the disposition names the command.
   What the gate cannot see (a semantic type hole behind `Any`, a suppression, a file the gate's
   configuration excludes) stays a finding
-- **Dependency audit** (Java): every occurrence the audit's report lists becomes a finding with the
-  source `dependency audit` and the class the report gives, under Safety/security or, when the report
+- **Dependency audit** (Java and Python): every occurrence the audit's report lists becomes a finding
+  with the source `dependency audit`, the class the report gives and the stack's rule (JAVA-DEP-01,
+  PY-DEP-01), under Safety/security or, when the report
   lists it as pre-existing, under *Pre-existing*; none is dropped and none is covered by gate. An advisory the
   user accepts in the conversation is passed to the audit again (`--accept <advisory id>`): its new
   result supersedes the failed one, which no deferral could lift, and the finding is deferred with the
@@ -775,7 +782,7 @@ and `Fix:` clauses (the orchestrator writes them for a merged or traced finding,
     F<n> <the finding line> Disposition: <confirmed | rejected: <evidence> | covered by gate: <command> | needs runtime: <the check> | pre-existing | deferred: <the user's agreement>>. Source: <lenses or reviewers | GPT | both>.
 
 then one line per GPT open question, `Q<n> <question>: <answer | for the user>`, and the report's
-`Reviewers:` line. In a Java review `dependency audit` is a source as well (triage, above). In a fix
+`Reviewers:` line. In a Java or Python review `dependency audit` is a source as well (triage, above). In a fix
 round the earlier F-numbers come first, each with its status (fix rounds,
 below). It is written only through `save-findings`, which writes its standard input there byte for byte
 (atomically, mode 0600). The snapshot directory lies outside the project, so the Write tool is never used
@@ -810,7 +817,7 @@ state, below), in this order, a section with nothing in it left out:
   note (who should know and why)
 - one check line (a line, not a list), the gate results as recorded: `Quality gate: <name> <pass |
   fail | not run (<reason>)>; ...` (`Read-only checks:` for the infrastructure stacks, the change-set or
-  plan check included). In a Java review its last entry is the dependency audit's status line,
+  plan check included). In a Java or Python review its last entry is the dependency audit's status line,
   character for character, the off line included (`Dependency audit: off (configuration: <source>)`), or
   the gate as recorded (`dependency-audit not run (<reason>)`) when the audit printed none; the status
   line's last field carries the coverage, so `dependency-audit-coverage` has no entry of its own, and the
@@ -909,7 +916,8 @@ the ledger's *Implementation notes*.
   arguments, its `--policy-dir` and `--snapshot-id` kept (the new snapshot's; `--files` with a policy
   directory needs its id), given in its prompt; with the stage off, the preparation's line in
   `<new DIR>/external.txt`). In a Java review the code reviewer and the security reviewer are both
-  dispatched in every round, and the dependency audit runs again on the new snapshot: a dependency
+  dispatched in every round, in a Python review the security reviewer is dispatched in every round beside
+  the lenses above, and in both the dependency audit runs again on the new snapshot: a dependency
   finding is closed only when the new report, with complete coverage, no longer lists it
 - The prompt adds the round's delta and points at the earlier findings, numbered F1, F2 and so on, in
   `<old DIR>/findings.md`. Each is reported `closed`
