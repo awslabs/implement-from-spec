@@ -6,7 +6,7 @@ rules, writes a code-free plan, and waits until you reply `approve`. A hook enfo
 builds the change test-first, runs the stack's own checks, has it reviewed by Claude and, if you enable
 it, by an external model, and reports. It never deploys on its own: every deploy or live change asks you first.
 
-Version 0.3.0.
+Version 0.4.0.
 
 ## Disclaimer
 

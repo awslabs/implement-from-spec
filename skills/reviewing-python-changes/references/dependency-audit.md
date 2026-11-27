@@ -39,9 +39,13 @@ covering lock or pin file does not list it reads `lock file out of date` instead
 one an environment marker narrows included, whose remedy then names one pin file per platform or a lock file
 for every platform; groups and extras only against a lock file), and also marks the covering modules'
 coverage partial. A `setup.py` is read with `ast`, never run: its literal `install_requires` and
-`extras_require` are compared, and one that builds them in code, a dynamic field the audit does not read or
+`extras_require` are compared when its `setup` is setuptools' or distutils' own (`from setuptools import
+setup`, its try/except fallback to `distutils.core`, or `import setuptools` with `setuptools.setup(...)`) and
+used only for that call, and one that builds them in code, wraps or rebinds `setup`, or reaches names
+dynamically (a star import, `exec`, `globals`, `sys.modules` and the like), a dynamic field the audit does not read or
 a `pyproject.toml` that does not parse reads `declarations not read` (the first two only when no lock file
-that locks every group covers the declaration). python3 3.11 or later (`tomllib`) is needed only to read a TOML lock
+that locks every group covers the declaration; when one does, the names the declaration shows are still
+compared with it). python3 3.11 or later (`tomllib`) is needed only to read a TOML lock
 file, a `Pipfile`, or a declaring `pyproject.toml`; on an older interpreter that side alone is not run
 (category `interpreter`), while requirements files, `Pipfile.lock` and a `setup.cfg` are still read. A
 repository with Python sources and none of these files passes with no module and a coverage field naming

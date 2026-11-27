@@ -1236,7 +1236,9 @@ users see: [user-guide/python.md](user-guide/python.md).
 - **Lock and pin files only, never an installer.** The inventory is read from `uv.lock`, `poetry.lock`,
   `pdm.lock`, `pylock.toml` and `pylock.<name>.toml` (PEP 751), `Pipfile.lock` and requirements files
   pinned with `==` or `===`, as data. Nothing runs: no pip, uv, Poetry, PDM or Pipenv, no build backend,
-  no `setup.py` (its literal `setup()` lists are read with `ast`), nothing imported from the project. Why: resolving a Python project's dependencies can
+  no `setup.py` (the literal lists of a `setup()` that is surely setuptools' own are read with `ast`; one that
+  reaches names dynamically, a star import or `exec` among them, is unknown, and an enumeration of Python's
+  binding forms cannot be complete, the residual of TM-82), nothing imported from the project. Why: resolving a Python project's dependencies can
   mean building a source distribution, which runs the repository's code, and the repository under review
   is untrusted; pip-audit's own security model says as much: "If you wouldn't `pip install` it, you
   should not `pip audit` it", and it "cannot guarantee that arbitrary dependency resolutions occur

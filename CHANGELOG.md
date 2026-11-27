@@ -3,7 +3,7 @@
 Versions follow semantic versioning: a major version changes the gate's approval grammar or the
 specification input formats, a minor version adds a stack or a check, a patch fixes or updates facts.
 
-## Unreleased
+## 0.4.0 — 2026-11-25
 
 ### Added
 
@@ -93,12 +93,16 @@ specification input formats, a minor version adds a stack or a check, a patch fi
 - The PyPI audit now checks the lock file against the declarations: an uncovered or out-of-date lock file
   (a dependency declared but not listed, a main dependency an environment marker narrows included) is
   reported as `lock file out of date` rather than trusted as written, and a declaration it cannot read (a
-  `setup.py` list built in code, which is read with `ast` and never run, a dynamic field other than
-  setuptools' `file =` list, a `pyproject.toml` that does not parse) as `declarations not read` unless a
-  lock file that locks every group covers it. The check is by name, not by version range. Lock and pin files in every directory under the project directory are modules, not only the
+  `setup.py` list built in code, a `setup` that is wrapped or rebound or a file that reaches names
+  dynamically, the file being read with `ast` and never run, a dynamic field other than setuptools' `file =`
+  list, a `pyproject.toml` that does not parse) as `declarations not read` unless a lock file that locks
+  every group covers it, whose names it shows are then still compared with that lock file. The check is by name, not by version range. Lock and pin files in every directory under the project directory are modules, not only the
   top; a directory outside the project is still found only by naming it with `--project-dir`
 - Environment markers are not evaluated, so a package locked for another platform or Python release is
   reported too
+- A `setup.py` that reaches names dynamically (`exec`, `eval`, `globals`, `importlib` and the like) is not
+  read, so one that reads its version with `exec(open(...).read())` gives `declarations not read` unless a
+  lock file that locks every group covers it
 
 ### Security
 
