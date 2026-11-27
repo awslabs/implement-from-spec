@@ -66,6 +66,7 @@ MAX_TEXT_OCCURRENCES = 500
 MAX_JSON_ADVISORIES = 100
 MAX_JSON_OCCURRENCES = 5000
 MATCH_CHECK_EVERY = 64  # occurrences matched between two checks of the deadline
+ENTRY_CHECK_EVERY = 256  # advisory entries of one package scanned between two checks of the deadline
 FRESH_SECONDS = 24 * 3600
 USABLE_SECONDS = 7 * 24 * 3600
 DOWNLOAD_DEADLINE_SECONDS = 120
@@ -697,7 +698,7 @@ def match_entry(entry: dict, version: str, ecosystem: Ecosystem) -> tuple:
     return None, None
 
 
-def reported_fix(entries: list, version: str, start, ecosystem: Ecosystem) -> tuple:
+def reported_fix(entries: list, version: str, start, ecosystem: Ecosystem, deadline=None) -> tuple:
     """(fix, checked) to report for a package: `start` (the highest fixed event of the ranges that matched)
     matched again against every entry for the package, moving up to a later fixed event while it is still
     affected. fix is None when the data names no version that is unaffected; checked is False when an entry
@@ -708,9 +709,14 @@ def reported_fix(entries: list, version: str, start, ecosystem: Ecosystem) -> tu
                 if kind == "fixed" and compare(bound, version) > 0}, key=functools.cmp_to_key(compare))
     candidate = start
     for _ in range(len(later) + 1):
+        check_deadline(deadline)
         if candidate is None:
             return None, True
-        hits = [match_entry(entry, candidate, ecosystem) for _adv, entry in entries]
+        hits = []
+        for count, (_adv, entry) in enumerate(entries):
+            if count % ENTRY_CHECK_EVERY == 0 and count:
+                check_deadline(deadline)
+            hits.append(match_entry(entry, candidate, ecosystem))
         opaque = any(basis == "not evaluable" for basis, _fix in hits)
         hits = [(basis, fix) for basis, fix in hits if basis not in (None, "not evaluable")]
         if not hits:
@@ -821,14 +827,24 @@ def source_rank(match: dict) -> int:
     return 2 if origin.startswith("CVSS ") else 1 if origin else 0
 
 
-def match_package(index: Index, package: str, version: str) -> dict:
+def check_deadline(deadline) -> None:
+    """NotRun (time limit) once `deadline` (time.monotonic()) has passed; None means no limit."""
+    if deadline is not None and time.monotonic() > deadline:
+        raise NotRun("time limit", time_limit_remedy("the audit reached its total limit while it matched the "
+                                                     "dependencies against the advisory data"))
+
+
+def match_package(index: Index, package: str, version: str, deadline=None) -> dict:
     """Every advisory matching `package` at `version`, one per advisory id (its strongest basis), aliases of
-    each other merged where the ecosystem asks for it, and the fix to report for the package."""
+    each other merged where the ecosystem asks for it, and the fix to report for the package. `deadline` is
+    checked while the fix is sought, whose steps a dataset of chained ranges can make many."""
     ecosystem = index.ecosystem
     entries = index.entries(package)
     found: dict = {}
     start = None
-    for advisory, entry in entries:
+    for count, (advisory, entry) in enumerate(entries):
+        if count % ENTRY_CHECK_EVERY == 0:  # a hostile dataset can give one package many entries of many ranges
+            check_deadline(deadline)
         basis, fix = match_entry(entry, version, ecosystem)
         if basis is None:
             continue
@@ -850,7 +866,7 @@ def match_package(index: Index, package: str, version: str) -> dict:
     if listed and ecosystem.unsure_version(version):
         listed = [dict(a, unsure=True) for a in listed]
     advisories = sorted(listed, key=lambda a: (CLASS_ORDER[a["class"]], a["id"]))
-    fix, checked = reported_fix(entries, version, start, ecosystem) if advisories else (None, True)
+    fix, checked = reported_fix(entries, version, start, ecosystem, deadline) if advisories else (None, True)
     return {"advisories": advisories, "fix": fix, "fix_checked": checked}
 
 
@@ -1411,12 +1427,11 @@ def evaluate_sides(sides: list, accept: list, deadline=None) -> dict:
         occurrence = index.ecosystem.occurrence
         for module in modules:
             for node in module["nodes"]:
+                if matched_count % MATCH_CHECK_EVERY == 0:  # the first occurrence included
+                    check_deadline(deadline)
                 matched_count += 1
-                if deadline is not None and matched_count % MATCH_CHECK_EVERY == 0 and time.monotonic() > deadline:
-                    raise NotRun("time limit", time_limit_remedy("the audit reached its total limit while it matched "
-                                                                 "the dependencies against the advisory data"))
                 dependencies.add((index.ecosystem.name, module["id"], node["package"], node["version"]))
-                matched = match_package(index, node["package"], node["version"])
+                matched = match_package(index, node["package"], node["version"], deadline)
                 if not matched["advisories"]:
                     continue
                 taken, left = [], []

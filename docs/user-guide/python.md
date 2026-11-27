@@ -250,9 +250,16 @@ whole audit (`--total-timeout`), the wait for another refresh's lock and the dow
    - Declarations, which are never a module but decide coverage: `pyproject.toml` (`[project]`
      dependencies and optional dependencies, `[dependency-groups]`, and Poetry's, PDM's and uv's
      dependency tables), `setup.cfg` (`install_requires`, `extras_require`), `setup.py` (never run: the literal
-     `install_requires` and `extras_require` lists of its one `setup()` call are read with Python's `ast`,
-     anything built in code is unknown), setuptools' dynamic `dependencies = {file = [...]}` files, read as
-     requirement lines, and `Pipfile` (every package category). A `pyproject.toml` that does not parse is
+     `install_requires` and `extras_require` lists of its one `setup()` call are read with Python's `ast`
+     when that `setup` is setuptools' or distutils' own: `from setuptools import setup` (or the
+     try/except ImportError fallback to `distutils.core`) at module level and used only for that call, or
+     `import setuptools` with `setuptools.setup(...)`, `setuptools.find_packages()` and the like allowed
+     beside it; anything else, a wrapped or rebound `setup`, a star import, a `match`, a store to an
+     attribute or key named `setup`, or `globals`, `exec`, `eval`, `setattr`, `importlib` or `sys.modules`
+     anywhere in the file, is unknown), setuptools' dynamic
+     `dependencies = {file = [...]}` files, read as requirement lines (a file that is not one of the
+     candidate's, holds an option line or has 100,000 lines or more makes the declaration unknown, and
+     naming such files counts as declaring even before they are read), and `Pipfile` (every package category). A `pyproject.toml` that does not parse is
      `declarations not read`. A declaration is covered by
      the lock and pin files of its own directory, or of the nearest directory above it that holds any (a
      uv or Poetry workspace locks its members at its root), and each dependency it declares must be
@@ -260,7 +267,8 @@ whole audit (`--total-timeout`), the wait for another refresh's lock and the dow
      and extras' only against a lock file, which locks every group, since a requirements file may be
      compiled from the main set alone. Only the project of the declaration's own directory and the
      workspace members of the lock file covering it count as listed by their own name. A declaration the
-     audit cannot read is `declarations not read` unless a lock file that locks every group covers it
+     audit cannot read is `declarations not read` unless a lock file that locks every group covers it,
+     and then the names it does show are still compared with that lock file
    - Each lock or pin file is one module of the report. A `pyproject.toml` or `setup.cfg` that configures
      tools only (formatter or linter settings) does not make the project a Python one
    - No dependency file at all: Python sources (`.py` files outside virtual environments, installed or

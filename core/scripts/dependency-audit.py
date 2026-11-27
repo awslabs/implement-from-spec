@@ -2673,8 +2673,9 @@ def check_line(index, coordinate: str) -> tuple:
 
 def check_ecosystem(coordinate: str):
     """The ecosystem a check argument names, None when it is neither form."""
-    if coordinate.lower().startswith("pypi:"):
-        return PYPI if pypi.parse_pin(coordinate) else None
+    if coordinate.lower().startswith("pypi:") and pypi.parse_pin(coordinate):
+        return PYPI
+    # anything else keeps the Maven reading 0.3.0 gave it, a group named pypi included (pypi:demo:1.0)
     parts = coordinate.split(":")
     if len(parts) == 3 and NAME_RE.match(parts[0]) and NAME_RE.match(parts[1]) and VERSION_RE.match(parts[2]):
         return MAVEN

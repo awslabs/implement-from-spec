@@ -530,7 +530,12 @@ def declares(source, rel: str, budget) -> bool:
     if interpreter_problem() is not None:
         return headers_declare(text)
     doc = load_toml(text)
-    return doc is None or pyproject_declared(doc).count != 0
+    if doc is None:
+        return True
+    found = pyproject_declared(doc)
+    # a dynamic field's files are read only later (declarations()): naming any is declaring, so a project whose
+    # dependencies are all in such a file is audited, never taken for one that declares nothing
+    return found.count != 0 or bool(found.files)
 
 
 DECLARING_TABLES = ("project", "dependency-groups", "tool.poetry", "tool.pdm")
@@ -1377,8 +1382,10 @@ class Declared:
         self.files: list = []  # (whether main, path relative to the declaration) of setuptools' dynamic files
 
     def add(self, text: str, main: bool) -> None:
-        """One dependency specifier, counted, its name kept as main or other."""
-        self.count = (self.count or 0) + 1
+        """One dependency specifier, counted, its name kept as main or other. Once the declaration is unknown
+        (why set) it stays unknown: a later readable file never makes a count of it again."""
+        if self.why is None:
+            self.count = (self.count or 0) + 1
         name, marker = specifier_name(text)
         if name and main:
             self.main[name] = self.main.get(name, True) and marker
@@ -1517,7 +1524,8 @@ def setup_py_declared(text: str) -> Declared:
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return Declared(why="it is not valid Python")
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and _call_name(node.func) in SETUP_CALLS]
-    if len(calls) != 1 or any(keyword.arg is None for keyword in calls[0].keywords):
+    if len(calls) != 1 or any(keyword.arg is None for keyword in calls[0].keywords) or \
+            not _setuptools_setup(tree, calls[0]):
         return Declared(why="setup.py builds them in code")
     found = Declared(count=0)
     for keyword in calls[0].keywords:
@@ -1536,6 +1544,107 @@ def setup_py_declared(text: str) -> Declared:
             for item in group:
                 found.add(item, keyword.arg == "install_requires")
     return found
+
+
+SETUP_MODULES = ("setuptools", "distutils.core")
+
+
+# What makes a setup.py's setup() call unreadable as a literal whatever its bindings look like: a star import, a match
+# statement (a capture binds a name), a store to any attribute or subscript named setup, and the ways code reaches
+# names or modules dynamically. Python has more binding forms than a reader can list, so the rest is a residual
+# (TM-82): a setup.py written to evade this reader is the author's own build code, the security reviewer's
+# PY-DEP-08.
+DYNAMIC_NAMES = frozenset(("globals", "vars", "locals", "exec", "eval", "compile", "setattr", "__import__",
+                           "importlib"))
+
+
+def _evasive(tree) -> bool:
+    import ast
+    match = getattr(ast, "Match", ())  # Python 3.10 and later
+    for node in ast.walk(tree):
+        if (match and isinstance(node, match)) or \
+                (isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)):
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == "setup" and not isinstance(node.ctx, ast.Load):
+            return True
+        if isinstance(node, ast.Subscript) and not isinstance(node.ctx, ast.Load):
+            if isinstance(node.slice, ast.Constant) and node.slice.value == "setup":
+                return True
+        if isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == "modules" and isinstance(node.value, ast.Name) and \
+                node.value.id == "sys":
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and \
+                any(alias.name.split(".")[0] == "importlib" for alias in node.names) or \
+                (isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "importlib"):
+            return True
+    return False
+
+
+def _setup_import(node) -> bool:
+    """`from setuptools import setup` (or distutils.core), absolute, not renamed."""
+    import ast
+    return isinstance(node, ast.ImportFrom) and node.module in SETUP_MODULES and node.level == 0 and \
+        len(node.names) >= 1 and any(a.name == "setup" and a.asname in (None, "setup") for a in node.names)
+
+
+def _setup_fallback(node) -> list:
+    """The imports of a module-level `try: from setuptools import setup` / `except ImportError: from
+    distutils.core import setup` (each branch that one import alone), [] for anything else."""
+    import ast
+    if not isinstance(node, ast.Try) or node.orelse or node.finalbody or not node.handlers:
+        return []
+    branches = [node.body] + [h.body for h in node.handlers]
+    errors = all(isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "ModuleNotFoundError") and not h.name
+                 for h in node.handlers)
+    if not errors or not all(len(b) == 1 and _setup_import(b[0]) for b in branches):
+        return []
+    return [b[0] for b in branches]
+
+
+def _setuptools_setup(tree, call) -> bool:
+    """Whether the one setup() call surely calls setuptools' (or distutils') own setup, so its keywords are all it
+    declares. `setup(...)`: the name bound only by one module-level `from setuptools import setup` (or
+    distutils.core), or by the two imports of a module-level try/except ImportError fallback between them, and used
+    only as that call. `setuptools.setup(...)`: `setuptools` bound only by one module-level `import setuptools`,
+    every other use of it reading another attribute (`setuptools.find_packages()`), and nothing stored on it. A
+    name rebound, wrapped (functools.partial(setup, install_requires=...)), passed on or imported again may carry
+    dependencies the call does not show, and so does anything _evasive finds."""
+    import ast
+    if _evasive(tree):
+        return False
+    name = _call_name(call.func)
+    bound = "setup" if name == "setup" else "setuptools"
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    bindings, uses = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == bound:
+            (uses if isinstance(node.ctx, ast.Load) else bindings).append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == bound:
+            bindings.append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bindings += [node for alias in node.names if (alias.asname or alias.name.split(".")[0]) == bound]
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and bound in node.names:
+            bindings.append(node)
+        elif isinstance(node, ast.arg) and node.arg == bound:
+            bindings.append(node)
+        elif isinstance(node, ast.ExceptHandler) and node.name == bound:
+            bindings.append(node)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == bound and \
+                not isinstance(node.ctx, ast.Load):
+            return False  # something stored on setuptools
+    if name == "setup":
+        fallback = [found for node in tree.body for found in _setup_fallback(node)]
+        allowed = fallback if fallback else [n for n in tree.body if _setup_import(n)]
+        return bool(allowed) and len(allowed) <= 2 and sorted(map(id, bindings)) == sorted(map(id, allowed)) and \
+            uses == [call.func]
+    if len(bindings) != 1 or bindings[0] not in tree.body or not isinstance(bindings[0], ast.Import) or \
+            not any(a.name == "setuptools" and a.asname is None for a in bindings[0].names):
+        return False
+    # every use of setuptools but the call's reads another attribute of it, so setup is reached only there
+    return all(use is call.func.value or (isinstance(parents.get(use), ast.Attribute) and
+                                          parents[use].attr != "setup") for use in uses)
 
 
 def _call_name(func) -> str:
@@ -1641,7 +1750,7 @@ def dynamic_requirements(source, rel: str, path: str, main: bool, found: Declare
         found.count, found.why = None, "a file it names is not read"
         return
     text = read_text(source, target, budget, problems, "declaration file")
-    if text is None:
+    if text is None or text.count("\n") >= MAX_LINES:  # never cut silently: the lines past the limit could declare
         found.count, found.why = None, "a file it names is not read"
         return
     for _number, line in logical_lines(text):
@@ -1685,9 +1794,9 @@ def inventory(source, project: str, project_shown: str, budget: Budget | None = 
 
     Each declaration file is covered by the lock and pin files of its own directory, or else of the nearest
     directory above it (up to the project directory) that holds any, as a uv or Poetry workspace locks its members
-    at its root. Covered, its dependencies must be listed there: a main dependency in any of those files (one
-    with an environment marker only where a lock file is among them, since a requirements file is compiled for one
-    environment), a group's or an extra's where a lock file that locks every group is among them."""
+    at its root. Covered, its dependencies must be listed there: every main dependency in any of those files, one
+    an environment marker narrows included (the remedy then names per-platform pin files), a group's or an extra's
+    where a lock file that locks every group is among them."""
     budget = Budget() if budget is None else budget
     files = present(source.paths, project)
     sources = undeclared(source, project, budget)
@@ -1764,13 +1873,15 @@ def inventory(source, project: str, project_shown: str, budget: Budget | None = 
             empty.setdefault(tuple(cover), []).append(found.rel)
             continue
         full = any(r.split("/")[-1] in FULL_LOCKS or is_pylock(r.split("/")[-1]) for r in cover)
-        if found.count is None:
-            # what it declares is not known: a lock tool resolved the declaration itself, so a lock file that
-            # locks every group covers it; a requirements file was written by hand or from another input
-            if not full and found.why not in ("it is not valid TOML", "the file could not be read"):  # reported
-                unread.append((found, cover))
-            continue
         listed = set().union(*(lock_names.get(r, set()) for r in cover), *(reader.root_names(r) for r in cover))
+        if found.count is None or found.why is not None:
+            # what it declares is not wholly known: a lock tool resolved the declaration itself, so a lock file that
+            # locks every group covers the rest, but the names that are known are still compared below; a
+            # requirements file was written by hand or from another input
+            if not full:
+                if found.why not in ("it is not valid TOML", "the file could not be read"):  # those are reported
+                    unread.append((found, cover))
+                continue
         # the project's own name, and its workspace's, are not dependencies to lock: only the project of the
         # declaration's own directory and the members of the lock file that covers it
         own = {d.title for d in declared if d.title and group_of(d.rel) == group_of(found.rel)}
